@@ -1,0 +1,57 @@
+- name: "tidb_setup"
+  hosts: localhost
+  connection: local
+  vars:
+    recipe_name: "tidb_setup"
+
+  tasks:
+    - block:
+
+        # -----------------------------
+        # 1. Setup Environment
+        # -----------------------------
+
+        - name: "{{ recipe_name }}: Start mdsvc using Docker."
+          set_fact:
+            result: "{{ lookup('mdsvc_tidb_setup', 'docker_up') }}"
+
+        - name: "{{ recipe_name }}: DEBUG setup result."
+          debug:
+            msg: "{{ result }}"
+
+        # -----------------------------
+        # 2. Create Infra
+        # -----------------------------
+
+        - name: Create infra
+          set_fact:
+            infra_result: "{{ lookup('mdsvc_tidb_api',
+                'POST',
+                '/create_infra',
+                file=infra_payload,
+                base_url=api_base_url) }}"
+
+        - name: Debug infra response
+          debug:
+            var: infra_result
+
+        # -----------------------------
+        # 3. Create VDEV
+        # -----------------------------
+        - name: Create vdev
+          set_fact:
+            vdev_result: "{{ lookup('mdsvc_tidb_api',
+                'POST',
+                '/create_vdev',
+                file=vdev_payload,
+                base_url=api_base_url) }}"
+
+        - name: Extract vdev UUID
+          set_fact:
+            vdev_uuid: "{{ vdev_result.vdev_uuid | default(vdev_result.uuid) }}"
+
+        - name: Debug vdev UUID
+          debug:
+            msg: "Created VDEV UUID: {{ vdev_uuid }}"
+
+        
