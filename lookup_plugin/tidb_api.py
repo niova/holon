@@ -1059,7 +1059,10 @@ class LookupModule(LookupBase):
 
         log_dir = kwargs.get(
             "log_dir",
-            "./logs"
+            variables.get(
+                "log_dir",
+                "./logs"
+            )
         )
 
         api_params = {

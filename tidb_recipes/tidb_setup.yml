@@ -3,13 +3,22 @@
   connection: local
   vars:
     recipe_name: "tidb_setup"
-    repo_path: "/mdsvc-tidb"
+    log_dir: "{{ dir_path | default('./logs') }}"
     api_base_url: "http://localhost:8081"
-    infra_payload: "/home/himani/mdsvc-tidb/examples/e2e.json"
-    vdev_payload: "/home/himani/mdsvc-tidb/examples/create_vdev_100gb_1replica.json"
+    infra_payload: "./examples/e2e.json"
+    vdev_payload: "./examples/create_vdev_100gb_1replica.json"
 
   tasks:
     - block:
+
+        # Check for the app_type
+        - name: "{{ recipe_name }}: Check if the app_type is 'tidb'."
+          vars:
+            app_type: "{{ app_type }}"
+          debug:
+            msg: "app_type is: {{ app_type }}"
+          failed_when:
+            (app_type != "tidb")
 
         # -----------------------------
         # 1. Create Infra
