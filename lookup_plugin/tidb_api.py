@@ -8,7 +8,6 @@ import requests
 from ansible.plugins.lookup import LookupBase
 from ansible.errors import AnsibleError
 
-
 class LookupModule(LookupBase):
 
     def run(self, terms, variables=None, **kwargs):
