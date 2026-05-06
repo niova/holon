@@ -3,24 +3,16 @@
   connection: local
   vars:
     recipe_name: "tidb_setup"
+    repo_path: "/mdsvc-tidb"
+    api_base_url: "http://localhost:8081"
+    infra_payload: "/home/himani/mdsvc-tidb/examples/e2e.json"
+    vdev_payload: "/home/himani/mdsvc-tidb/examples/create_vdev_100gb_1replica.json"
 
   tasks:
     - block:
 
         # -----------------------------
-        # 1. Setup Environment
-        # -----------------------------
-
-        - name: "{{ recipe_name }}: Start mdsvc using Docker."
-          set_fact:
-            result: "{{ lookup('tidb_setup', 'docker_up') }}"
-
-        - name: "{{ recipe_name }}: DEBUG setup result."
-          debug:
-            msg: "{{ result }}"
-
-        # -----------------------------
-        # 2. Create Infra
+        # 1. Create Infra
         # -----------------------------
 
         - name: Create infra
@@ -36,8 +28,9 @@
             var: infra_result
 
         # -----------------------------
-        # 3. Create VDEV
+        # 2. Create VDEV
         # -----------------------------
+        
         - name: Create vdev
           set_fact:
             vdev_result: "{{ lookup('tidb_api',
@@ -46,9 +39,13 @@
                 file=vdev_payload,
                 base_url=api_base_url) }}"
 
+        - name: Debug vdev result
+          debug:
+            msg: "{{ vdev_result }}"
+
         - name: Extract vdev UUID
           set_fact:
-            vdev_uuid: "{{ vdev_result.vdev_uuid | default(vdev_result.uuid) }}"
+            vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
 
         - name: Debug vdev UUID
           debug:
