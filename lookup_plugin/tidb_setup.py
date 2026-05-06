@@ -1931,66 +1931,126 @@ class LookupModule(LookupBase):
     def create_schema(self, repo_path, host, port, user, password):
         script_path = os.path.join(repo_path, "scripts/run_schema.sh")
 
-        if not os.path.exists(script_path):
-            raise AnsibleError(f"Schema script not found: {script_path}")
+    if not os.path.exists(script_path):
+        raise AnsibleError(
+            f"Schema script not found: {script_path}"
+        )
 
-        env = os.environ.copy()
-        env.update({
-            "MDSVC_MYSQL_HOST": str(host),
-            "MDSVC_MYSQL_PORT": str(port),
-            "MDSVC_MYSQL_USER": str(user),
-            "MDSVC_MYSQL_PASSWORD": str(password),
-        })
+    env = os.environ.copy()
+
+    env.update({
+        "MDSVC_MYSQL_HOST": str(cluster_params['mysql_host']),
+        "MDSVC_MYSQL_PORT": str(cluster_params['mysql_port']),
+        "MDSVC_MYSQL_USER": str(cluster_params['mysql_user']),
+        "MDSVC_MYSQL_PASSWORD": str(cluster_params['mysql_password']),
+    })
+
+    run_command(
+        ["chmod", "+x", script_path]
+    )
+
+    run_command(
+        [script_path],
+        cwd=repo_path,
+        env=env
+    )
+
+    return {
+        "status": "schema_created"
+    }
+
+def start_server(cluster_params):
+
+    server_path = cluster_params['server_path']
+
+    log_file = os.path.join(server_path, "mdsvc.log")
+
+    fp = open(log_file, "a")
+
+    process_popen = subprocess.Popen(
+        ["go", "run", "./cmd/server"],
+        cwd=server_path,
+        stdout=fp,
+        stderr=fp,
+        preexec_fn=os.setsid
+    )
+
+    pid_file = "/tmp/mdsvc_server.pid"
+
+    with open(pid_file, "w") as pidf:
+        pidf.write(str(process_popen.pid))
+
+    os.fsync(fp)
+
+    return {
+        "status": "server_started",
+        "pid": process_popen.pid,
+        "log_file": log_file
+    }
+
+def stop_server():
+
+    pid_file = "/tmp/mdsvc_server.pid"
+
+    if not os.path.exists(pid_file):
+        return {
+            "status": "server_not_running"
+        }
+
+    with open(pid_file, "r") as pidf:
+        pid = int(pidf.read().strip())
+
+    try:
+        os.killpg(
+            os.getpgid(pid),
+            signal.SIGTERM
+        )
+
+    except Exception:
+        pass
+
+    os.remove(pid_file)
+
+    return {
+        "status": "server_stopped"
+    }
+
+# =========================================================
+# Health Check Helpers
+# =========================================================
+
+def wait_for_server(cluster_params,
+                    timeout=120):
+
+    repo_path = cluster_params['repo_path']
+    base_url = cluster_params['base_url']
+
+    log_file = get_log_file(repo_path)
+
+    last_error = None
+
+    for _ in range(timeout):
 
         try:
-            subprocess.check_call(["chmod", "+x", script_path])
-            subprocess.check_call([script_path], cwd=repo_path, env=env)
-        except subprocess.CalledProcessError as e:
-            raise AnsibleError(f"Schema creation failed: {e}")
-
-    def start_server(self, server_path):
-        log_file = os.path.join(server_path, "mdsvc.log")
-
-        with open(log_file, "w") as f:
-            proc = subprocess.Popen(
-                ["go", "run", "./cmd/server"],
-                cwd=server_path,
-                stdout=f,
-                stderr=f,
-                preexec_fn=os.setsid
+            response = requests.get(
+                base_url,
+                timeout=5
             )
 
-        pid_file = "/tmp/mdsvc_server.pid"
-        with open(pid_file, "w") as f:
-            f.write(str(proc.pid))
+            if response.status_code < 500:
 
-        return proc.pid
+                with open(log_file, "a") as logf:
+                    write_log_header(
+                        logf,
+                        "SERVER BECAME READY"
+                    )
 
-    def stop_server(self):
-        pid_file = "/tmp/mdsvc_server.pid"
+                return
 
-        if not os.path.exists(pid_file):
-            return
+        except Exception as e:
+            last_error = str(e)
 
-        with open(pid_file, "r") as f:
-            pid = int(f.read().strip())
-
-        try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except Exception:
-            pass
-
-        os.remove(pid_file)
-
-    def wait_for_server(self, base_url, timeout=20):
-        for _ in range(timeout):
-            try:
-                r = requests.get(base_url + "/infra", timeout=2)
-                if r.status_code in [200, 404]:
-                    return
-            except Exception:
-                pass
-            time.sleep(1)
+        time.sleep(1)
 
         raise AnsibleError("Server did not become ready in time")
 
