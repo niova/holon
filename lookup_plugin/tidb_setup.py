@@ -10,7 +10,6 @@ import requests
 from ansible.plugins.lookup import LookupBase
 from ansible.errors import AnsibleError
 
-
 class LookupModule(LookupBase):
 
     def run(self, terms, variables=None, **kwargs):
@@ -166,7 +165,6 @@ class LookupModule(LookupBase):
         except Exception:
             return ["docker-compose"]
 
-
     def docker_up(self, repo_path):
         cmd = self._get_docker_compose_cmd()
 
@@ -180,7 +178,6 @@ class LookupModule(LookupBase):
         except subprocess.CalledProcessError as e:
             raise AnsibleError(f"Docker up failed: {e}")
 
-
     def docker_down(self, repo_path):
         cmd = self._get_docker_compose_cmd()
 
@@ -188,7 +185,6 @@ class LookupModule(LookupBase):
             subprocess.check_call(cmd + ["down", "-v"], cwd=repo_path)
         except subprocess.CalledProcessError as e:
             raise AnsibleError(f"Docker down failed: {e}")
-
 
     def docker_logs(self, container_name, follow=False):
         cmd = ["docker", "logs"]
