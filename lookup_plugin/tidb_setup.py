@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 """
 Ansible Lookup Plugin: tidb_setup
 =====================================
@@ -51,21 +50,16 @@ If a tag is omitted, normal TiUP Playground cleanup semantics apply when the
 playground supervisor exits. A tag should only be used when persistence across
 full playground restarts is explicitly required.
 """
-=======
+
 from __future__ import (absolute_import, division, print_function)
 __metaclass__ = type
 
 import os
-import subprocess
-import time
 import signal
+import subprocess
 import requests
->>>>>>> 29ebe60 (lookup plugins for setup and apis)
-
 from ansible.plugins.lookup import LookupBase
 from ansible.errors import AnsibleError
-
-<<<<<<< HEAD
 import json
 import os
 import signal
@@ -1815,13 +1809,10 @@ def wait_for_server(params):
 # =========================================================
 # Lookup Entry Point
 # =========================================================
-=======
->>>>>>> 29ebe60 (lookup plugins for setup and apis)
 
 class LookupModule(LookupBase):
 
     def run(self, terms, variables=None, **kwargs):
-<<<<<<< HEAD
         action = terms[0]
         cluster_params = variables["ClusterParams"]
 
@@ -1865,7 +1856,6 @@ class LookupModule(LookupBase):
             raise AnsibleError("Unsupported action: %s" % action)
 
         return [result]
-=======
         if not terms:
             raise AnsibleError("Action is required")
 
@@ -2055,4 +2045,3 @@ class LookupModule(LookupBase):
             return output.decode()
         except subprocess.CalledProcessError as e:
             raise AnsibleError(f"Failed to fetch logs: {e.output.decode()}")
->>>>>>> 29ebe60 (lookup plugins for setup and apis)

@@ -564,8 +564,11 @@ import requests
 from ansible.plugins.lookup import LookupBase
 from ansible.errors import AnsibleError
 
+<<<<<<< HEAD
 >>>>>>> 29ebe60 (lookup plugins for setup and apis)
 
+=======
+>>>>>>> 1ae76c9 (Update tidb_setup.yml.)
 class LookupModule(LookupBase):
 
     def run(self, terms, variables=None, **kwargs):
