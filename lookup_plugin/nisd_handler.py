@@ -115,7 +115,10 @@ def run_nisd_command(cluster_params, input_values):
     genericcmdobj.recipe_json_dump(recipe_conf)
 
     # Return the process to allow further handling if needed
-    return [process]
+    return {
+        "pid": process.pid,
+        "cmd": command
+    }
 
 def install_linux_modules():
     try:
