@@ -5,8 +5,8 @@
     recipe_name: "tidb_setup"
     log_dir: "{{ dir_path | default('./logs') }}"
     api_base_url: "http://localhost:8081"
-    infra_payload: "/home/himani/mdsvc-tidb/examples/create_infra.json"
-    vdev_payload: "/home/himani/mdsvc-tidb/examples/create_vdev.json"
+    infra_payload: "./examples/create_infra.json"
+    vdev_payload: "./examples/create_vdev.json"
     nisd_uuid: 7fb3c81f-a112-4531-b7fd-ff7bd9c8161b
 
   tasks:
@@ -25,45 +25,45 @@
         # 1. Create Infra
         # -----------------------------
 
-        - name: Create infra
-          set_fact:
-            infra_result: "{{ lookup('tidb_api',
-                'POST',
-                '/infra',
-                file=infra_payload,
-                base_url=api_base_url) }}"
+        # - name: Create infra
+        #   set_fact:
+        #     infra_result: "{{ lookup('tidb_api',
+        #         'POST',
+        #         '/infra',
+        #         file=infra_payload,
+        #         base_url=api_base_url) }}"
 
-        - name: Debug infra response
-          debug:
-            var: infra_result
+        # - name: Debug infra response
+        #   debug:
+        #     var: infra_result
 
         # -----------------------------
         # 2. Create VDEV
         # -----------------------------
         
-        - name: Create vdev
-          set_fact:
-            vdev_result: "{{ lookup('tidb_api',
-                'POST',
-                '/vdev',
-                file=vdev_payload,
-                base_url=api_base_url) }}"
+        # - name: Create vdev
+        #   set_fact:
+        #     vdev_result: "{{ lookup('tidb_api',
+        #         'POST',
+        #         '/vdev',
+        #         file=vdev_payload,
+        #         base_url=api_base_url) }}"
 
-        - name: Debug vdev result
-          debug:
-            msg: "{{ vdev_result }}"
+        # - name: Debug vdev result
+        #   debug:
+        #     msg: "{{ vdev_result }}"
 
-        - name: Extract vdev UUID
-          set_fact:
-            vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
+        # - name: Extract vdev UUID
+        #   set_fact:
+        #     vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
 
-        - name: Debug vdev UUID
-          debug:
-            msg: "Created VDEV UUID: {{ vdev_uuid }}"
+        # - name: Debug vdev UUID
+        #   debug:
+        #     msg: "Created VDEV UUID: {{ vdev_uuid }}"
 
         - name: "{{ recipe_name }}: create nisd device"
           vars:
-            img_dir: "/nvme0n1.device"
+            img_dir: "/nisd.device"
             bs: "64M"
             count: 160
           debug:
@@ -95,38 +95,38 @@
         #   pause:
         #     seconds: 25
 
-        - name: "{{ recipe_name }}: Start niova-block-test process."
-          vars:
-            input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ nisd_uuid }}',
-                 'vdev' : '{{ vdev_uuid }}',
-                 'rd_op_ratio': '100',
-                 'num_ops': '100',
-                 'random_seed_pt': '123',
-                 'request_size_in_bytes': '0',
-                 'integrity_check': 'False',
-                 'sequential_writes': 'False',
-                 'blocking_process': 'False'
-            }
-          set_fact:
-            nblock_wr: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
+        # - name: "{{ recipe_name }}: Start niova-block-test process."
+        #   vars:
+        #     input_param: {
+        #          'nisd_uuid_to_write' : 'unix:{{ nisd_uuid }}',
+        #          'vdev' : '{{ vdev_uuid }}',
+        #          'rd_op_ratio': '100',
+        #          'num_ops': '100',
+        #          'random_seed_pt': '123',
+        #          'request_size_in_bytes': '0',
+        #          'integrity_check': 'False',
+        #          'sequential_writes': 'False',
+        #          'blocking_process': 'False'
+        #     }
+        #   set_fact:
+        #     nblock_wr: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
 
-        - name: "{{ recipe_name }}: DEBUG niova-block-test result."
-          debug:
-            msg: "{{ nblock_wr }}"
+        # - name: "{{ recipe_name }}: DEBUG niova-block-test result."
+        #   debug:
+        #     msg: "{{ nblock_wr }}"
 
-        - name: Find nvme0n1.device file
-          find:
-            paths: /local/home/himani/test
-            patterns: "nvme0n1.device"
-            file_type: file
-            recurse: yes # To search in all subdirectories
-          register: found_file
+        # - name: Find nvme0n1.device file
+        #   find:
+        #     paths: /local/home/himani/test
+        #     patterns: "nvme0n1.device"
+        #     file_type: file
+        #     recurse: yes # To search in all subdirectories
+        #   register: found_file
 
-        - name: Delete nvme0n1.device file if it exists
-          file:
-            path: "{{ item.path }}"
-            state: absent
-          loop: "{{ found_file.files }}"
-          when: found_file.matched > 0s
+        # - name: Delete nvme0n1.device file if it exists
+        #   file:
+        #     path: "{{ item.path }}"
+        #     state: absent
+        #   loop: "{{ found_file.files }}"
+        #   when: found_file.matched > 0s
         
