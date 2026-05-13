@@ -302,8 +302,8 @@ def start_niova_block_ctl_process(cluster_params, nisd_uuid, input_values):
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']
 
-    genericcmdobj = GenericCmds()
-    nisd_uuid = genericcmdobj.generate_uuid()
+    # genericcmdobj = GenericCmds()
+    # nisd_uuid = genericcmdobj.generate_uuid()
 
     # Prepare path for log file.
     log_file = "%s/%s/niovablockctl_%s_log.txt" % (base_dir, raft_uuid, nisd_uuid)
