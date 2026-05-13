@@ -99,12 +99,11 @@
         - name: "{{ recipe_name }}: Start niova-block-test process."
           vars:
             input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ nisd }}',
                  'vdev' : '{{ vdev_uuid }}',
                  'read_operation_ratio_percentage': '100',
                  'num_ops': '100',
                  'random_seed': '123',
-                 'client_uuid' : "{{ nisd }}",
+                 'client_uuid' : "{{ vdev_uuid }}",
                  'request_size_in_bytes': '0',
                  'integrity_check': 'False',
                  'sequential_writes': 'False',
