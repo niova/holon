@@ -117,6 +117,7 @@ def perform_request(api_params):
     payload = api_params['payload']
     headers = api_params['headers']
     timeout = api_params['timeout']
+    params = api_params.get('params')
 
     try:
 
@@ -133,6 +134,7 @@ def perform_request(api_params):
 
             response = requests.get(
                 url,
+                params=params,
                 headers=headers,
                 timeout=timeout
             )
@@ -214,6 +216,104 @@ def extract_fields(response_data):
 
 def perform_api_operation(api_params):
 
+    method = api_params['method']
+    url = api_params['url']
+
+    if (
+        method == "GET" and
+        "/chunks" in url
+    ):
+
+        all_chunks = []
+        page_count = 0
+
+        original_params = api_params.get("params")
+
+        if original_params is None:
+            params = {}
+        else:
+            params = dict(original_params)
+
+        while True:
+
+            page_count += 1
+
+            request_params = dict(api_params)
+            request_params["params"] = params
+
+            response = perform_request(
+                request_params
+            )
+
+            response_data = parse_response(
+                response
+            )
+
+            write_log(
+                api_params['log_file'],
+                api_params['method'],
+                api_params['url'],
+                api_params['payload'],
+                response.status_code,
+                response_data
+            )
+
+            chunks = response_data.get(
+                "chunks",
+                []
+            )
+
+            all_chunks.extend(chunks)
+
+            has_more = response_data.get(
+                "has_more",
+                False
+            )
+
+            if not has_more:
+                break
+
+            next_start = response_data.get(
+                "next_start_chunk_idx"
+            )
+
+            if next_start is None:
+
+                raise AnsibleError(
+                    "Pagination error: "
+                    "has_more=true but "
+                    "next_start_chunk_idx missing"
+                )
+
+            params["start_chunk_idx"] = next_start
+
+        final_response = {
+            "success": True,
+            "vdev_id": response_data.get(
+                "vdev_id"
+            ),
+            "chunks": all_chunks,
+            "total_chunks_fetched": len(
+                all_chunks
+            ),
+            "expected_total_chunks": response_data.get(
+                "total_chunks"
+            ),
+            "pages_fetched": page_count,
+            "log_file": api_params['log_file']
+        }
+
+        extracted_fields = extract_fields(
+            response_data
+        )
+
+        if extracted_fields:
+            final_response.update(
+                extracted_fields
+            )
+
+        return final_response
+
     response = perform_request(api_params)
 
     response_data = parse_response(response)
@@ -288,6 +388,7 @@ class LookupModule(LookupBase):
             "method": method,
             "url": f"{base_url}{path}",
             "payload": payload,
+            "params": kwargs.get("params"),
             "headers": kwargs.get(
                 "headers",
                 {
