@@ -50,7 +50,6 @@ def set_nisd_environ_variables(minio_config_path):
     print("NIOVA_BLOCK_AWS_OPTS =", os.environ["NIOVA_BLOCK_AWS_OPTS"])
     print("NIOVA_BLOCK_AWS_AUTH =", os.environ["NIOVA_BLOCK_AWS_AUTH"])
 
-
 def run_nisd_command(cluster_params, input_values):
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']
@@ -118,10 +117,7 @@ def run_nisd_command(cluster_params, input_values):
     genericcmdobj.recipe_json_dump(recipe_conf)
 
     # Return the process to allow further handling if needed
-    return {
-        "pid": process.pid,
-        "cmd": command
-    }
+    return [process]
 
 def install_linux_modules():
     try:
@@ -145,7 +141,6 @@ def load_kernel_module(module_name):
         print(f"Failed to load module '{module_name}': {e}")
     except Exception as e:
         print(f"An error occurred: {e}")
-
 
 def replace_last_path_segment(path, old_segment, new_segment):
     # Split the path into head and tail
@@ -305,8 +300,8 @@ def start_niova_block_ctl_process(cluster_params, nisd_uuid, input_values):
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']
 
-    # genericcmdobj = GenericCmds()
-    # nisd_uuid = genericcmdobj.generate_uuid()
+    genericcmdobj = GenericCmds()
+    nisd_uuid = genericcmdobj.generate_uuid()
 
     # Prepare path for log file.
     log_file = "%s/%s/niovablockctl_%s_log.txt" % (base_dir, raft_uuid, nisd_uuid)
@@ -587,12 +582,6 @@ def start_niova_block_test(cluster_params, input_values):
     # Prepare path for executables.
     binary_dir = os.getenv('NIOVA_BIN_PATH')
 
-    os.environ['NIOVA_BLOCK_AUTH_ENABLED']=false 
-    os.environ['NIOVA_GOSSIP_PATH']=/home/runner/work/niova-block/niova-block/mdsvc-tidb/gossipNodes 
-    os.environ['NIOVA_GOSSIP_KEY']=dummy 
-    os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']=256 
-    os.environ['NIOVA_BLOCK_PROXY_TAG']=mdsvc-tidb 
-
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']
 
@@ -760,3 +749,4 @@ class LookupModule(LookupBase):
                     niova_block_test_process = start_niova_block_test(cluster_params, input_values)
 
                return [niova_block_test_process]
+
