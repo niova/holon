@@ -129,5 +129,5 @@
             path: "{{ item.path }}"
             state: absent
           loop: "{{ found_file.files }}"
-          when: found_file.matched > 0s
+          when: found_file.matched > 0
         
