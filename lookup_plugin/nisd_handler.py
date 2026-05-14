@@ -118,10 +118,7 @@ def run_nisd_command(cluster_params, input_values):
     genericcmdobj.recipe_json_dump(recipe_conf)
 
     # Return the process to allow further handling if needed
-    return {
-        "pid": process.pid,
-        "cmd": command
-    }
+    return [process]
 
 def install_linux_modules():
     try:
@@ -523,8 +520,8 @@ def start_niova_block_ctl_process(cluster_params, nisd_uuid, input_values):
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']
 
-    # genericcmdobj = GenericCmds()
-    # nisd_uuid = genericcmdobj.generate_uuid()
+    genericcmdobj = GenericCmds()
+    nisd_uuid = genericcmdobj.generate_uuid()
 
     # Prepare path for log file.
     log_file = "%s/%s/niovablockctl_%s_log.txt" % (base_dir, raft_uuid, nisd_uuid)
@@ -804,12 +801,6 @@ def start_niova_block_test_with_inputFile(cluster_params, input_values):
 def start_niova_block_test(cluster_params, input_values):
     # Prepare path for executables.
     binary_dir = os.getenv('NIOVA_BIN_PATH')
-
-    os.environ['NIOVA_BLOCK_AUTH_ENABLED']=false 
-    os.environ['NIOVA_GOSSIP_PATH']=/home/runner/work/niova-block/niova-block/mdsvc-tidb/gossipNodes 
-    os.environ['NIOVA_GOSSIP_KEY']=dummy 
-    os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']=256 
-    os.environ['NIOVA_BLOCK_PROXY_TAG']=mdsvc-tidb 
 
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']
