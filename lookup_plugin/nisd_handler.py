@@ -525,7 +525,10 @@ def start_niova_block_ctl_process(cluster_params, nisd_uuid, input_values):
 
     # Prepare path for log file.
     log_file = "%s/%s/niovablockctl_%s_log.txt" % (base_dir, raft_uuid, nisd_uuid)
-
+    os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
+    # os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
+    # os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
+    # os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
     # Initialize the logger
     logger = initialize_logger(log_file)
 
