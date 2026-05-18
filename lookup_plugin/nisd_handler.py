@@ -591,11 +591,11 @@ def start_niova_block_test(cluster_params, input_values):
     # os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
     # os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
     # os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
-    os.environ['NIOVA_BLOCK_AUTH_ENABLED']=false 
-    os.environ['NIOVA_GOSSIP_PATH']=/home/runner/work/niova-block/niova-block/mdsvc-tidb/gossipNodes 
-    os.environ['NIOVA_GOSSIP_KEY']=dummy 
-    os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']=256 
-    os.environ['NIOVA_BLOCK_PROXY_TAG']=mdsvc-tidb 
+    os.environ['NIOVA_BLOCK_AUTH_ENABLED']="false" 
+    os.environ['NIOVA_GOSSIP_PATH']="/home/runner/work/niova-block/niova-block/mdsvc-tidb/gossipNodes" 
+    os.environ['NIOVA_GOSSIP_KEY']="dummy" 
+    os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']="256" 
+    os.environ['NIOVA_BLOCK_PROXY_TAG']="mdsvc-tidb" 
 
     os.environ["NIOVA_LOG_LEVEL"] = "4"
 
