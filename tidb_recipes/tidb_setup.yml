@@ -96,7 +96,7 @@
             }
           debug:
             msg:
-              - "{{ lookup('nisd_handler', 'run_nisd', inpuut_param) }}"
+              - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
 
         - name: "{{ recipe_name }}: wait for 25 seconds"
           pause:
