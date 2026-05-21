@@ -8,7 +8,6 @@
     infra_payload: "./examples/create_infra.json"
     vdev_payload: "./examples/create_vdev.json"
     nisd: "7fb3c81f-a112-4531-b7fd-ff7bd9c8161b"
-    # vdev_uuid: "34b11429-4a48-48ce-bcf0-cfca77d8f1e7"
 
   tasks:
     - block:
