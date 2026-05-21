@@ -122,6 +122,11 @@
           debug:
             msg: "{{ nblock_wr }}"
 
+        - name: Validate niova-block-test return code
+          debug:
+            msg: "Process failed with return code {{ nblock_wr }}"
+          failed_when: nblock_wr | int != 0
+
         - name: Find sample.device file
           find:
             paths: /home/runner/work/niovad/niovad/holon_log
