@@ -89,7 +89,7 @@
           vars:
             input_param: {
               'nisd_device_path': '{{ nisd_dev_path.msg[0] }}',
-              'nisd_uuid': '{{ nisd_uuid }}',
+              'nisd_uuid': '{{ nisd }}',
               'peer_port': '13000',
               'client_port': '13001',
               'enable_auth': 1,
