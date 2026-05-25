@@ -37,30 +37,6 @@
           debug:
             var: infra_result
 
-        # -----------------------------
-        # 2. Create VDEV
-        # -----------------------------
-        
-        - name: Create vdev
-          set_fact:
-            vdev_result: "{{ lookup('tidb_api',
-                'POST',
-                '/vdev',
-                file=vdev_payload,
-                base_url=api_base_url) }}"
-
-        - name: Debug vdev result
-          debug:
-            msg: "{{ vdev_result }}"
-
-        - name: Extract vdev UUID
-          set_fact:
-            vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
-
-        - name: Debug vdev UUID
-          debug:
-            msg: "Created VDEV UUID: {{ vdev_uuid }}"
-
         - name: "{{ recipe_name }}: create nisd device"
           vars:
             img_dir: "/sample.device"
@@ -97,7 +73,31 @@
             msg:
               - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
 
-        - name: "{{ recipe_name }}: wait for 25 seconds"
+        # -----------------------------
+        # 2. Create VDEV
+        # -----------------------------
+        
+        - name: Create vdev
+          set_fact:
+            vdev_result: "{{ lookup('tidb_api',
+                'POST',
+                '/vdev',
+                file=vdev_payload,
+                base_url=api_base_url) }}"
+
+        - name: Debug vdev result
+          debug:
+            msg: "{{ vdev_result }}"
+
+        - name: Extract vdev UUID
+          set_fact:
+            vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
+
+        - name: Debug vdev UUID
+          debug:
+            msg: "Created VDEV UUID: {{ vdev_uuid }}"
+
+        - name: "{{ recipe_name }}: wait for 20 seconds"
           pause:
             seconds: 25
 
