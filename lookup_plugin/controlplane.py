@@ -22,7 +22,7 @@ def start_ncpc(cluster_params, Key, Value, Operation,
 
     # Prepare path for executables.
     binary_dir = os.getenv('NIOVA_BIN_PATH')
-    bin_path = '%s/ncpc' % binary_dir
+    bin_path = '%s/libexec/niova/ncpc' % binary_dir
 
     # Prepare path for log file.
     log_file = "%s/%s/%s_ncpc_log.txt" % (base_dir, raft_uuid, app_name)
@@ -228,7 +228,7 @@ def start_niova_lookout_process(cluster_params, uport):
     gossipNodes = "%s/%s/gossipNodes" % (base_dir, raft_uuid)
     
     #start niova block test process
-    bin_path = '%s/nisdLookout' % binary_dir
+    bin_path = '%s/libexec/niova/nisdLookout' % binary_dir
 
       #writing the information of lookout uuids dict into raft_uuid.json
     recipe_conf = load_recipe_op_config(cluster_params)
@@ -303,7 +303,7 @@ def start_testApp(cluster_params, input_values):
 
     #Prepare path for executables.
     binary_dir = os.getenv('NIOVA_BIN_PATH')
-    bin_path = '%s/testApp' % binary_dir
+    bin_path = '%s/libexec/niova/testApp' % binary_dir
     start_range = port
     end_range = port+50
     Port_range = str(start_range)+"-"+str(end_range)
@@ -329,7 +329,7 @@ def lease(cluster_params, Key, Value, Operation, OutfileName, Port):
 
     # Prepare path for executables.
     binary_dir = os.getenv('NIOVA_BIN_PATH')
-    bin_path = '%s/ncpc' % binary_dir
+    bin_path = '%s/libexec/niova/ncpc' % binary_dir
 
     # Prepare path for log file.
     log_file = "%s/%s/%s_ncpc_lease_log.txt" % (base_dir, raft_uuid, app_name)

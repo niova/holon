@@ -55,7 +55,7 @@ def run_nisd_command(cluster_params, input_values):
     raft_uuid = cluster_params['raft_uuid']
 
     binary_dir = os.getenv('NIOVA_BIN_PATH')
-    bin_path = '/%s/nisd' % binary_dir
+    bin_path = '/%s/bin/nisd' % binary_dir
     app_name = cluster_params['app_type']
 
     base_path = "%s/%s/" % (base_dir, raft_uuid)
@@ -160,7 +160,7 @@ def run_niova_ublk(cluster_params, cntl_uuid):
     binary_dir = os.getenv('NIOVA_BIN_PATH')
     
     #format and run the niova-block-ctl
-    bin_path = '%s/niova-ublk' % binary_dir
+    bin_path = '%s/bin/niova-ublk' % binary_dir
     bin_path = os.path.normpath(bin_path)
     app_name = cluster_params['app_type']
     base_path = "%s/%s" % (base_dir, raft_uuid)
@@ -251,7 +251,7 @@ def run_niova_block_ctl(cluster_params, input_value):
 
     #format and run the niova-block-ctl
     # TODO check how the bin can be passed
-    bin_path = '%s/niova-block-ctl' % binary_dir
+    bin_path = '%s/bin/niova-block-ctl' % binary_dir
 
     # nisd_dict = { nisd_uuid : 0 }
 
@@ -315,7 +315,7 @@ def start_niova_block_ctl_process(cluster_params, nisd_uuid, input_values):
     binary_dir = os.getenv('NIOVA_BIN_PATH')
 
     #format and run the niova-block-ctl
-    bin_path = '%s/niova-block-ctl' % binary_dir
+    bin_path = '%s/bin/niova-block-ctl' % binary_dir
 
     nisd_dict = { nisd_uuid : 0 }
 
@@ -394,7 +394,7 @@ def start_nisd_process(cluster_params, input_values, nisdPath):
     fp.write("nisd-uuid: "+nisd_uuid+"\n")
 
     #start nisd process
-    bin_path = '%s/nisd' % binary_dir
+    bin_path = '%s/bin/nisd' % binary_dir
     process_popen = subprocess.Popen([bin_path, '-u', nisd_uuid, '-d', nisdPath],
                                       stdout = fp, stderr = fp)
 
@@ -530,7 +530,7 @@ def start_niova_block_test_with_inputFile(cluster_params, input_values):
         fp = open(log_path, "a+")
 
         #start niova block test process
-        bin_path = '%s/niova-block-test' % binary_dir
+        bin_path = '%s/bin/niova-block-test' % binary_dir
 
         logger.debug("Do write/read operation on nisd by starting niova-block-test")
         logger.debug("nisd-uuid: %s", nisd_uuid_to_write[5:])
@@ -615,7 +615,7 @@ def start_niova_block_test(cluster_params, input_values):
     fp = open(log_path, "a+")
 
     #start niova block test process
-    bin_path = '%s/niova-block-test' % binary_dir
+    bin_path = '%s/bin/niova-block-test' % binary_dir
 
     logger.debug("Do write/read operation on nisd by starting niova-block-test in controlplane mode")
     # logger.debug("nisd-uuid: %s", nisd_uuid_to_write[5:])
