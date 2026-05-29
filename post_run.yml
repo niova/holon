@@ -36,15 +36,24 @@
       set_fact:
         jsondata: "{{ result.stdout | from_json | default({}) }}"
 
-    - name: Find s3DV_nisd.device file
+    - name: "{{ recipe_name }}: Get HOLON_LOG_PATH from environment"
+      set_fact:
+        holon_log_path: "{{ lookup('env', 'HOLON_LOG_PATH') }}"
+
+    - name: "{{ recipe_name }}: Validate HOLON_LOG_PATH is set"
+      fail:
+        msg: "HOLON_LOG_PATH is not set. Cannot clean .device files."
+      when: holon_log_path | length == 0
+
+    - name: Find device file
       find:
-        paths: /home/runner/work/niovad/niovad/holon_log
-        patterns: "s3DV_nisd.device"
+        paths: "{{ holon_log_path }}"
+        patterns: "*.device"
         file_type: file
         recurse: yes # To search in all subdirectories
       register: found_file
 
-    - name: Delete s3DV_nisd.device file if it exists
+    - name: Delete device file if it exists
       file:
         path: "{{ item.path }}"
         state: absent
@@ -123,7 +132,7 @@
 
     - name: Find directories to delete
       find:
-        paths: /home/runner/work/niovad/niovad/holon_log
+        paths: "{{ holon_log_path }}"
         patterns: "dbi-dbo,gc-downloaded-obj,dv-downloaded-obj"
         file_type: directory
         recurse: yes # To search in all subdirectories
@@ -141,7 +150,7 @@
 
     - name: Find s3DV_nisd.device file
       find:
-        paths: /home/runner/work/niovad/niovad/holon_log
+        paths: "{{ holon_log_path }}"
         patterns: "s3DV_nisd.device"
         file_type: file
         recurse: yes # To search in all subdirectories
@@ -154,14 +163,18 @@
       loop: "{{ found_file.files }}"
       when: found_file.matched > 0
 
+    - name: "{{ recipe_name }}: Get NIOVA_BIN_PATH from environment"
+      set_fact:
+        niova_bin_path: "{{ lookup('env', 'NIOVA_BIN_PATH') }}"
+
     - name: Check if minio data directory exists
       stat:
-        path: /home/runner/work/niovad/niovad/build_dir/minio_data/paroscale-test
+        path: "{{ niova_bin_path }}/minio_data/paroscale-test"
       register: directory_stat
 
     - name: Delete minio data directory if it exists
       file:
-        path: /home/runner/work/niovad/niovad/build_dir/minio_data/paroscale-test
+        path: "{{ niova_bin_path }}/minio_data/paroscale-test"
         state: absent
         force: yes
       #ignore_errors: yes
