@@ -53,9 +53,9 @@ class LookupModule(LookupBase):
         #Prepare path for executables.
         binary_dir = os.getenv('NIOVA_BIN_PATH')
         if app_name == "covid":
-            bin_path = '%s/covid_app_client' % binary_dir
+            bin_path = '%s/libexec/niova/covid_app_client' % binary_dir
         else:
-            bin_path = '%s/foodpalaceappclient' % binary_dir
+            bin_path = '%s/libexec/niova/foodpalaceappclient' % binary_dir
 
         ctlsvc_path = "%s/configs" % base_dir
 

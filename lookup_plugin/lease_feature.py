@@ -64,7 +64,7 @@ def lease_operation(cluster_params, operation, client, resource, numOfLeases, ge
     # Open the log file to pass the fp to subprocess.Popen
     fp = open(leaseLogFile, "a+")
     #start leaseApp process
-    bin_path = '%s/leaseClient' % binary_dir
+    bin_path = '%s/libexec/niova/leaseClient' % binary_dir
 
     #uuid is added at end to generate unique json file.
     outfilePath = "%s/%s/%s_%s" % (base_dir, raft_uuid, outFileName, uuid.uuid1())

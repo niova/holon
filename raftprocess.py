@@ -42,44 +42,44 @@ def get_executable_path(process_type, app_type, backend_type, binary_dir):
     # Add complete path to app/pumice/raft executable to bin_path
     if app_type == "foodpalace":
         if process_type == "server":
-            bin_path = "{}/foodpalaceappserver".format(binary_dir)
+            bin_path = "{}/libexec/niova/foodpalaceappserver".format(binary_dir)
         else:
-            bin_path = "{}/foodpalaceappclient".format(binary_dir)
+            bin_path = "{}/libexec/niova/foodpalaceappclient".format(binary_dir)
 
     elif app_type == "covid":
         if process_type == "server":
-            bin_path = "{}/covid_app_server".format(binary_dir)
+            bin_path = "{}/libexec/niova/covid_app_server".format(binary_dir)
         else:
-            bin_path = "{}/covid_app_client".format(binary_dir)
+            bin_path = "{}/libexec/niova/covid_app_client".format(binary_dir)
 
     elif app_type == "niovakv":
         if process_type == "server":
-            bin_path = "{}/NKV_pmdbServer".format(binary_dir)
+            bin_path = "{}/libexec/niova/NKV_pmdbServer".format(binary_dir)
         else:
-            bin_path = "{}/NKV_proxy".format(binary_dir)
+            bin_path = "{}/libexec/niova/NKV_proxy".format(binary_dir)
 
     elif app_type == "controlplane":
         if process_type == "server":
-            bin_path = "{}/CTLPlane_pmdbServer".format(binary_dir)
+            bin_path = "{}/libexec/niova/CTLPlane_pmdbServer".format(binary_dir)
         else:
-            bin_path = "{}/CTLPlane_proxy".format(binary_dir)
+            bin_path = "{}/libexec/niova/CTLPlane_proxy".format(binary_dir)
 
     elif app_type == "lease":
-            bin_path = "{}/LeaseApp_pmdbServer".format(binary_dir)
+            bin_path = "{}/libexec/niova/LeaseApp_pmdbServer".format(binary_dir)
 
     elif app_type == "pumicedb":
         if backend_type == "pumicedb":
             if process_type == "server":
-                bin_path = str(binary_dir)+"/pumice-reference-server"
+                bin_path = str(binary_dir)+"/libexec/niova/pumice-reference-server"
             else:
-                bin_path = "{}/pumice-reference-client".format(binary_dir)
+                bin_path = "{}/libexec/niova/pumice-reference-client".format(binary_dir)
            
 
     elif app_type == "raft":
         if process_type == "server":
-            bin_path = "{}/raft-reference-server".format(binary_dir)
+            bin_path = "{}/libexec/niova/raft-reference-server".format(binary_dir)
         else:
-            bin_path = "{}/raft-reference-client".format(binary_dir)
+            bin_path = "{}/libexec/niova/raft-reference-client".format(binary_dir)
 
     else:
         logging.error("Invalid app type %s " % app_type)

@@ -16,7 +16,7 @@ def start_niovakv_subprocess(cluster_params, Operation, Key, Value, OutfileName,
 
     # Prepare path for executables.
     binary_dir = os.getenv('NIOVA_BIN_PATH')
-    bin_path = '%s/nkvc' % binary_dir
+    bin_path = '%s/libexec/niova/nkvc' % binary_dir
 
     # Prepare path for log file.
     log_file = "%s/%s/%s_log.txt" % (base_dir, raft_uuid, app_name)
@@ -85,7 +85,7 @@ def start_lkvt_subprocess(cluster_params, database_type, size_of_key,
 
     # Prepare path for executables.
     binary_dir = os.getenv('NIOVA_BIN_PATH')
-    bin_path = '%s/lkvt' % binary_dir
+    bin_path = '%s/libexec/niova/lkvt' % binary_dir
 
     # Prepare path for log file.
     log_file = "%s/%s/%s_LKVT_log.txt" % (base_dir, raft_uuid, app_name)
