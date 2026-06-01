@@ -395,6 +395,14 @@ def start_nisd_process(cluster_params, input_values, nisdPath):
 
     #start nisd process
     bin_path = '%s/bin/nisd' % binary_dir
+
+    short_sock_dir = "/tmp/.niova"
+    os.makedirs(short_sock_dir, exist_ok=True)
+
+    os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"{short_sock_dir}/{nisd_uuid}"
+    os.environ["NIOVA_INOTIFY_BASE_PATH"] = short_sock_dir
+    os.environ["NIOVA_LOCAL_CTL_SVC_DIR"] = short_sock_dir
+
     process_popen = subprocess.Popen([bin_path, '-u', nisd_uuid, '-d', nisdPath],
                                       stdout = fp, stderr = fp)
 
