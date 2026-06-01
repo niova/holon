@@ -61,14 +61,14 @@
              'alt_name': 'nisd{{item}}'
               }
        set_fact:
-         get_nisd: "{{ lookup('nisd_handler', 'niova-block-ctl', input_param) }}"
+         get_nisd: "{{ get_nisd | default([]) + [lookup('nisd_handler', 'niova-block-ctl', input_param)] }}"
        loop: "{{ range(0, nnisds | int) }}"
        no_log: false
 
      - name: "{{ recipe_name }}: Start nisd process."
        vars:
           input_param: {
-              'nisd_uuid' : '{{ get_nisd }}',
+              'nisd_uuid' : '{{ get_nisd[0] }}',
               'lookout_uuid': '{{ get_lookout[0] }}'
               }
        debug:
@@ -85,7 +85,7 @@
        debug:
          msg: 
           - "Waiting for nisd to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "running"
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[0], '/nisd_root_entry/0/status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "running"
        retries: 60
        delay: 1
 
@@ -95,7 +95,7 @@
          cmd: "master_log_level@debug"
          where: "/log_subsystem/master_log_level@warn"
          lookout_uuid: "{{ get_lookout[0] }}"
-         debug_on: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd, cmd, where, 'nisd', lookout_uuid) }}"
+         debug_on: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[0], cmd, where, 'nisd', lookout_uuid) }}"
        debug:
          msg: "{{ debug_on }}"
 
@@ -103,7 +103,7 @@
        vars:
          stage: "get_nisd_root_entry"
          lookout_uuid: "{{ get_lookout[0] }}"
-         nisdRootEntryVal: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_root_keys, 'nisd', lookout_uuid) }}"
+         nisdRootEntryVal: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[0], nisd_root_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Get nisd root entry values"
        with_items:
@@ -132,7 +132,7 @@
          verifyNisd: "{{ getNisdVal['results'][0]['item'] }}"
        debug:
          msg: "verify nisd root entry values: {{ verifyNisd }}"
-       no_log: True
+       no_log: false
        failed_when: >
          (verifyNisd['/0/uuid'] != get_nisd) or
          (verifyNisd['/0/status'] != "running")
