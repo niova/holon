@@ -14,7 +14,7 @@ Send the ctlrequest cmd to the peer.
 This will create the ctlrequest python object to apply
 the cmd on the given peer-uuid.
 '''
-def niova_ctlreq_cmd_send(recipe_conf, ctlreq_dict, peer_uuid, get_process_type, lookout_uuid, nisd_uuid=None):
+def niova_ctlreq_cmd_send(recipe_conf, ctlreq_dict, peer_uuid, get_process_type, lookout_uuid):
     wait_for_ofile = True
     copy_to = "input"
     operation = ctlreq_dict['operation']
@@ -31,7 +31,7 @@ def niova_ctlreq_cmd_send(recipe_conf, ctlreq_dict, peer_uuid, get_process_type,
     app_uuid = genericcmdobj.generate_uuid()
 
     if get_process_type == "nisd":
-        base_dir = f"/tmp/.niova/{nisd_uuid}"
+        base_dir = f"/tmp/.niova/"
 
     inotifyobj = InotifyPath(base_dir, True, get_process_type, lookout_uuid)
 
@@ -84,7 +84,6 @@ def niova_ctlreq_cmd_send(recipe_conf, ctlreq_dict, peer_uuid, get_process_type,
     genericcmdobj.recipe_json_dump(recipe_conf)
     return ctlreqobj.__dict__
 
-
 '''
 Lookup the raft key(s) in the output JSON file and return
 the values in the dictionary format for recipes to read it.
@@ -114,13 +113,12 @@ def niova_raft_lookup_values(ctlreq_dict, raft_key_list):
 
     return raft_values_dict
 
-
 '''
 Lookup the raft keys for the given peer, first by sending
 the ctlrequest to the peer and then reading the values
 from the output JSON file.
 '''
-def niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid, nisd_uuid=None):
+def niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid):
     raft_keys = ctlreq_cmd_dict['lookup_key']
     if isinstance(raft_keys, list):
         ctlreq_cmd_dict['cmd'] = "/.*/.*/.*/.*"
@@ -136,7 +134,7 @@ def niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess
     '''
     Send the ctlrequest cmd to get the values of the raft keys.
     '''
-    ctlreq_obj_dict = niova_ctlreq_cmd_send(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid, nisd_uuid)
+    ctlreq_obj_dict = niova_ctlreq_cmd_send(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid)
 
     '''
     If lookup was called with wait_for_ofile = False, the recipe is not
@@ -169,7 +167,6 @@ def niova_get_recipe_json_data(cluster_params):
 
     return recipe_conf
 
-
 '''
 Initialize the logger for ctlrequest cmd.
 '''
@@ -179,7 +176,6 @@ def niova_ctlrequest_init_logger(cluster_params):
     log_path = "%s/%s/%s.log" % (cluster_params['base_dir'], cluster_params['raft_uuid'], cluster_params['raft_uuid'])
 	# Initialize logger
     logging.basicConfig(filename=log_path, filemode='a', level=logging.DEBUG, format='%(asctime)s [%(filename)s:%(lineno)d] %(message)s')
-
 
 '''
 Prepare ctlrequest cmd parameter dictionary with passed parameters
@@ -202,7 +198,6 @@ def niova_ctlrequest_get_cmdline_input_dict(global_args, local_args):
         ctlreq_cmd_dict['peer_uuid_list'] = [local_args[1]]
     else:
         ctlreq_cmd_dict['peer_uuid_list'] = local_args[1]
-
 
 	# Now get the parameters specific to the operation.
     if ctlreq_cmd_dict['operation'] == "apply_cmd":
@@ -279,7 +274,6 @@ class LookupModule(LookupBase):
 
             elif ctlreq_cmd_dict['operation'] == "lookup":
                 if getProcess_type == "nisd":
-                    nisd_uuid = terms[1]
                     lookout_uuid = terms[4]
                 else:
                      lookout_uuid = ""
@@ -310,7 +304,7 @@ class LookupModule(LookupBase):
 
                 for i in range(iter_cnt):
                     logging.warning("Sending lookup for itr: %d" % i)
-                    values = niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid, nisd_uuid)
+                    values = niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid)
                     time.sleep(sleep_sec)
                     result.append(values)
 
