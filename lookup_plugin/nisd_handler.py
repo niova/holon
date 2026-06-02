@@ -346,7 +346,7 @@ def start_niova_block_ctl_process(cluster_params, nisd_uuid, input_values):
     # Start niova-block-ctl process
     test_device_path = create_nisd_device_and_uuid(nisd_uuid, input_values['nisd_dev_size'])
 
-    process_popen = subprocess.Popen([bin_path, '-n', input_values['alt_name'], '-d', nisdPath, '-i', '-u', nisd_uuid,
+    process_popen = subprocess.Popen(['sudo', bin_path, '-n', input_values['alt_name'], '-d', nisdPath, '-i', '-u', nisd_uuid,
                                        '-z', input_values['nisd_dev_size']], stdout = fp, stderr = fp)
 
     logger.info("niova-block-ctl args: %s", process_popen.args)
@@ -403,7 +403,7 @@ def start_nisd_process(cluster_params, input_values, nisdPath):
     os.environ["NIOVA_INOTIFY_BASE_PATH"] = short_sock_dir
     os.environ["NIOVA_LOCAL_CTL_SVC_DIR"] = short_sock_dir
 
-    process_popen = subprocess.Popen([bin_path, '-u', nisd_uuid, '-d', nisdPath],
+    process_popen = subprocess.Popen(['sudo', bin_path, '-u', nisd_uuid, '-d', nisdPath],
                                       stdout = fp, stderr = fp)
 
     fp.write("nisd args: "+str(process_popen.args)+"\n")
