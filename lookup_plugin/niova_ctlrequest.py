@@ -14,7 +14,7 @@ Send the ctlrequest cmd to the peer.
 This will create the ctlrequest python object to apply
 the cmd on the given peer-uuid.
 '''
-def niova_ctlreq_cmd_send(recipe_conf, ctlreq_dict, peer_uuid, get_process_type, lookout_uuid):
+def niova_ctlreq_cmd_send(recipe_conf, ctlreq_dict, peer_uuid, get_process_type, lookout_uuid, nisd_uuid=None):
     wait_for_ofile = True
     copy_to = "input"
     operation = ctlreq_dict['operation']
@@ -29,6 +29,10 @@ def niova_ctlreq_cmd_send(recipe_conf, ctlreq_dict, peer_uuid, get_process_type,
     base_dir =  recipe_conf['raft_config']['base_dir_path']
     genericcmdobj = GenericCmds()
     app_uuid = genericcmdobj.generate_uuid()
+
+    if get_process_type == "nisd":
+        base_dir = f"/tmp/.niova/{nisd_uuid}"
+
     inotifyobj = InotifyPath(base_dir, True, get_process_type, lookout_uuid)
 
     # For idle_on cmd , input_base would be PRIVATE_INIT.
@@ -116,7 +120,7 @@ Lookup the raft keys for the given peer, first by sending
 the ctlrequest to the peer and then reading the values
 from the output JSON file.
 '''
-def niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid):
+def niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid, nisd_uuid=None):
     raft_keys = ctlreq_cmd_dict['lookup_key']
     if isinstance(raft_keys, list):
         ctlreq_cmd_dict['cmd'] = "/.*/.*/.*/.*"
@@ -132,7 +136,7 @@ def niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess
     '''
     Send the ctlrequest cmd to get the values of the raft keys.
     '''
-    ctlreq_obj_dict = niova_ctlreq_cmd_send(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid)
+    ctlreq_obj_dict = niova_ctlreq_cmd_send(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid, nisd_uuid)
 
     '''
     If lookup was called with wait_for_ofile = False, the recipe is not
@@ -275,6 +279,7 @@ class LookupModule(LookupBase):
 
             elif ctlreq_cmd_dict['operation'] == "lookup":
                 if getProcess_type == "nisd":
+                    nisd_uuid = terms[1]
                     lookout_uuid = terms[4]
                 else:
                      lookout_uuid = ""
@@ -305,7 +310,7 @@ class LookupModule(LookupBase):
 
                 for i in range(iter_cnt):
                     logging.warning("Sending lookup for itr: %d" % i)
-                    values = niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid)
+                    values = niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid, nisd_uuid)
                     time.sleep(sleep_sec)
                     result.append(values)
 
