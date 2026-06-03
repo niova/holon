@@ -177,10 +177,12 @@
                  'auth_secret': '{{ user1_secret }}',
                  'nisd_uuid_to_write' : 'unix:{{ nisd_uuid }}',
                  'vdev' : '{{ vdev_id }}',
+                 'client_uuid': '{{ vdev_id }}',
                  'rd_op_ratio': '100',
                  'num_ops': '100',
                  'random_seed_pt': '123',
                  'request_size_in_bytes': '0',
+                 'queue_depth' : '0',
                  'integrity_check': 'False',
                  'sequential_writes': 'False',
                  'blocking_process': 'False'
