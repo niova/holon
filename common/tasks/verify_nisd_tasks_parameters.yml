@@ -11,15 +11,18 @@
       no_log: True
 
     - name: "{{ recipe_name }}: Gather 'tasks' items in the list."
-      vars:
-        running: "{{ item['running'] }}"
-        wait_co_buf: "{{ item['wait-co-buf'] }}"
-        wait_bulk_buf: "{{ item['wait-bulk-buf'] }}"
-        wait_io: "{{ item['wait-io'] }}"
-        wait_other: "{{ item['wait-other'] }}"
-        TasksList: []
       set_fact:
-         TasksList: "{{ TasksList + [running] + [wait_co_buf] + [wait_bulk_buf] + [wait_io] + [wait_other] }}"
+        TasksList: >-
+          {{
+            (TasksList | default([]))
+            + [
+              item['running'] | string,
+              item['wait']['co-buf'] | string,
+              item['wait']['bulk-buf'] | string,
+              item['wait']['io'] | string,
+              item['wait']['other'] | string
+            ]
+          }}
       loop: "{{ GetTasksList['//tasks'] }}"
       no_log: True
 
@@ -28,5 +31,6 @@
         msg: "Ensure 'tasks' items are Idle."
       failed_when: item != "0"
       loop: "{{ TasksList }}"
+      no_log: True
 
 
