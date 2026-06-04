@@ -173,6 +173,7 @@
         - name: "{{ recipe_name }}: Start niova-block-test process."
           vars:
             input_param: {
+                 'enable_auth': 1,
                  'auth_username': '{{ user1_name }}',
                  'auth_secret': '{{ user1_secret }}',
                  'nisd_uuid_to_write' : 'unix:{{ nisd_uuid }}',
