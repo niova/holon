@@ -4,6 +4,7 @@ from raftconfig import RaftConfig
 import shutil, os
 from genericcmd import GenericCmds
 from func_timeout import func_timeout, FunctionTimedOut
+from constants import NIOVA_LIBEXEC_DIR
 
 def check_for_process_status(pid, process_status):
     '''
@@ -42,44 +43,44 @@ def get_executable_path(process_type, app_type, backend_type, binary_dir):
     # Add complete path to app/pumice/raft executable to bin_path
     if app_type == "foodpalace":
         if process_type == "server":
-            bin_path = "{}/libexec/niova/foodpalaceappserver".format(binary_dir)
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "foodpalaceappserver")
         else:
-            bin_path = "{}/libexec/niova/foodpalaceappclient".format(binary_dir)
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "foodpalaceappclient")
 
     elif app_type == "covid":
         if process_type == "server":
-            bin_path = "{}/libexec/niova/covid_app_server".format(binary_dir)
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "covid_app_server")
         else:
-            bin_path = "{}/libexec/niova/covid_app_client".format(binary_dir)
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "covid_app_client")
 
     elif app_type == "niovakv":
         if process_type == "server":
-            bin_path = "{}/libexec/niova/NKV_pmdbServer".format(binary_dir)
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "NKV_pmdbServer")
         else:
-            bin_path = "{}/libexec/niova/NKV_proxy".format(binary_dir)
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "NKV_proxy")
 
     elif app_type == "controlplane":
         if process_type == "server":
-            bin_path = "{}/libexec/niova/CTLPlane_pmdbServer".format(binary_dir)
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "CTLPlane_pmdbServer")
         else:
-            bin_path = "{}/libexec/niova/CTLPlane_proxy".format(binary_dir)
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "CTLPlane_proxy")
 
     elif app_type == "lease":
-            bin_path = "{}/libexec/niova/LeaseApp_pmdbServer".format(binary_dir)
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "LeaseApp_pmdbServer")
 
     elif app_type == "pumicedb":
         if backend_type == "pumicedb":
             if process_type == "server":
-                bin_path = str(binary_dir)+"/libexec/niova/pumice-reference-server"
+                bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "pumice-reference-server")
             else:
-                bin_path = "{}/libexec/niova/pumice-reference-client".format(binary_dir)
+                bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "pumice-reference-client")
            
 
     elif app_type == "raft":
         if process_type == "server":
-            bin_path = "{}/libexec/niova/raft-reference-server".format(binary_dir)
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "raft-reference-server")
         else:
-            bin_path = "{}/libexec/niova/raft-reference-client".format(binary_dir)
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "raft-reference-client")
 
     else:
         logging.error("Invalid app type %s " % app_type)

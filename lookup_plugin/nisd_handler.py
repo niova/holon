@@ -11,6 +11,7 @@ from genericcmd import *
 from func_timeout import func_timeout, FunctionTimedOut
 import time as time_global
 import logging
+from constants import NIOVA_BIN_DIR
 
 def initialize_logger(log_file):
 
@@ -55,7 +56,7 @@ def run_nisd_command(cluster_params, input_values):
     raft_uuid = cluster_params['raft_uuid']
 
     binary_dir = os.getenv('NIOVA_BIN_PATH')
-    bin_path = '/%s/bin/nisd' % binary_dir
+    bin_path = os.path.join(binary_dir, NIOVA_BIN_DIR, "nisd")
     app_name = cluster_params['app_type']
 
     base_path = "%s/%s/" % (base_dir, raft_uuid)
@@ -160,7 +161,7 @@ def run_niova_ublk(cluster_params, cntl_uuid):
     binary_dir = os.getenv('NIOVA_BIN_PATH')
     
     #format and run the niova-block-ctl
-    bin_path = '%s/bin/niova-ublk' % binary_dir
+    bin_path = os.path.join(binary_dir, NIOVA_BIN_DIR, "niova-ublk")
     bin_path = os.path.normpath(bin_path)
     app_name = cluster_params['app_type']
     base_path = "%s/%s" % (base_dir, raft_uuid)
@@ -251,7 +252,7 @@ def run_niova_block_ctl(cluster_params, input_value):
 
     #format and run the niova-block-ctl
     # TODO check how the bin can be passed
-    bin_path = '%s/bin/niova-block-ctl' % binary_dir
+    bin_path = os.path.join(binary_dir, NIOVA_BIN_DIR, "niova-block-ctl")
 
     # nisd_dict = { nisd_uuid : 0 }
 
@@ -315,7 +316,7 @@ def start_niova_block_ctl_process(cluster_params, nisd_uuid, input_values):
     binary_dir = os.getenv('NIOVA_BIN_PATH')
 
     #format and run the niova-block-ctl
-    bin_path = '%s/bin/niova-block-ctl' % binary_dir
+    bin_path = os.path.join(binary_dir, NIOVA_BIN_DIR, "niova-block-ctl")
 
     nisd_dict = { nisd_uuid : 0 }
 
@@ -394,7 +395,7 @@ def start_nisd_process(cluster_params, input_values, nisdPath):
     fp.write("nisd-uuid: "+nisd_uuid+"\n")
 
     #start nisd process
-    bin_path = '%s/bin/nisd' % binary_dir
+    bin_path = os.path.join(binary_dir, NIOVA_BIN_DIR, "nisd")
 
     short_sock_dir = "/tmp/.niova"
     os.makedirs(short_sock_dir, exist_ok=True)
@@ -538,7 +539,7 @@ def start_niova_block_test_with_inputFile(cluster_params, input_values):
         fp = open(log_path, "a+")
 
         #start niova block test process
-        bin_path = '%s/bin/niova-block-test' % binary_dir
+        bin_path = os.path.join(binary_dir, NIOVA_BIN_DIR, "niova-block-test")
 
         logger.debug("Do write/read operation on nisd by starting niova-block-test")
         logger.debug("nisd-uuid: %s", nisd_uuid_to_write[5:])
@@ -600,8 +601,6 @@ def start_niova_block_test(cluster_params, input_values):
     if enable_authentication == 1:
         os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
         os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
-        
-    os.environ["NIOVA_LOG_LEVEL"] = "4"
 
     #get input parameters
     nisd_uuid_to_write = input_values['nisd_uuid_to_write']
@@ -630,7 +629,7 @@ def start_niova_block_test(cluster_params, input_values):
     fp = open(log_path, "a+")
 
     #start niova block test process
-    bin_path = '%s/bin/niova-block-test' % binary_dir
+    bin_path = os.path.join(binary_dir, NIOVA_BIN_DIR, "niova-block-test")
 
     logger.debug("Do write/read operation on nisd by starting niova-block-test in controlplane mode")
     logger.debug("nisd-uuid: %s", nisd_uuid_to_write)
