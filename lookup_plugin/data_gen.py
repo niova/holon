@@ -3,7 +3,6 @@ import os, random
 import subprocess
 from multiprocessing import Pool
 from lookup_plugin.helper import *
-from constants import NIOVA_LIBEXEC_DIR
 
 class data_generator:
     def __init__(self, cluster_params):
@@ -108,7 +107,7 @@ class data_generator:
         Returns:
             str: returns the chunk identifier if random data generation is enabled.
         """
-        bin_path = os.path.join(self.bin_dir, NIOVA_LIBEXEC_DIR, "dummyData")
+        bin_path = f'{self.bin_dir}/dummyData'
         s3_config = f'{self.bin_dir}/s3.config.example'
         path = f"{self.base_path}/{DBI_DIR}"
 
@@ -177,7 +176,7 @@ class data_validator:
         Raises:
             RuntimeError: If the validation process fails (non-zero exit code).
         """
-        bin_path = os.path.join(self.bin_dir, NIOVA_LIBEXEC_DIR, "dataValidator")
+        bin_path = f'{self.bin_dir}/dataValidator'
         dbi_path = get_dir_path(self.cluster_params, DBI_DIR)
         dv_path = f"{self.base_path}/dv-downloaded-obj"
         if dbi_path != None:
@@ -215,7 +214,7 @@ class data_validator:
         Raises:
             subprocess.CalledProcessError: If the external validation process fails.
         """
-        bin_path = os.path.join(self.bin_dir, NIOVA_LIBEXEC_DIR, "s3DataValidator")
+        bin_path = f'{self.bin_dir}/s3DataValidator'
         log_dir = f'{self.base_path }/s3DV' 
         nisd_cmdintf_path = "/tmp/.niova/%s" % params['nisd_uuid']  
         # Ensure log directory exists
