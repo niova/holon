@@ -25,7 +25,7 @@ class InotifyPath:
             logging.warning("Process type is nisd")
             inotify_path = "%s/niova_lookout/%s" % (base_dir_path, lookout_uuid)
 
-            if len(inotify_path) >= 100:
+            if len(inotify_path) >= 107:
                 logging.warning(
                     "inotify path too long (%d), falling back to /tmp/.niova",
                     len(inotify_path)
