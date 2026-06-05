@@ -382,6 +382,7 @@ def start_nisd_process(cluster_params, input_values, nisdPath):
     recipe_conf = load_recipe_op_config(cluster_params)
 
     nisd_uuid = input_values['nisd_uuid']
+    lookout_uuid = input_values['lookout_uuid']
     # uport = input_values['uport']
 
     # if input_values['lookout_uuid'] != "":
