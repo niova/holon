@@ -23,7 +23,16 @@ class InotifyPath:
     def __init__(self, base_dir_path, inotify_is_base_path, get_process_type, lookout_uuid):
         if get_process_type == "nisd" and lookout_uuid != "":
             logging.warning("Process type is nisd")
-            self.inotify_path = "%s" % (base_dir_path)
+            inotify_path = "%s/niova_lookout/%s" % (base_dir_path, lookout_uuid)
+
+            if len(inotify_path) >= 100:
+                logging.warning(
+                    "inotify path too long (%d), falling back to /tmp/.niova",
+                    len(inotify_path)
+                )
+                self.inotify_path = "/tmp/.niova"
+            else:
+                self.inotify_path = inotify_path
         elif get_process_type == "nisd" and lookout_uuid == "":
             self.inotify_path = "%s/nisd-interface" % base_dir_path
             if os.path.exists(self.inotify_path):
