@@ -402,6 +402,8 @@ def start_nisd_process(cluster_params, input_values, nisdPath):
 
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"{short_sock_dir}/{nisd_uuid}"
 
+    os.environ["NIOVA_LOG_LEVEL"] = "4"
+
     process_popen = subprocess.Popen([bin_path, '-u', nisd_uuid, '-d', nisdPath],
                                       stdout = fp, stderr = fp)
 

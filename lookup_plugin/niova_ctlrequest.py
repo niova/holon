@@ -30,9 +30,6 @@ def niova_ctlreq_cmd_send(recipe_conf, ctlreq_dict, peer_uuid, get_process_type,
     genericcmdobj = GenericCmds()
     app_uuid = genericcmdobj.generate_uuid()
 
-    if get_process_type == "nisd":
-        base_dir = f"/tmp/.niova/"
-
     inotifyobj = InotifyPath(base_dir, True, get_process_type, lookout_uuid)
 
     # For idle_on cmd , input_base would be PRIVATE_INIT.
