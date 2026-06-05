@@ -86,7 +86,7 @@
        debug:
          msg: 
           - "Waiting for nisd to get updated"
-          - "{{ lookup('niova_ctlrequest', 'lookup', item, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) }}"
+          - "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_root_keys, 'nisd', lookout_uuid) }}"
        until: lookup('niova_ctlrequest', 'lookup', item, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "running"
        retries: 60
        delay: 1
