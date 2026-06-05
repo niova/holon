@@ -86,6 +86,7 @@
        debug:
          msg: 
           - "Waiting for nisd to get updated"
+          - "{{ lookup('niova_ctlrequest', 'lookup', item, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) }}"
        until: lookup('niova_ctlrequest', 'lookup', item, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "running"
        retries: 60
        delay: 1
@@ -297,7 +298,7 @@
        retries: 10
        delay: 1
        loop: "{{ get_nisd }}"
-
+  
      - name: "{{ recipe_name }}: Get nisd_chunk info."
        vars:
          stage: "get_nisd_chunk"
@@ -340,6 +341,16 @@
          msg:  "{{ lookup('niova_raftprocess', 'kill', get_nisd[0]) }}"
        no_log: True
 
+     - name: "{{ recipe_name}}: Wait until nisd_root_entry gets updated"
+       vars:
+         stage: "wait_for_nisd_root_entry"
+         lookout_uuid: "{{ get_lookout[0] }}"
+       debug:
+         msg: "Waiting for nisd to get updated"
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[0], "/nisd_root_entry/0/status", 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "stopped"
+       retries: 10
+       delay: 1
+
      - name: "{{ recipe_name }}: Restart same nisd process."
        vars:
           input_param: {
@@ -364,12 +375,20 @@
      - name: "{{ recipe_name }}: Verify nisd_root_entry."
        vars:
          stage: "aftrRestart_nisd_info"
-         old_num_block_used: "{{ aftrRestartNisd['results'][0]['item']['/0/num-pblks-used'] }}"
+         old_num_block_used: "{{ aftrRestartNisd[0].entry['/0/num-pblks-used'] }}"
          lookout_uuid: "{{ get_lookout[0] }}"
          aftrRestart: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[0], nisd_root_keys, 'nisd', lookout_uuid) }}"
        debug:
-         msg: "Verify nisd_root_entry"
-       no_log: True
+         msg: 
+          - "Verify nisd_root_entry"
+          - "aftrRestart['/0/uuid']: {{ aftrRestart['/0/uuid'] }}"
+          - "get_nisd[0]: {{ get_nisd[0] }}"
+          - "aftrRestart['/0/status']: {{ aftrRestart['/0/status'] }}"
+          - "aftrRestart['/0/vblks-written']: {{ aftrRestart['/0/vblks-written'] }}"
+          - "aftrRestart['/0/num-reserved-pblks-used']: {{ aftrRestart['/0/num-reserved-pblks-used'] }}"
+          - "aftrRestart['/0/num-pblks-used']: {{ aftrRestart['/0/num-pblks-used'] }}"
+          - "old_num_block_used: {{ old_num_block_used }}"
+       no_log: false
        failed_when: >
          (aftrRestart['/0/uuid'] != get_nisd[0]) or
          (aftrRestart['/0/status'] != "running") or
