@@ -401,6 +401,8 @@ def start_nisd_process(cluster_params, input_values, nisdPath):
     os.makedirs(short_sock_dir, exist_ok=True)
 
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"{short_sock_dir}/{nisd_uuid}"
+    os.environ['NIOVA_INOTIFY_BASE_PATH'] = "%s/%s/niova_lookout/%s/%s" % (cluster_params['base_dir'],
+                                                           cluster_params['raft_uuid'], lookout_uuid, nisd_uuid)
 
     process_popen = subprocess.Popen([bin_path, '-u', nisd_uuid, '-d', nisdPath],
                                       stdout = fp, stderr = fp)
