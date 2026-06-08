@@ -132,7 +132,7 @@
          verifyNisd: "{{ getNisdVal['results'][0]['item'] }}"
        debug:
          msg: "verify nisd root entry values: {{ verifyNisd }}"
-       no_log: True
+       #no_log: True
        failed_when: >
          (verifyNisd['/0/uuid'] != get_nisd) or
          (verifyNisd['/0/status'] != "running")
@@ -260,7 +260,7 @@
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "Waiting for nisd to get updated"
-       no_log: True
+       #no_log: True
        until: lookup('niova_ctlrequest', 'lookup', get_nisd, "/nisd_root_entry/0/status", 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "running"
        retries: 10
        delay: 1
@@ -281,7 +281,7 @@
          getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd values after writes: {{ getNiovaBlockTest }}"
-       no_log: True
+       #no_log: True
        failed_when: >
          (getNiovaBlockTest['/0/num-pblks-used'] != ((old_num_block_used | int) + 50)) or
          (getNiovaBlockTest['/0/vblks-written'] != 1600) or
@@ -305,7 +305,7 @@
      - name: "{{ recipe_name }}: Kill the nisd process."
        debug:
          msg:  "{{ lookup('niova_raftprocess', 'kill', get_nisd) }}"
-       no_log: True
+       #no_log: True
 
      - name: "{{ recipe_name }}: Restart same nisd process."
        vars:
@@ -316,7 +316,7 @@
                   }
        debug:
          msg: "{{ lookup('nisd_handler', 'nisd', input_param) }}"
-       no_log: True
+       #no_log: True
 
      - name: "{{ recipe_name}}: Wait until nisd_root_entry gets updated"
        vars:
@@ -336,7 +336,7 @@
          aftrRestart: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_root_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd_root_entry"
-       no_log: True
+       #no_log: True
        failed_when: >
          (aftrRestart['/0/uuid'] != get_nisd) or
          (aftrRestart['/0/status'] != "running") or
@@ -352,7 +352,7 @@
          aftrRestart: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_chunk_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd_chunks Checks: {{ old_metablock }}, {{ aftrRestart }}"
-       no_log: True
+       #no_log: True
        failed_when: >
          (aftrRestart['/0/vdev-uuid'] != vdevUUID.stdout) or
          (aftrRestart['/0/number'] != 0) or
@@ -410,7 +410,7 @@
          aftrRead: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd_root_entry: {{ aftrRead }}"
-       no_log: True
+       #no_log: True
        failed_when: >
          (aftrRead['/0/vblks-read'] != 1600) or
          (aftrRead['/0/vblks-hole-read'] != 0)
@@ -422,7 +422,7 @@
          aftrRead: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_chunk_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd_chunks: {{ aftrRead }}"
-       no_log: True
+       #no_log: True
        failed_when: >
          (aftrRead['/0/vblks-read'] != 1600) or
          (aftrRead['/0/read-op-seqno'] != 49) or
