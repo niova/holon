@@ -221,7 +221,7 @@ class helper:
         disk_ipath = self.create_dd_file("GC.img", "64M", total_blocks)
 
         try:
-            result = subprocess.run(["sudo", "losetup", "-fP", disk_ipath], check=True, shell=True)
+            result = subprocess.run(["losetup", "-fP", disk_ipath], check=True, shell=True)
         except subprocess.CalledProcessError as e:
             print(f"Error: {e}")
             
@@ -229,17 +229,17 @@ class helper:
         self.setup_btrfs(dir_name, disk_ipath)
 
         try:
-            result = subprocess.run(["sudo", "mkdir", dir_name], check=True)
+            result = subprocess.run(["mkdir", dir_name], check=True)
         except subprocess.CalledProcessError as e:
             print(f"Error: {e}")
 
         try:
-            result = subprocess.run(["sudo", "chown", username, dir_name_abs], check=True)
+            result = subprocess.run(["chown", username, dir_name_abs], check=True)
         except subprocess.CalledProcessError as e:
             print(f"Error: {e}")
 
         try:
-            result = subprocess.run(["sudo", "chmod", "777", dir_name_abs], check=True)
+            result = subprocess.run(["chmod", "777", dir_name_abs], check=True)
         except subprocess.CalledProcessError as e:
             print(f"Error: {e}")
 
@@ -313,17 +313,17 @@ class helper:
             raise RuntimeError(f"no ublk device available")
         try:
             # Step 1: Format the device with Btrfs
-            subprocess.run(["sudo","mkfs.btrfs", device], check=True)
+            subprocess.run(["mkfs.btrfs", device], check=True)
             print(f"Formatted {device} successfully.")
 
             # Step 2: Create the mount point directory if it doesn't exist
             if not os.path.exists(mount_path):
                 os.makedirs(mount_path)
-                subprocess.run(["sudo", "chmod", "777", mount_path], check=True)
+                subprocess.run(["chmod", "777", mount_path], check=True)
                 print(f"Directory {mount_path} created.")
 
             # Step 3: Mount the device to the mount point
-            subprocess.run(["sudo", "mount", device, mount_path], check=True)
+            subprocess.run(["mount", device, mount_path], check=True)
             print(f"Mounted {device} to {mount_path} successfully.")
 
         except subprocess.CalledProcessError as e:
