@@ -229,11 +229,6 @@ class helper:
         self.setup_btrfs(dir_name, disk_ipath)
 
         try:
-            result = subprocess.run(["mkdir", dir_name], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Error: {e}")
-
-        try:
             result = subprocess.run(["chown", username, dir_name_abs], check=True)
         except subprocess.CalledProcessError as e:
             print(f"Error: {e}")
