@@ -221,7 +221,7 @@ class helper:
         disk_ipath = self.create_dd_file("GC.img", "64M", total_blocks)
 
         try:
-            result = subprocess.run(["losetup", "-fP", disk_ipath], check=True)
+            result = subprocess.run(["sudo", "losetup", "-fP", disk_ipath], check=True)
         except subprocess.CalledProcessError as e:
             print(f"Error: {e}")
             
