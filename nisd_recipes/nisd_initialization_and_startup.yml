@@ -79,6 +79,26 @@
      - pause:
          seconds: 2
 
+     - name: "{{ recipe_name }}: Get nisd_root_entry info."
+       vars:
+          stage: "get_nisd_root_entry_after_nisd_start"
+          lookout_uuid: "{{ get_lookout[0] }}"
+          nisdRootEntryVal: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_root_keys, 'nisd', lookout_uuid) }}"
+       set_fact:
+          all_nisd_root_entries_after_nisd_start: >-
+            {{
+              all_nisd_root_entries | default([]) +
+              [{
+                'nisd_uuid': item,
+                'entry': nisdRootEntryVal
+              }]
+            }}
+       loop: "{{ get_nisd }}"
+
+     - name: "{{ recipe_name }}: DEBUG: Nisd root entry info."
+       debug: 
+        msg: "{{ all_nisd_root_entries_after_nisd_start }}"
+
      - name: "{{ recipe_name}}: Wait until nisd_root_entry gets updated"
        vars:
          stage: "wait_for_nisd_root_entry"
@@ -86,7 +106,7 @@
        debug:
          msg: 
           - "Waiting for nisd to get updated"
-          - "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_root_keys, 'nisd', lookout_uuid) }}"
+          - "{{ lookup('niova_ctlrequest', 'lookup', item, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) }}"
        until: lookup('niova_ctlrequest', 'lookup', item, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "running"
        retries: 60
        delay: 1
