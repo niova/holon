@@ -9,7 +9,7 @@
   - block:
     - name: "{{ recipe_name }}: Start minio server"
       vars:
-        s3_dir: "/local/minio_data"
+        s3_dir: "{{ ClusterParams['base_dir'] }}/minio_data"
       debug:
          msg:
           - "{{ lookup('obj_storage', 'minio', 'start', s3_dir) }}"
