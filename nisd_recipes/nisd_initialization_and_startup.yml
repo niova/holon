@@ -83,15 +83,22 @@
        vars:
          stage: "wait_for_nisd_root_entry"
          lookout_uuid: "{{ get_lookout[0] }}"
-         nisd_status: "{{ lookup('niova_ctlrequest', 'lookup', item, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) }}"
        debug:
          msg:
           - "Waiting for nisd to get updated"
-          - "{{ nisd_status }}"
-       until: nisd_status | dict2items | map(attribute='value') | list | first == "running"
-       failed_when: nisd_status | dict2items | map(attribute='value') | list | first != "running"
+          - "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) }}"
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "running"
        retries: 60
        delay: 1
+       loop: "{{ get_nisd }}"
+
+     - name: "{{ recipe_name }}: Verify nisd status is running"
+       vars:
+         lookout_uuid: "{{ get_lookout[0] }}"
+         status: "{{ lookup('niova_ctlrequest', 'lookup', item, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first }}"
+       debug:
+         msg: "NISD status: {{ status }}"
+       failed_when: status != "running"
        loop: "{{ get_nisd }}"
 
      - name: "Enable debug on nisd"
