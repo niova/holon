@@ -1935,18 +1935,145 @@ class LookupModule(LookupBase):
         raise AnsibleError(f"Schema script not found: {script_path}")
 
     env = os.environ.copy()
-    env.update({
-        "MDSVC_MYSQL_HOST":     str(params["mysql_host"]),
-        "MDSVC_MYSQL_PORT":     str(params["mysql_port"]),
-        "MDSVC_MYSQL_USER":     str(params["mysql_user"]),
-        "MDSVC_MYSQL_PASSWORD": str(params["mysql_password"]),
-    })
+    env["MDSVC_MYSQL_HOST"] = "127.0.0.1"
+    env["MDSVC_MYSQL_PORT"] = "4000"
+    env["MDSVC_MYSQL_USER"] = "root"
+    env["MDSVC_MYSQL_PASSWORD"] = ""
 
-    _run(["chmod", "+x", script_path])
-    _run([script_path], cwd=repo_path, env=env)
+    with open(log_file, "a") as logf:
+        logf.write("\nSTARTING MANUAL MDSVC-TIDB SETUP\n")
 
-    return {"status": "schema_created"}
+        tidb_proc = subprocess.Popen(
+            [
+                os.path.expanduser("~/.tiup/bin/tiup"),
+                "playground",
+                "v8.5.0",
+                "--db", "1",
+                "--kv", "1",
+                "--pd", "1",
+                "--tiflash", "0",
+                "--monitor", "false"
+            ],
+            stdout=open(tidb_log_file, "a"),
+            stderr=subprocess.STDOUT,
+            start_new_session=True
+        )
 
+        logf.write("TiDB playground started in background pid=%d\n" % tidb_proc.pid)
+        logf.write("Waiting for TiDB to start...\n")
+
+        tidb_ready = False
+
+        for i in range(1, 31):
+            check_proc = subprocess.Popen(
+                [
+                    "mysql",
+                    "-h", "127.0.0.1",
+                    "-P", "4000",
+                    "-u", "root",
+                    "-e", "SHOW DATABASES;"
+                ],
+                stdout=logf,
+                stderr=logf
+            )
+
+            check_rc = check_proc.wait()
+
+            if check_rc == 0:
+                logf.write("TiDB is up!\n")
+                tidb_ready = True
+                break
+
+            logf.write("Still waiting... (%d)\n" % i)
+            time.sleep(10)
+
+        if not tidb_ready:
+            raise AnsibleError(
+                "TiDB did not start within timeout. Check log: %s" % tidb_log_file
+            )
+
+        logf.write("\nRunning final TiDB database check\n")
+
+        final_check = subprocess.Popen(
+            [
+                "mysql",
+                "-h", "127.0.0.1",
+                "-P", "4000",
+                "-u", "root",
+                "-e", "SHOW DATABASES;"
+            ],
+            stdout=logf,
+            stderr=logf
+        )
+
+        final_rc = final_check.wait()
+
+        if final_rc != 0:
+            raise AnsibleError(
+                "Final TiDB SHOW DATABASES check failed. Check log: %s" % log_file
+            )
+
+        schema_script = "%s/scripts/run_schema.sh" % repo_path
+
+        chmod_proc = subprocess.Popen(
+            ["chmod", "+x", schema_script],
+            stdout=logf,
+            stderr=logf
+        )
+
+        chmod_rc = chmod_proc.wait()
+
+        if chmod_rc != 0:
+            raise AnsibleError(
+                "chmod failed for schema script. Check log: %s" % log_file
+            )
+
+        schema_success = False
+
+        for i in range(1, 6):
+            logf.write("\nSchema attempt %d\n" % i)
+
+            schema_proc = subprocess.Popen(
+                [schema_script],
+                cwd=repo_path,
+                stdout=logf,
+                stderr=logf,
+                env=env
+            )
+
+            schema_rc = schema_proc.wait()
+
+            if schema_rc == 0:
+                logf.write("Schema setup succeeded\n")
+                schema_success = True
+                break
+
+            logf.write("Schema setup failed, retrying...\n")
+            time.sleep(15)
+
+        if not schema_success:
+            logf.write("Schema setup failed permanently\n")
+
+            try:
+                with open(tidb_log_file, "r") as tidbf:
+                    logf.write("\n==== tidb.log ====\n")
+                    logf.write(tidbf.read())
+                    logf.write("\n==== end tidb.log ====\n")
+            except Exception as e:
+                logf.write("Unable to read tidb log: %s\n" % str(e))
+
+            raise AnsibleError(
+                "Schema setup failed permanently. Check log: %s" % log_file
+            )
+
+        logf.write("\nMANUAL MDSVC-TIDB SETUP COMPLETED\n")
+
+    return {
+        "status": "manual_setup_done",
+        "tidb_pid": tidb_proc.pid,
+        "log_file": log_file,
+        "tidb_log_file": tidb_log_file
+    }
 
 def start_server(params):
     """
@@ -1992,7 +2119,6 @@ def start_server(params):
         "log_file": log_file,
     }
 
-
 def stop_server(params):
     """Send SIGTERM to the process group recorded in pid_file."""
     pid_file = params["pid_file"]
@@ -2013,7 +2139,6 @@ def stop_server(params):
         os.remove(pid_file)
 
     return {"status": "server_stopped", "pid": pid}
-
 
 # =========================================================
 # Health-Check Helper
