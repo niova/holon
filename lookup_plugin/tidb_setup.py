@@ -358,9 +358,8 @@ class LookupModule(LookupBase):
     def run(self, terms, variables=None, **kwargs):
 
         action = terms[0]
-        input_values = terms[1]
 
-        cluster_params = kwargs['variables']['ClusterParams']
+        cluster_params = variables['ClusterParams']
 
         #export NIOVA_THREAD_COUNT
         os.environ['NIOVA_THREAD_COUNT'] = cluster_params['nthreads']
@@ -368,7 +367,7 @@ class LookupModule(LookupBase):
         if action == "docker_setup":
             result = docker_setup(cluster_params)
         elif action == "manual_setup":
-            result = manual_setup(input_values, cluster_params)
+            result = manual_setup(cluster_params)
         else:
             raise AnsibleError("Unsupported action: %s" % action)
 

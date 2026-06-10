@@ -27,7 +27,7 @@
  
         - name: "{{ recipe_name }}: Start mdsvc-tidb using docker."
           set_fact:
-            db_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+            docker_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
  
         - name: "{{ recipe_name }}: Debug DB status."
           debug:
