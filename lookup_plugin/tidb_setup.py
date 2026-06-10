@@ -1932,123 +1932,113 @@ class LookupModule(LookupBase):
         script_path = os.path.join(repo_path, "scripts/run_schema.sh")
 
     if not os.path.exists(script_path):
-        raise AnsibleError(
-            f"Schema script not found: {script_path}"
-        )
+        raise AnsibleError(f"Schema script not found: {script_path}")
 
     env = os.environ.copy()
-
     env.update({
-        "MDSVC_MYSQL_HOST": str(cluster_params['mysql_host']),
-        "MDSVC_MYSQL_PORT": str(cluster_params['mysql_port']),
-        "MDSVC_MYSQL_USER": str(cluster_params['mysql_user']),
-        "MDSVC_MYSQL_PASSWORD": str(cluster_params['mysql_password']),
+        "MDSVC_MYSQL_HOST":     str(params["mysql_host"]),
+        "MDSVC_MYSQL_PORT":     str(params["mysql_port"]),
+        "MDSVC_MYSQL_USER":     str(params["mysql_user"]),
+        "MDSVC_MYSQL_PASSWORD": str(params["mysql_password"]),
     })
 
-    run_command(
-        ["chmod", "+x", script_path]
-    )
+    _run(["chmod", "+x", script_path])
+    _run([script_path], cwd=repo_path, env=env)
 
-    run_command(
-        [script_path],
-        cwd=repo_path,
-        env=env
-    )
+    return {"status": "schema_created"}
 
-    return {
-        "status": "schema_created"
-    }
 
-def start_server(cluster_params):
-
-    server_path = cluster_params['server_path']
+def start_server(params):
+    """
+    Launch `go run ./cmd/server` as a detached background process.
+    The process group ID is written to pid_file for later cleanup.
+    """
+    server_path = params["server_path"]
+    pid_file    = params["pid_file"]
 
     log_file = os.path.join(server_path, "mdsvc.log")
-
     fp = open(log_file, "a")
 
-    process_popen = subprocess.Popen(
+    # Build server environment: inherit everything, then overlay MDSVC_* vars
+    env = os.environ.copy()
+    env.update({
+        "MDSVC_MYSQL_HOST":     str(params["mysql_host"]),
+        "MDSVC_MYSQL_PORT":     str(params["mysql_port"]),
+        "MDSVC_MYSQL_USER":     str(params["mysql_user"]),
+        "MDSVC_MYSQL_PASSWORD": str(params["mysql_password"]),
+        "MDSVC_API_URL":        str(params["base_url"]),
+    })
+
+    if params["disable_auth"]:
+        env["DISABLE_AUTH"] = "true"
+
+    proc = subprocess.Popen(
         ["go", "run", "./cmd/server"],
         cwd=server_path,
         stdout=fp,
         stderr=fp,
-        preexec_fn=os.setsid
+        env=env,
+        preexec_fn=os.setsid,
     )
 
-    pid_file = "/tmp/mdsvc_server.pid"
-
     with open(pid_file, "w") as pidf:
-        pidf.write(str(process_popen.pid))
+        pidf.write(str(proc.pid))
 
-    os.fsync(fp)
+    fp.flush()
 
     return {
-        "status": "server_started",
-        "pid": process_popen.pid,
-        "log_file": log_file
+        "status":   "server_started",
+        "pid":      proc.pid,
+        "log_file": log_file,
     }
 
-def stop_server():
 
-    pid_file = "/tmp/mdsvc_server.pid"
+def stop_server(params):
+    """Send SIGTERM to the process group recorded in pid_file."""
+    pid_file = params["pid_file"]
 
     if not os.path.exists(pid_file):
-        return {
-            "status": "server_not_running"
-        }
+        return {"status": "server_not_running"}
 
     with open(pid_file, "r") as pidf:
         pid = int(pidf.read().strip())
 
     try:
-        os.killpg(
-            os.getpgid(pid),
-            signal.SIGTERM
-        )
+        os.killpg(os.getpgid(pid), signal.SIGTERM)
+    except ProcessLookupError:
+        pass  # process already gone
+    except Exception as e:
+        raise AnsibleError(f"Failed to stop server (pid={pid}): {e}")
+    finally:
+        os.remove(pid_file)
 
-    except Exception:
-        pass
+    return {"status": "server_stopped", "pid": pid}
 
-    os.remove(pid_file)
-
-    return {
-        "status": "server_stopped"
-    }
 
 # =========================================================
-# Health Check Helpers
+# Health-Check Helper
 # =========================================================
 
-def wait_for_server(cluster_params,
-                    timeout=120):
-
-    repo_path = cluster_params['repo_path']
-    base_url = cluster_params['base_url']
-
-    log_file = get_log_file(repo_path)
-
-    last_error = None
+def wait_for_server(params):
+    """
+    Poll base_url until we get an HTTP status < 500, then return.
+    Raises AnsibleError if the server does not become ready within
+    server_timeout seconds.
+    """
+    base_url = params["base_url"]
+    timeout  = params["server_timeout"]
+    log_file = _get_log_file(params)
+    last_err = None
 
     for _ in range(timeout):
-
         try:
-            response = requests.get(
-                base_url,
-                timeout=5
-            )
-
-            if response.status_code < 500:
-
+            resp = requests.get(base_url, timeout=5)
+            if resp.status_code < 500:
                 with open(log_file, "a") as logf:
-                    write_log_header(
-                        logf,
-                        "SERVER BECAME READY"
-                    )
-
+                    _write_log_header(logf, "SERVER BECAME READY")
                 return
-
         except Exception as e:
-            last_error = str(e)
+            last_err = str(e)
 
         time.sleep(1)
 
