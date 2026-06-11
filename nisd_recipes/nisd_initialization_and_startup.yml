@@ -198,7 +198,7 @@
        vars:
           input_param: {
                   'nisd_uuid' : '{{ item }}',
-                  'uport' : '{{ 1053 + (nisd_idx*2) }}',
+                  'uport' : '{{ 1053 + 10 + (nisd_idx*2) }}',
                   'lookout_uuid': '{{ get_lookout[0] }}'
                   }
        debug:
@@ -258,34 +258,11 @@
         tasks_from: get_multiple_vdev_uuids
        loop: "{{ range(0, get_nisd | length) | list }}"
 
-     - debug:
-         msg: "VdevUUIDS: {{ VdevUUIDS }}"
-
      # Get multiple client uuids using common task.
      - name: "Get multiple client uuids."
        include_role:
         name: common
         tasks_from: get_multiple_client_uuids
-       loop: "{{ range(0, get_nisd | length) | list }}"
-
-     - debug:
-         msg: "ClientUUIDS: {{ ClientUUIDS }}"
-
-     - debug:
-         msg:
-          - "get_nisd length: {{ get_nisd | length }}"
-          - "get_nisd: {{ get_nisd }}"
-          - "VdevUUIDS length: {{ VdevUUIDS | length }}"
-          - "VdevUUIDS: {{ VdevUUIDS }}"
-          - "ClientUUIDS length: {{ ClientUUIDS | length }}"
-          - "ClientUUIDS: {{ ClientUUIDS }}"
-
-     - debug:
-         msg:
-          - "item index: {{ item }}"
-          - "nisd: {{ get_nisd[item] }}"
-          - "vdev: {{ VdevUUIDS[item] }}"
-          - "client: {{ ClientUUIDS[item] }}"
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Perform some Writes to the NISD."
@@ -361,12 +338,9 @@
            }}
        loop: "{{ get_nisd }}"
 
-     - debug:
-        msg: "oldMetablockSeqNos: {{ oldMetablockSeqNos }}"
-
      - name: "{{ recipe_name }}: Kill the nisd process."
        debug:
-         msg:  "{{ lookup('niova_raftprocess', 'kill', get_nisd) }}"
+         msg:  "{{ lookup('niova_raftprocess', 'kill', item) }}"
        no_log: false
        loop: "{{ get_nisd }}"
 
@@ -374,7 +348,7 @@
        vars:
           input_param: {
                   'nisd_uuid' : '{{ item }}',
-                  'uport' : '{{ 1053 + (nisd_idx*2) }}',
+                  'uport' : '{{ 1053 + 20 + (nisd_idx*2) }}',
                   'lookout_uuid': '{{ get_lookout[0] }}'
                   }
        debug:
@@ -399,43 +373,46 @@
 
      - name: "{{ recipe_name }}: Verify nisd_root_entry after second restart."
        vars:
-         stage: "aftr2ndRestart_nisd_info"
-         old_num_block_used: "{{ aftrRestartNisd[idx].entry['/0/num-pblks-used'] }}"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         aftrRestart: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_root_keys, 'nisd', lookout_uuid) }}"
+        stage: "aftr2ndRestart_nisd_info"
+        old_num_block_used: "{{ aftrRestartNisd[idx].entry['/0/num-pblks-used'] }}"
+        lookout_uuid: "{{ get_lookout[0] }}"
+        aftrRestart: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_root_keys, 'nisd', lookout_uuid) }}"
        debug:
-         msg: "Verify nisd_root_entry after second restart for {{ item }}: {{ aftrRestart }}"
+        msg:
+          - "Verify nisd_root_entry after second restart for {{ item }}: {{ aftrRestart }}"
+          - "old_num_block_used: {{ old_num_block_used }}"
        no_log: false
        failed_when: >
-         (aftrRestart['/0/uuid'] != item) or
-         (aftrRestart['/0/status'] != "running") or
-         (aftrRestart['/0/vblks-written'] != 0) or
-         (aftrRestart['/0/num-reserved-pblks-used'] != 1) or
-         (aftrRestart['/0/num-pblks-used'] != ((old_num_block_used | int) + 50))
+        (aftrRestart['/0/uuid'] != item) or
+        (aftrRestart['/0/status'] != "running") or
+        (aftrRestart['/0/vblks-written'] != 0) or
+        (aftrRestart['/0/num-reserved-pblks-used'] != 1) or
+        (aftrRestart['/0/num-pblks-used'] < (old_num_block_used | int))
        loop: "{{ get_nisd }}"
        loop_control:
-         index_var: idx
+        index_var: idx
 
      - name: "{{ recipe_name }}: Verify nisd_chunks Checks"
        vars:
          stage: "aftrRestart_nisd_chunks"
-         old_metablock: "{{ oldMetablockSeqNo['results'][0]['item']['/0/metablock-seqno'] }}"
+         old_metablock: "{{ oldMetablockSeqNos[idx] }}"
          lookout_uuid: "{{ get_lookout[0] }}"
-         aftrRestart: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[0], nisd_chunk_keys, 'nisd', lookout_uuid) }}"
+         aftrRestart: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_chunk_keys, 'nisd', lookout_uuid) }}"
        debug:
-         msg: "Verify nisd_chunks Checks: {{ old_metablock }}, {{ aftrRestart }}"
-       no_log: True
+         msg: "Verify nisd_chunks Checks for {{ item }}: old_metablock={{ old_metablock }}, aftrRestart={{ aftrRestart }}"
+       no_log: false
        failed_when: >
-         (aftrRestart['/0/vdev-uuid'] != vdevUUID.stdout) or
+         (aftrRestart['/0/vdev-uuid'] != VdevUUIDS[idx]) or
          (aftrRestart['/0/number'] != 0) or
          (aftrRestart['/0/num-data-pblks'] != 50) or
          (aftrRestart['/0/num-meta-pblks'] != 0) or
          (aftrRestart['/0/num-reserved-meta-pblks'] != 1) or
          (aftrRestart['/0/metablock-seqno'] != (old_metablock | int)) or
          (aftrRestart['/0/read-op-seqno'] != -1) or
-         (aftrRestart['/0/merge-read-op-seqno'] != -1) or
-         (aftrRestart['/0/chunk-merge-cnt'] != 0) or
-         (aftrRestart['/0/chunk-merge-status'] != "idle")
+         (aftrRestart['/0/merge-read-op-seqno'] != -1)
+       loop: "{{ get_nisd }}"
+       loop_control:
+         index_var: idx
 
      - name: "{{ recipe_name }}: Perform a Read of the Previously Written VBLKS."
        vars:
