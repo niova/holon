@@ -94,6 +94,8 @@
        delay: 1
        loop: "{{ get_nisd }}"
 
+     - pause: seconds=2
+
      - name: "{{ recipe_name }}: Get nisd_root_entry info."
        vars:
           stage: "get_nisd_root_entry"
@@ -288,7 +290,7 @@
 
      - name: "{{ recipe_name }}: Perform some Writes to the NISD."
        vars:
-         input_param: {
+          input_param: {
                  'enable_auth': 0,
                  'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
                  'vdev' : '{{ VdevUUIDS[item] }}',
@@ -303,21 +305,18 @@
                  'blocking_process' : False,
                  'lookout_uuid': '{{ get_lookout[0] }}'
                  }
-         wr_success: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
-       debug:
-         msg: "Return code for nisd {{ get_nisd[item] }}: {{ wr_success }}"
-       no_log: false
-       failed_when: wr_success != "0"
+       set_fact:
+          wr_results: "{{ (wr_results | default([])) + [lookup('nisd_handler', 'niova-block-test', input_param) | string] }}"
        loop: "{{ range(0, get_nisd | length) | list }}"
-       register: get_wr
 
-     - name: "{{ recipe_name }}: Verify if the write operation was successful."
+     - name: "{{ recipe_name }}: Show write results."
        debug:
-         msg:
-           - "Verify write is success"
-           - "{{ get_wr }}"
-       no_log: false
-       failed_when: get_wr.results | selectattr('failed', 'equalto', true) | list | length > 0
+         msg: "Write results: {{ wr_results }}"
+
+     - name: "{{ recipe_name }}: Fail if any write failed."
+       debug:
+         msg: "One or more niova-block-test writes failed: {{ wr_results }}"
+       failed_when: (wr_results | reject('equalto', '0') | list | length) > 0
 
      - name: "{{ recipe_name }}: Verify nisd_root and nisd_chunk info after writes."
        vars:
@@ -354,62 +353,68 @@
        vars:
          stage: "get_metablock_seqno"
          lookout_uuid: "{{ get_lookout[0] }}"
-         getMetablockSeqNo: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[0], '/nisd_chunks/0/metablock-seqno', 'nisd', lookout_uuid) }}"
-       debug:
-         msg: "Get metablock-seqno"
-       with_items:
-        - "{{ getMetablockSeqNo }}"
-       register: oldMetablockSeqNo
+       set_fact:
+         oldMetablockSeqNos: >-
+           {{
+             oldMetablockSeqNos | default([]) +
+             [lookup('niova_ctlrequest', 'lookup', item, '/nisd_chunks/0/metablock-seqno', 'nisd', lookout_uuid)['/0/metablock-seqno']]
+           }}
+       loop: "{{ get_nisd }}"
+
+     - debug:
+        msg: "oldMetablockSeqNos: {{ oldMetablockSeqNos }}"
 
      - name: "{{ recipe_name }}: Kill the nisd process."
        debug:
-         msg:  "{{ lookup('niova_raftprocess', 'kill', get_nisd[0]) }}"
-       no_log: True
+         msg:  "{{ lookup('niova_raftprocess', 'kill', get_nisd) }}"
+       no_log: false
+       loop: "{{ get_nisd }}"
 
      - name: "{{ recipe_name }}: Restart same nisd process."
        vars:
           input_param: {
-                  'nisd_uuid' : '{{ get_nisd[0] }}',
+                  'nisd_uuid' : '{{ item }}',
                   'uport' : '{{ 1053 + (nisd_idx*2) }}',
                   'lookout_uuid': '{{ get_lookout[0] }}'
                   }
        debug:
          msg: "{{ lookup('nisd_handler', 'nisd', input_param) }}"
        no_log: True
+       loop: "{{ get_nisd }}"
+       loop_control:
+         index_var: nisd_idx
 
-     - name: "{{ recipe_name}}: Wait until nisd_root_entry gets updated"
+     - name: "{{ recipe_name}}: Wait until nisd_root_entry gets updated after second restart."
        vars:
-         stage: "wait_for_nisd_root_entry"
-         lookout_uuid: "{{ get_lookout[0] }}"
-       debug:
-         msg: "Waiting for nisd to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd[0], "/nisd_root_entry/0/status", 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "running"
-       retries: 10
-       delay: 1
-
-     - name: "{{ recipe_name }}: Verify nisd_root_entry."
-       vars:
-         stage: "aftrRestart_nisd_info"
-         old_num_block_used: "{{ aftrRestartNisd[0].entry['/0/num-pblks-used'] }}"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         aftrRestart: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[0], nisd_root_keys, 'nisd', lookout_uuid) }}"
+          stage: "wait_for_nisd_root_entry_after_2nd_restart"
+          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: 
-          - "Verify nisd_root_entry"
-          - "aftrRestart['/0/uuid']: {{ aftrRestart['/0/uuid'] }}"
-          - "get_nisd[0]: {{ get_nisd[0] }}"
-          - "aftrRestart['/0/status']: {{ aftrRestart['/0/status'] }}"
-          - "aftrRestart['/0/vblks-written']: {{ aftrRestart['/0/vblks-written'] }}"
-          - "aftrRestart['/0/num-reserved-pblks-used']: {{ aftrRestart['/0/num-reserved-pblks-used'] }}"
-          - "aftrRestart['/0/num-pblks-used']: {{ aftrRestart['/0/num-pblks-used'] }}"
-          - "old_num_block_used: {{ old_num_block_used }}"
+          - "Waiting for nisd to get updated"
+          - "{{ lookup('niova_ctlrequest', 'lookup', item, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) }}"
+       until: lookup('niova_ctlrequest', 'lookup', item, "/nisd_root_entry/0/status", 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "running"
+       retries: 10
+       delay: 1
+       loop: "{{ get_nisd }}"
+
+     - name: "{{ recipe_name }}: Verify nisd_root_entry after second restart."
+       vars:
+         stage: "aftr2ndRestart_nisd_info"
+         old_num_block_used: "{{ aftrRestartNisd[idx].entry['/0/num-pblks-used'] }}"
+         lookout_uuid: "{{ get_lookout[0] }}"
+         aftrRestart: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_root_keys, 'nisd', lookout_uuid) }}"
+       debug:
+         msg: "Verify nisd_root_entry after second restart for {{ item }}: {{ aftrRestart }}"
        no_log: false
        failed_when: >
-         (aftrRestart['/0/uuid'] != get_nisd[0]) or
+         (aftrRestart['/0/uuid'] != item) or
          (aftrRestart['/0/status'] != "running") or
          (aftrRestart['/0/vblks-written'] != 0) or
          (aftrRestart['/0/num-reserved-pblks-used'] != 1) or
          (aftrRestart['/0/num-pblks-used'] != ((old_num_block_used | int) + 50))
+       loop: "{{ get_nisd }}"
+       loop_control:
+         index_var: idx
 
      - name: "{{ recipe_name }}: Verify nisd_chunks Checks"
        vars:
