@@ -382,14 +382,15 @@ def start_nisd_process(cluster_params, input_values, nisdPath):
     recipe_conf = load_recipe_op_config(cluster_params)
 
     nisd_uuid = input_values['nisd_uuid']
-    # uport = input_values['uport']
+    lookout_uuid = input_values['lookout_uuid']
+    uport = input_values['uport']
 
-    # if input_values['lookout_uuid'] != "":
-    #     if nisd_uuid in recipe_conf['lookout_uuid_dict'][input_values['lookout_uuid']]['nisd_uuid_dict']:
-    #         recipe_conf['lookout_uuid_dict'][input_values['lookout_uuid']]['nisd_uuid_dict'].update({ nisd_uuid : uport })
-    # else:
-    #     if input_values['nisd_uuid'] in recipe_conf['nisd_uuid_dict'].keys():
-    #         recipe_conf['nisd_uuid_dict'][nisd_uuid] = uport
+    if input_values['lookout_uuid'] != "":
+        if nisd_uuid in recipe_conf['lookout_uuid_dict'][input_values['lookout_uuid']]['nisd_uuid_dict']:
+            recipe_conf['lookout_uuid_dict'][input_values['lookout_uuid']]['nisd_uuid_dict'].update({ nisd_uuid : uport })
+    else:
+        if input_values['nisd_uuid'] in recipe_conf['nisd_uuid_dict'].keys():
+            recipe_conf['nisd_uuid_dict'][nisd_uuid] = uport
 
     fp.write("starting nisd process\n")
     fp.write("nisd-uuid: "+nisd_uuid+"\n")
@@ -401,6 +402,7 @@ def start_nisd_process(cluster_params, input_values, nisdPath):
     os.makedirs(short_sock_dir, exist_ok=True)
 
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"{short_sock_dir}/{nisd_uuid}"
+    os.environ["NIOVA_BLOCK_TCP_PEER_PORT"] = str(uport)
 
     process_popen = subprocess.Popen([bin_path, '-u', nisd_uuid, '-d', nisdPath],
                                       stdout = fp, stderr = fp)
@@ -632,7 +634,7 @@ def start_niova_block_test(cluster_params, input_values):
     logger.debug("Do write/read operation on nisd by starting niova-block-test in controlplane mode")
     logger.debug("nisd-uuid: %s", nisd_uuid_to_write)
     logger.debug("vdev-uuid: %s", vdev)
-    logger.debug("client-uuid: %s", vdev)
+    logger.debug("client-uuid: %s", client_uuid)
     file_size_in_bytes = "8589934592"
     
     if sequential_writes == True and integrity_check == False and blocking_process == False:

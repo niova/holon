@@ -1,0 +1,12 @@
+---
+    - name: "Get unused vdev uuid."
+      include_role:
+        name: common
+        tasks_from: get_new_uuid
+      register: new_uuid
+
+    - name: "Add newly generated vdev uuid in vdev_uuids list."
+      vars:
+         VdevUUIDS: []
+      set_fact:
+         VdevUUIDS: "{{ VdevUUIDS + [new_uuid.stdout] }}"
