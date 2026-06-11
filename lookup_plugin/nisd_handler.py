@@ -548,22 +548,22 @@ def start_niova_block_test_with_inputFile(cluster_params, input_values):
 
         if sequential_writes == True and integrity_check == False and blocking_process == False:
             ps = subprocess.Popen([bin_path, '-d', '-c', nisd_uuid_to_write, '-v', vdev, '-r', read_operation_ratio_percentage,
-                                       '-u', client_uuid, '-z', request_size_in_bytes,
+                                       '-u', client_uuid, '-Z', request_size_in_bytes,
                                        '-q', queue_depth, '-N', num_ops, '-I', '-Q'], stdout=fp, stderr=fp)
 
         elif integrity_check == True and sequential_writes == False and blocking_process == False:
             ps = subprocess.Popen([bin_path, '-d', '-c', nisd_uuid_to_write, '-v', vdev, '-r', read_operation_ratio_percentage,
-                                       '-a', random_seed, '-u', client_uuid, '-z', request_size_in_bytes,
+                                       '-a', random_seed, '-u', client_uuid, '-Z', request_size_in_bytes,
                                        '-q', queue_depth, '-N', num_ops, '-I'], stdout=fp, stderr=fp)
 
         elif blocking_process == True and sequential_writes == False and integrity_check == False:
             ps = subprocess.Popen([bin_path, '-d', '-c', nisd_uuid_to_write, '-v', vdev, '-r', read_operation_ratio_percentage,
-                                       '-u', client_uuid, '-z', request_size_in_bytes,
+                                       '-u', client_uuid, '-Z', request_size_in_bytes,
                                        '-q', queue_depth, '-N', num_ops, '-I', '-Q'], stdout=fp, stderr=fp)
 
         else:
             ps = subprocess.Popen([bin_path, '-d', '-c', nisd_uuid_to_write, '-v', vdev, '-r', read_operation_ratio_percentage,
-                                       '-a', random_seed, '-u', client_uuid, '-z', request_size_in_bytes,
+                                       '-a', random_seed, '-u', client_uuid, '-Z', request_size_in_bytes,
                                        '-q', queue_depth, '-N', num_ops], stdout=fp, stderr=fp)
 
         out, err = ps.communicate()
