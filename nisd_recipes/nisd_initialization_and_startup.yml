@@ -387,7 +387,7 @@
         (aftrRestart['/0/status'] != "running") or
         (aftrRestart['/0/vblks-written'] != 0) or
         (aftrRestart['/0/num-reserved-pblks-used'] != 1) or
-        (aftrRestart['/0/num-pblks-used'] < (old_num_block_used | int))
+        (aftrRestart['/0/num-pblks-used'] != (old_num_block_used | int) + 50)
        loop: "{{ get_nisd }}"
        loop_control:
         index_var: idx
@@ -410,6 +410,8 @@
          (aftrRestart['/0/metablock-seqno'] != (old_metablock | int)) or
          (aftrRestart['/0/read-op-seqno'] != -1) or
          (aftrRestart['/0/merge-read-op-seqno'] != -1)
+         (aftrRestart['/0/chunk-merge-cnt'] != 0) or
+         (aftrRestart['/0/chunk-merge-status'] != "idle")
        loop: "{{ get_nisd }}"
        loop_control:
          index_var: idx
