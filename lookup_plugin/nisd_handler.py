@@ -603,6 +603,7 @@ def start_niova_block_test(cluster_params, input_values):
         os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
 
     #get input parameters
+    cp_mode = input_values['cp_mode']
     nisd_uuid_to_write = input_values['nisd_uuid_to_write']
     vdev = input_values['vdev']
     client_uuid = input_values['client_uuid']
@@ -657,10 +658,14 @@ def start_niova_block_test(cluster_params, input_values):
         logger.info("return code: %s", proc.returncode)
         return proc.returncode
 
-    else:
-        ps = subprocess.run((bin_path, '-c', 'cp', '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
+    elif blocking_process == False and sequential_writes == False and integrity_check == False:
+        ps = subprocess.run((bin_path, '-c', nisd_uuid_to_write, '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
                          '-Z', request_size_in_bytes, '-N', num_ops, '-a', random_seed), stdout=fp, stderr=fp)
 
+    elif cp_mode == 1:
+        ps = subprocess.run((bin_path, '-c', 'cp', '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
+                         '-Z', request_size_in_bytes, '-N', num_ops, '-a', random_seed), stdout=fp, stderr=fp)
+            
     logger.info("niova-block-test args: %s", ps.args)
     logger.info("return code: %d", ps.returncode)
     # Sync the log file so all the logs from niova-block-test gets written to log file.
