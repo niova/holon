@@ -100,7 +100,7 @@
 
     - name: "{{ recipe_name }}: Unmount filesystem if mounted"
       when: jsondata.btrfs_process is defined
-      command: sudo umount {{ jsondata.btrfs_process.mount_point }}
+      command: umount {{ jsondata.btrfs_process.mount_point }}
       register: unmount_result
       ignore_errors: true
       changed_when: unmount_result.rc == 0

@@ -193,6 +193,8 @@ class helper:
         safe_filename = filename.lstrip(os.sep)
         full_path = os.path.normpath(os.path.join(self.base_path, safe_filename))
         
+        rc = 0
+
         try:
             # os.makedirs(os.path.dirname(full_path), exist_ok=True)
             dir_path = os.path.dirname(full_path)
@@ -200,21 +202,16 @@ class helper:
             print(f"Running command: {dd_command}")
             result = subprocess.run(
                 dd_command,
-                check=True,
-                capture_output=True,
-                text=True
+                check=True, shell=True
             )
             print(f"File created successfully at: {full_path}")
-
-            return full_path
-
         except subprocess.CalledProcessError as e:
-            raise AnsibleError(
-            f"Failed to create dd file at {full_path}. "
-            f"Return code: {e.returncode}. "
-            f"stdout: {e.stdout}. "
-            f"stderr: {e.stderr}"
-        )
+            rc = e.returncode
+            print(f"Error: {e}") 
+        return {
+            "path": full_path,
+            "rc": rc
+        }
         
     def create_gc_partition(self, dir, total_blocks):
         dir_name_abs = os.path.join(self.base_path, dir)

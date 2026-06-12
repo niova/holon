@@ -69,8 +69,13 @@
         img_file: "gc/gc_download/file.img"
         bs: "64M"
         count: 25
+      set_fact:
+        dd_result: "{{ lookup('helper', 'create_dd_file', img_file, bs, count) }}"
+
+    - name: "{{ recipe_name }}: Verify if the file has been created successfully."
       debug:
-        msg: "{{ lookup('helper', 'create_dd_file', img_file, bs, count) }}"
+        msg: "{{ dd_result }}"
+      failed_when: (dd_result.rc) != 0
 
     - name: "{{ recipe_name }}: generate data for 2 chunks parallely"
       vars:
