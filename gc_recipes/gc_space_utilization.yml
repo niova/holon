@@ -9,8 +9,13 @@
   tasks:
   - block:
     - name: "{{ recipe_name }}: Create 1.5GB Partition"
+      set_fact:
+        partition_result: "{{ lookup('helper', 'create_partition', 'gc/gc_download', '27') }}"
+
+    - name: "{{ recipe_name }}: Verify partition creation"
       debug:
-        msg: "{{ lookup('helper', 'create_partition', 'gc/gc_download', '27') }}"
+        msg: "Partition creation failed with rc={{ partition_result.rc }} path={{ partition_result.path }}"
+      failed_when: partition_result.rc != 0
 
     - name: "{{ recipe_name }}: Start minio server"
       vars:

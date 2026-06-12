@@ -224,25 +224,39 @@ class helper:
         user_info = pwd.getpwuid(uid)
         username = user_info.pw_name
 
-        disk_ipath = self.create_dd_file("GC.img", "64M", total_blocks)
+        disk_info = self.create_dd_file("GC.img", "64M", total_blocks)
+
+        if disk_info["rc"] != 0:
+            return disk_info
+
+        disk_ipath = disk_info["path"]
 
         try:
             result = subprocess.run(["losetup", "-fP", disk_ipath], check=True)
         except subprocess.CalledProcessError as e:
-            print(f"Error: {e}")
+        return {
+            "path": disk_ipath,
+            "rc": e.returncode,
+            "stderr": str(e)
+        }
             
         # setup btrfs and mount
         self.setup_btrfs(dir_name, disk_ipath)
 
         try:
-            result = subprocess.run(["chown", username, dir_name_abs], check=True)
+            subprocess.run(["chown", username, dir_name_abs], check=True)
+            subprocess.run(["chmod", "777", dir_name_abs], check=True)
         except subprocess.CalledProcessError as e:
-            print(f"Error: {e}")
-
-        try:
-            result = subprocess.run(["chmod", "777", dir_name_abs], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"Error: {e}")
+            return {
+                "path": disk_ipath,
+                "rc": e.returncode,
+                "stderr": str(e)
+            }
+            
+        return {
+            "path": disk_ipath,
+            "rc": 0
+        }
 
     def delete_dd_file(self, filename):
         file_path = os.path.join(self.base_path, filename)
