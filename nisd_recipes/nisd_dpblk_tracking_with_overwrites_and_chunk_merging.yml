@@ -86,17 +86,17 @@
          input_param: {
                  'enable_auth': 0,
                  'cp_mode': 0,
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
-                 'vdev' : '{{ VdevUUIDS[item] }}',
-                 'rd_op_ratio' : '0',
-                 'random_seed_pt' : '987',
-                 'client_uuid' : '{{ ClientUUIDS[item] }}',
-                 'request_size_in_bytes' : '1',
-                 'queue_depth' : '1',
-                 'num_ops' : '512',
-                 'integrity_check' : True,
-                 'sequential_writes' : False,
-                 'blocking_process' : False,
+                 'nisd_uuid_to_write': 'unix:{{ get_nisd[item] }}',
+                 'vdev': '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio': '0',
+                 'random_seed_pt': '987',
+                 'client_uuid': '{{ ClientUUIDS[item] }}',
+                 'request_size_in_bytes': '1',
+                 'queue_depth': '1',
+                 'num_ops': '512',
+                 'integrity_check': True,
+                 'sequential_writes': False,
+                 'blocking_process': False,
                  'lookout_uuid': '{{ get_lookout[0] }}'
                  }
        set_fact:
