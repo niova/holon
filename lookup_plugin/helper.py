@@ -234,11 +234,11 @@ class helper:
         try:
             result = subprocess.run(["losetup", "-fP", disk_ipath], check=True)
         except subprocess.CalledProcessError as e:
-        return {
-            "path": disk_ipath,
-            "rc": e.returncode,
-            "stderr": str(e)
-        }
+            return {
+                "path": disk_ipath,
+                "rc": e.returncode,
+                "stderr": str(e)
+            }
             
         # setup btrfs and mount
         self.setup_btrfs(dir_name, disk_ipath)
