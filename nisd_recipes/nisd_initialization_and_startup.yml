@@ -23,6 +23,8 @@
               - "/nisd_chunks/0/vblks-read"
               - "/nisd_chunks/0/num-cme"
               - "/nisd_chunks/0/ref-cnt"
+              - "/nisd_chunks/0/merge-info/shallow-cnt"
+              - "/nisd_chunks/0/merge-info/full-status"
 
   tasks:
   - block:
@@ -408,6 +410,8 @@
          (aftrRestart['/0/num-data-pblks'] != 50) or
          (aftrRestart['/0/num-meta-pblks'] != 0) or
          (aftrRestart['/0/num-reserved-meta-pblks'] != 1) or
+         (aftrRestart['/merge-info/shallow-cnt'] != 0) or
+         (aftrRestart['/merge-info/full-status'] != 'idle') or
          (aftrRestart['/0/metablock-seqno'] != (old_metablock | int))
        loop: "{{ get_nisd }}"
        loop_control:
