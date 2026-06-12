@@ -618,10 +618,10 @@ def start_niova_block_test(cluster_params, input_values):
 
     if read_operation_ratio_percentage == '0':
         # prepare path for log file.
-        log_path = "%s/%s/niova-block-test_write_%s.log" % (base_dir, raft_uuid, vdev[5:])
+        log_path = "%s/%s/niova-block-test_write_%s.log" % (base_dir, raft_uuid, vdev)
     else:
         # Prepare path for log file.
-        log_path = "%s/%s/niova-block-test_read_%s.log" % (base_dir, raft_uuid, vdev[5:])
+        log_path = "%s/%s/niova-block-test_read_%s.log" % (base_dir, raft_uuid, vdev)
 
     # Initialize the logger
     logger = initialize_logger(log_path)
@@ -632,7 +632,7 @@ def start_niova_block_test(cluster_params, input_values):
     #start niova block test process
     bin_path = os.path.join(binary_dir, NIOVA_BIN_DIR, "niova-block-test")
 
-    logger.debug("Do write/read operation on nisd by starting niova-block-test in controlplane mode")
+    logger.debug("Do write/read operation on nisd by starting niova-block-test.")
     logger.debug("nisd-uuid: %s", nisd_uuid_to_write)
     logger.debug("vdev-uuid: %s", vdev)
     logger.debug("client-uuid: %s", client_uuid)
