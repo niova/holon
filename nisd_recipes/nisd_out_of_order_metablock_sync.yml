@@ -20,35 +20,55 @@
          tasks_from: apply_fi_on_nisd
        vars:
          numRemaining: "{{ num_of_remaining }}"
-         NisdUUID: "{{ get_nisd }}"
+         NisdUUID: "{{ nisd_uuid }}"
          LookoutUUID: "{{ get_lookout[0] }}"
          fault_injection_name: "out_of_order_metablock_sync"
+       loop: "{{ get_nisd }}"
+       loop_control:
+         loop_var: nisd_uuid
 
      - name: "{{ recipe_name }}: Apply fault injection on NISD and verify."
        include_role:
          name: common
          tasks_from: enable_fi_on_nisd
        vars:
-         NisdUUID: "{{ get_nisd }}"
+         NisdUUID: "{{ nisd_uuid }}"
          LookoutUUID: "{{ get_lookout[0] }}"
          fault_injection_name: "out_of_order_metablock_sync"
+       loop: "{{ get_nisd }}"
+       loop_control:
+         loop_var: nisd_uuid
 
-     - name: Generate new vdev-uuid
-       shell: "/usr/bin/uuid"
-       register: metablockVdev
+     - name: "{{ recipe_name }}: Reset VdevUUIDS list."
+       set_fact:
+         VdevUUIDS: []
 
-     - name: Generate new client-uuid for niova-block-test
-       shell: "/usr/bin/uuid"
-       register: metablockClient
+     - name: "{{ recipe_name }}: Reset ClientUUIDS list."
+       set_fact:
+         ClientUUIDS: []
+
+     - name: "Get multiple vdev uuids."
+       include_role:
+         name: common
+         tasks_from: get_multiple_vdev_uuids
+       loop: "{{ range(0, get_nisd | length) | list }}"
+
+     - name: "Get multiple client uuids."
+       include_role:
+         name: common
+         tasks_from: get_multiple_client_uuids
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Perform some Writes to the NISD."
        vars:
          input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd }}',
-                 'vdev' : '{{ metablockVdev.stdout }}',
-                 'read_operation_ratio_percentage' : '0',
-                 'random_seed' : '456',
-                 'client_uuid' : '{{ metablockClient.stdout }}',
+                 'enable_auth': 0,
+                 'cp_mode': 0,
+                 'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
+                 'vdev' : '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio' : '0',
+                 'random_seed_pt' : '456',
+                 'client_uuid' : '{{ ClientUUIDS[item] }}',
                  'request_size_in_bytes' : '1',
                  'queue_depth' : '8',
                  'num_ops' : '{{ no_of_ops | string }}',
@@ -57,35 +77,36 @@
                  'blocking_process' : False,
                  'lookout_uuid': '{{ get_lookout[0] }}'
                  }
-         wr_success: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
+       set_fact:
+         write_results: "{{ (write_results | default([])) + [lookup('nisd_handler', 'niova-block-test', input_param) | string] }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
+
+     - name: "{{ recipe_name }}: Show write results."
        debug:
-         msg: "get write's return code"
-       no_log:  True
-       with_items:
-        - "{{ wr_success }}"
-       register: get_wr
+         msg: "Write results: {{ write_results }}"
 
-     - debug:
-         msg: "Verify write is success"
-       failed_when: (get_wr['results'][0]['item'] != "0")
+     - name: "{{ recipe_name }}: Fail if any write failed."
+       debug:
+         msg: "One or more niova-block-test writes failed: {{ write_results }}"
+       failed_when: (write_results | reject('equalto', '0') | list | length) > 0
 
-     - name: "{{ recipe_name }}: Get nisd_chunk info."
+     - name: "{{ recipe_name }}: Verify nisd_chunk info."
        vars:
          stage: "get_nisd_chunk"
-         old_num_block_used: "{{ aftrRestartNisd['results'][0]['item']['/0/num-pblks-used'] }}"
          nisd_keys:
               - "/nisd_chunks/0/vblks-written"
               - "/nisd_chunks/0/metablock-seqno"
               - "/nisd_chunks/0/ooo-mb-sync-cnt"
          lookout_uuid: "{{ get_lookout[0] }}"
-         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_keys, 'nisd', lookout_uuid) }}"
+         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
-         msg: "Verify nisd values after writes: {{ getNiovaBlockTest }}"
-       no_log: True
+         msg: "Verify nisd values after writes for {{ item }}: {{ getNiovaBlockTest }}"
+       no_log: false
        failed_when: >
          ((getNiovaBlockTest['/0/vblks-written'] | int) != (no_of_ops | int)) or
          ((getNiovaBlockTest['/0/metablock-seqno'] | int) < ((num_of_remaining | int) - 1)) or
          ((getNiovaBlockTest['/0/ooo-mb-sync-cnt'] | int) < ((num_of_remaining | int) - 1))
+       loop: "{{ get_nisd }}"
 
     rescue:
      - name: "Recipe: {{ recipe_name }} failed"

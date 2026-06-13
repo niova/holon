@@ -14,20 +14,6 @@
        debug: msg="Check if parent recipe {{ parent }} failed"
        failed_when: terminate_recipe == true
 
-     - name: "{{ recipe_name }}: Get nisd_chunk info before applying fault injection."
-       vars:
-         stage: "get_nisd_chunk_before_fi"
-         nisd_keys:
-              - "/nisd_chunks/0/vblks-written"
-              - "/nisd_chunks/0/metablock-seqno"
-              - "/nisd_chunks/0/num-data-pblks"
-              - "/nisd_chunks/0/num-reserved-meta-pblks"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         getNisdChunkInfo: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_keys, 'nisd', lookout_uuid) }}"
-       debug:
-         msg: "Get nisd chunk values after writes for {{ item }}: {{ getNisdChunkInfo }}"
-       loop: "{{ get_nisd }}"
-
      - name: "{{ recipe_name }}: Apply fault injection on NISD and verify."
        include_role:
          name: common
@@ -37,6 +23,18 @@
          NisdUUID: "{{ nisd_uuid }}"
          LookoutUUID: "{{ get_lookout[0] }}"
          fault_injection_name: "metablock_multi_fill"
+       loop: "{{ get_nisd }}"
+       loop_control:
+         loop_var: nisd_uuid
+
+     - name: "{{ recipe_name }}: Apply fault injection on NISD and verify."
+       include_role:
+         name: common
+         tasks_from: enable_fi_on_nisd
+       vars:
+         NisdUUID: "{{ nisd_uuid }}"
+         LookoutUUID: "{{ get_lookout[0] }}"
+         fault_injection_name: "out_of_order_metablock_sync"
        loop: "{{ get_nisd }}"
        loop_control:
          loop_var: nisd_uuid
