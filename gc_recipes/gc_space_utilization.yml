@@ -12,6 +12,9 @@
       set_fact:
         partition_result: "{{ lookup('helper', 'create_partition', 'gc/gc_download', '27') }}"
 
+    - debug:
+        msg: "{{ partition_result }}"
+
     - name: "{{ recipe_name }}: Verify partition creation"
       debug:
         msg: "Partition creation failed with rc={{ partition_result.rc }} path={{ partition_result.path }}"

@@ -445,8 +445,8 @@ class LookupModule(LookupBase):
             img_dir = terms[1]
             bs = terms[2]
             count = terms[3]
-            device_path = help.create_dd_file(img_dir, bs, count)
-            return [device_path]
+            result = help.create_dd_file(img_dir, bs, count)
+            return [result["path"]]
 
         elif operation == "delete_dir":
             dir = terms[1]
@@ -484,8 +484,8 @@ class LookupModule(LookupBase):
         elif operation == "create_partition":
             dir = terms[1]
             total_blocks = terms[2]
-            help.create_gc_partition(dir, total_blocks)
-            return []
+            result = help.create_gc_partition(dir, total_blocks)
+            return [result]
         
         elif operation == "delete_dd_file":
             filename = terms[1]
