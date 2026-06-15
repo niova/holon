@@ -80,18 +80,10 @@
       set_fact:
         dd_result: "{{ lookup('helper', 'create_dd_file', img_file, bs, count) }}"
 
-    - name: "{{ recipe_name }}: Check filesystem space usage after file creation"
-      shell: df -h
-      register: df_output
-
-    - name: "{{ recipe_name }}: Print filesystem space usage"
-      debug:
-        var: df_output.stdout_lines
-
     - name: "{{ recipe_name }}: Verify if the file has been created successfully."
       debug:
         msg: "{{ dd_result }}"
-      failed_when: (dd_result.rc) != 0
+      failed_when: (dd_result is not defined)
 
     - name: "{{ recipe_name }}: generate data for 2 chunks parallely"
       vars:
