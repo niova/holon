@@ -111,7 +111,7 @@
 
         - name: "{{ recipe_name }}: Pause for 5 seconds to start pmdb and proxy servers properly."
           pause:
-            seconds: 10
+            seconds: 5
 
         - name: "{{ recipe_name }}: Starting controlplane_client to get membership details."
           vars:
