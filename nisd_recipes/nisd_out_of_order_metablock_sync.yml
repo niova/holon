@@ -102,6 +102,8 @@
        debug:
          msg: "Verify nisd values after writes for {{ item }}: {{ getNiovaBlockTest }}"
        no_log: false
+       retries: 20
+       delay: 1
        failed_when: >
          ((getNiovaBlockTest['/0/vblks-written'] | int) != (no_of_ops | int)) or
          ((getNiovaBlockTest['/0/metablock-seqno'] | int) < ((num_of_remaining | int) - 1)) or
