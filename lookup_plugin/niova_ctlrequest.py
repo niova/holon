@@ -29,6 +29,7 @@ def niova_ctlreq_cmd_send(recipe_conf, ctlreq_dict, peer_uuid, get_process_type,
     base_dir =  recipe_conf['raft_config']['base_dir_path']
     genericcmdobj = GenericCmds()
     app_uuid = genericcmdobj.generate_uuid()
+
     inotifyobj = InotifyPath(base_dir, True, get_process_type, lookout_uuid)
 
     # For idle_on cmd , input_base would be PRIVATE_INIT.
@@ -80,7 +81,6 @@ def niova_ctlreq_cmd_send(recipe_conf, ctlreq_dict, peer_uuid, get_process_type,
     genericcmdobj.recipe_json_dump(recipe_conf)
     return ctlreqobj.__dict__
 
-
 '''
 Lookup the raft key(s) in the output JSON file and return
 the values in the dictionary format for recipes to read it.
@@ -109,7 +109,6 @@ def niova_raft_lookup_values(ctlreq_dict, raft_key_list):
         raft_values_dict[output_key] = value[0]
 
     return raft_values_dict
-
 
 '''
 Lookup the raft keys for the given peer, first by sending
@@ -165,7 +164,6 @@ def niova_get_recipe_json_data(cluster_params):
 
     return recipe_conf
 
-
 '''
 Initialize the logger for ctlrequest cmd.
 '''
@@ -175,7 +173,6 @@ def niova_ctlrequest_init_logger(cluster_params):
     log_path = "%s/%s/%s.log" % (cluster_params['base_dir'], cluster_params['raft_uuid'], cluster_params['raft_uuid'])
 	# Initialize logger
     logging.basicConfig(filename=log_path, filemode='a', level=logging.DEBUG, format='%(asctime)s [%(filename)s:%(lineno)d] %(message)s')
-
 
 '''
 Prepare ctlrequest cmd parameter dictionary with passed parameters
@@ -198,7 +195,6 @@ def niova_ctlrequest_get_cmdline_input_dict(global_args, local_args):
         ctlreq_cmd_dict['peer_uuid_list'] = [local_args[1]]
     else:
         ctlreq_cmd_dict['peer_uuid_list'] = local_args[1]
-
 
 	# Now get the parameters specific to the operation.
     if ctlreq_cmd_dict['operation'] == "apply_cmd":

@@ -6,6 +6,7 @@ import os
 import time
 import subprocess
 from inotifypath import *
+from constants import NIOVA_LIBEXEC_DIR
 
 def initialize_logger(cluster_params):
     log_path = "%s/%s/%s.log" % (cluster_params['base_dir'],
@@ -53,9 +54,9 @@ class LookupModule(LookupBase):
         #Prepare path for executables.
         binary_dir = os.getenv('NIOVA_BIN_PATH')
         if app_name == "covid":
-            bin_path = '%s/covid_app_client' % binary_dir
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "covid_app_client")
         else:
-            bin_path = '%s/foodpalaceappclient' % binary_dir
+            bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "foodpalaceappclient")
 
         ctlsvc_path = "%s/configs" % base_dir
 
