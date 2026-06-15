@@ -1,0 +1,28 @@
+    
+    - name: "{{ recipe_name }}: Get nisd 'tasks' list"
+      vars:
+        stage: "wait-fault-inject"
+        tasks_keys:
+          - "/tasks"
+        process_type: "nisd"
+        lookout_uuid: "{{ LookoutUUID }}"
+      set_fact:
+        getFaultInject: "{{ lookup('niova_ctlrequest', 'lookup', NisdUUID, tasks_keys, 'nisd', lookout_uuid) }}"
+      no_log: false
+
+    - name: "{{ recipe_name }}: Gather vblk-read wait-fault-inject value."
+      set_fact:
+        VblkReadFaultInjectList: >-
+          {{
+            (VblkReadFaultInjectList | default([]))
+            + [item['wait']['fault-inject'] | string]
+          }}
+      loop: "{{ getFaultInject['//tasks'] }}"
+      no_log: false
+
+    - name: "{{ recipe_name }}: Verify 'wait-fault-inject'."
+      debug:
+        msg: "Verify 'wait-fault-inject'."
+      failed_when: item != "3"
+      loop: "{{ VblkReadFaultInjectList }}"
+      no_log: false

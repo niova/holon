@@ -154,8 +154,8 @@
      - name: "{{ recipe_name }}: Pause Compaction."
        vars:
          stage: "chunkPause"
-         cmd: "merge-info/full-status@pause"
-         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}"
+         cmd: "full-status@pause"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
@@ -172,7 +172,7 @@
        no_log: false
        failed_when: >
          (aftrPause['merge-info/full-status'] != "paused") or
-         (aftrPause['/merge-info/shallow-cnt'] != 0)
+         (aftrPause['merge-info/shallow-cnt'] != 0)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      #4 - Write one more VBLK to the Chunk and Read it Back
@@ -263,8 +263,8 @@
      - name: "{{ recipe_name }}: Resume Compaction."
        vars:
          stage: "chunkResume"
-         cmd: "chunk-merge-status@resume"
-         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}"
+         cmd: "full-status@resume"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
@@ -293,8 +293,8 @@
      - name: "{{ recipe_name }}: Force Compaction."
        vars:
          stage: "chunkForce"
-         cmd: "chunk-merge-status@merge"
-         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}"
+         cmd: "full-status@merge"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
