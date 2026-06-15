@@ -72,11 +72,11 @@
       debug:
         msg: "{{ lookup('garbage_collection', 'daemon', 'pause', params) }}"
 
-    - name: "{{ recipe_name }}: Create 1.5GB file"
+    - name: "{{ recipe_name }}: Create 1 GB file"
       vars:
         img_file: "gc/gc_download/file.img"
         bs: "64M"
-        count: 25
+        count: 16
       set_fact:
         dd_result: "{{ lookup('helper', 'create_dd_file', img_file, bs, count) }}"
 
