@@ -595,12 +595,13 @@ def start_niova_block_test(cluster_params, input_values):
     env = os.environ.copy()
     os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
     os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
+    os.environ["NIOVA_LOG_LEVEL"] = "5"
 
     enable_authentication = input_values["enable_auth"]
     
     if enable_authentication == 1:
-        os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
-        os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
+        os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = "1"
+        os.environ["NIOVA_NISD_SECRET"] = "NISD-secret"
 
     #get input parameters
     cp_mode = input_values['cp_mode']
@@ -659,11 +660,15 @@ def start_niova_block_test(cluster_params, input_values):
         return proc.returncode
 
     elif blocking_process == False and sequential_writes == False and integrity_check == False:
-        ps = subprocess.run((bin_path, '-c', nisd_uuid_to_write, '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
+        if cp_mode == 1:
+            os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
+            os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
+            logger.debug("Starting niova-block-test in cp mode.....")
+            ps = subprocess.run((bin_path, '-c', 'cp', '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
                          '-Z', request_size_in_bytes, '-N', num_ops, '-a', random_seed), stdout=fp, stderr=fp)
 
-    elif cp_mode == 1:
-        ps = subprocess.run((bin_path, '-c', 'cp', '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
+        else: 
+            ps = subprocess.run((bin_path, '-c', nisd_uuid_to_write, '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
                          '-Z', request_size_in_bytes, '-N', num_ops, '-a', random_seed), stdout=fp, stderr=fp)
             
     logger.info("niova-block-test args: %s", ps.args)

@@ -185,9 +185,9 @@
                  'random_seed_pt': '123',
                  'request_size_in_bytes': '0',
                  'queue_depth' : '0',
-                 'integrity_check': 'False',
-                 'sequential_writes': 'False',
-                 'blocking_process': 'False'
+                 'integrity_check': False,
+                 'sequential_writes': False,
+                 'blocking_process': False
             }
           set_fact:
             nblock_wr: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
