@@ -1,0 +1,145 @@
+- name: "controlPlane_rangeQuery_with_read_threads"
+  hosts: localhost
+  connection: local
+  vars:
+    recipe_name: "controlPlane_rangeQuery_with_read_threads"
+
+  tasks:
+  - block:
+    # check for the app_type
+     - name: "{{ recipe_name }}: Check if the app_type is 'controlplane'."
+       vars:
+         app_type: "{{ app_type }}"
+       debug:
+         msg: "app_type is: {{ app_type }}"
+       failed_when:
+         (app_type != "controlplane")
+
+     - name: "{{ recipe_name }}: Start pmdb and proxy servers."
+       include_role:
+          name: common
+          tasks_from: pmdb_cluster_init
+       vars:
+         number_of_clients: 2
+         number_of_PMDBServers: 3
+
+     - name: "{{ recipe_name }}: Get the list of all running peer UUIDs"
+       include_role:
+         name: common
+         tasks_from: get_server_uuid_info
+
+     - name: "{{ recipe_name }}: Get the current term and leader-uuid."
+       vars:
+         stage: "pre_wr_start"
+         raft_keys:
+            - "/raft_root_entry/0/term"
+            - "/raft_root_entry/0/leader-uuid"
+         get_orig_values: "{{ lookup('niova_ctlrequest', 'lookup', NRunningPeers, raft_keys, wantlist=True) }}"
+       debug:
+        msg: "Getting orignal values: {{ get_orig_values }}"
+       #no_log: True
+       with_items:
+          - "{{ get_orig_values }}"
+       register: stage0_value
+
+     - name: "{{ recipe_name }}: Perform rangeWrite from single ncpc"
+       vars:
+         input_param: {
+                'Operation': 'write',
+                'OutfileName': 'Rangewrite_output',
+                'NoofWrites': '5',
+                'wait_for_outfile': True
+                 }
+         ncpcliwr: "{{ lookup('controlplane', 'ncpc', input_param, wantlist=True) }}"
+       debug:
+         msg: "Do writes from ncpc"
+       with_items:
+          - "{{ ncpcliwr }}"
+       register: rangeWr
+
+     - name: "{{ recipe_name }}: Verify outfile status"
+       debug:
+         msg:
+           - "Check write outfile status: {{ rangeWr['results'][0]['item']['outfile_status'] }}"
+       no_log: true
+       failed_when: >
+         (rangeWr['results'][0]['item']['outfile_status'] != 0)
+
+     - name: "{{ recipe_name }}: Get the leader and follower uuids."
+       include_role:
+         name: common
+         tasks_from: get_follower_stats
+
+     - name: "{{ recipe_name }}: Get the current term and leader-uuid."
+       vars:
+         stage: "post_wr_op"
+         initial_vals: "{{ stage0_value['results'][item]['item'] }}"
+         raft_keys:
+            - "/raft_root_entry/0/term"
+            - "/raft_root_entry/0/leader-uuid"
+         get_curr_values: "{{ lookup('niova_ctlrequest', 'lookup', NRunningPeers[item], raft_keys, wantlist=True) }}"
+       debug:
+         msg: "Verify Leader UUID: {{ get_curr_values }}"
+       failed_when: >
+         (get_curr_values['/0/leader-uuid'] != initial_vals['/0/leader-uuid'])
+       loop: "{{ range(0, NRunningPeers|length) | list }}"
+
+     - debug:
+         msg: "{{ rangeWr }}"
+
+     - name: "{{ recipe_name }}: Verify write status"
+       debug:
+         msg: "Check write response status: {{ item.value['Status'] }}"
+       no_log: true
+       failed_when: >
+         (item.value['Status'] != 0)
+       with_dict: "{{ rangeWr['results'][0]['item']['output_data'] }}"
+
+     - name: "{{ recipe_name }}: Perform read operation from multiple ncpc client."
+       vars:
+         input_param: {
+                 'Key': '*',
+                 'Operation': 'read',
+                 'OutfileName': 'RangeRead_output_{{ item }}',
+                 'NoofWrites': '5',
+                 'seqNo': '',
+                 'wait_for_outfile': True
+                }
+       set_fact:
+         multirangeRd: "{{ multirangeRd|default([]) + [lookup('controlplane', 'ncpc', input_param, wantlist=True)] }}"
+       loop: "{{ range(0, 3)| list }}"
+
+     - debug:
+         msg: "{{ multirangeRd[item]['outfile_path'] }}"
+       loop: "{{ range(0, multirangeRd|length) | list }}"
+
+     - name: "{{ recipe_name }}: Verify outfile status and read status"
+       debug:
+        msg:
+         - "Check read outfile status: {{ multirangeRd[item]['outfile_status'] }}"
+         - "Check read response status: {{ multirangeRd[item]['output_data']['Response']['Status'] }}"
+       no_log: true
+       failed_when:
+         (multirangeRd[item]['outfile_status'] != 0) or
+         (multirangeRd[item]['output_data']['Response']['Status'] != 0)
+       loop: "{{ range(0, multirangeRd|length) | list }}"
+
+     - name: "{{ recipe_name }}: Compare write and read output with all the keys passed."
+       include_role:
+          name: common
+          tasks_from: compare_rd_value
+       vars:
+         Write_Key: "{{ rangeWr['results'][0]['item']['output_data'] }}"
+         Read_Key: "{{ multirangeRd[idx]['output_data']['Response']['Response'] }}"
+       loop: "{{ range(0, multirangeRd|length) | list }}"
+       loop_control:
+          loop_var: idx
+
+    rescue:
+     - name: "Recipe: {{ recipe_name }} failed"
+       set_fact:
+         terminate_recipe: true
+
+
+
+
