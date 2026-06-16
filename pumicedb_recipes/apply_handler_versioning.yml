@@ -1,0 +1,267 @@
+- name: "Apply Handler Versioning"
+  hosts: localhost
+  connection: local
+  vars:
+     recipe_name: "apply_handler_versioning"
+     number_of_app_uuids: 100
+     num_writes: 100
+
+  tasks:
+  - block:
+
+    - name: "{{ recipe_name }}: Get the list of peer UUIDs"
+      include_role:
+         name: common
+         tasks_from: get_server_uuid_info
+
+    # - name: "{{ recipe_name }}: Start 3 peers in the cluster."
+    #   vars:
+    #     ServerUUID: "{{ NonRunningServers[item] }}"
+    #     apply_handler_version: "False"
+    #   debug:
+    #     msg: "{{lookup('niova_raftprocess', 'start', ServerUUID, apply_handler_version)}}"
+    #   register: ret
+    #   failed_when: ret.failed == true
+    #   no_log: false
+    #   loop: "{{ range(0, NonRunningServers | length - 2) | list }}"
+
+    # - name: "{{ recipe_name }}: Get the running peers list."
+    #   include_role:
+    #     name: common
+    #     tasks_from: get_server_uuid_info
+
+    # - pause: seconds=2
+
+    # - name: Verify started peers are NOT running (expected crash)
+    #   shell: |
+    #     pgrep -f "pumice-reference-server.*{{ item.msg.process_uuid }}" || true
+    #   register: peer_check
+    #   failed_when: peer_check.stdout != ""
+    #   loop: "{{ ret.results }}"
+
+    # - name: "{{ recipe_name }}: DEBUG Print if the PMDB servers are running."
+    #   debug:
+    #     msg: "{{ peer_check }}"
+
+    - name: "Start 3 peers in the cluster"
+      include_role:
+        name: common
+        tasks_from: start_server
+      vars:
+        ServerUUID: "{{ NonRunningServers[item] }}"
+        apply_handler_version: True
+        version: 1
+      loop: "{{ range(0, NonRunningServers | length - 2) | list }}"
+
+    - name: "{{ recipe_name }}: Get the running peers list."
+      include_role:
+        name: common
+        tasks_from: get_server_uuid_info
+
+    - name: "{{ recipe_name }}: Get unused client uuid for starting the client"
+      include_role:
+        name: common
+        tasks_from: get_new_client_uuid
+      register: client_uuid
+
+    - name: "{{ recipe_name }}: Start client process"
+      include_role:
+        name: common
+        tasks_from: start_client
+      vars:
+        ClientUUID: "{{ client_uuid.stdout }}"
+
+    - name: "{{ recipe_name }}: Verify leader is viable."
+      include_role:
+        name: common
+        tasks_from: verify_leader_viable
+      vars:
+        ClientUUID: "{{ client_uuid.stdout }}"
+
+    #Create set of required number of app_uuids.
+    - name: "{{ recipe_name }}: Get set of required number of app_uuids."
+      include_role:
+        name: common
+        tasks_from: create_app_uuid_set
+      vars:
+        number_of_apps: "{{ number_of_app_uuids }}"
+
+    - name: "{{ recipe_name }}: Perform write operations on single client."
+      include_role:
+         name: common
+         tasks_from: perform_writes
+      vars:
+        pmdb_apps: "{{ pmdb_app_uuids }}"
+        constant_number_of_writes: 100
+        ClientUUID: "{{ client_uuid.stdout }}"
+
+    - name: "{{ recipe_name}}: Wait until status gets updated from client."
+      vars:
+        stage: "wait_for_write_status"
+        cmd_str:
+           - "/pumice_db_test_client/pmdb-test-apps/*/status"
+      debug:
+        msg: "Wait until write status gets updated"
+      until: lookup('niova_ctlrequest', 'lookup', client_uuid.stdout, cmd_str)['/*/status'] == "Success"
+      retries: 100
+      delay: 2
+
+    - name: "{{ recipe_name }}: DEBUG Print pmdb-seq."
+      vars:
+        write_key:
+          - "/pumice_db_test_client/pmdb-test-apps/*/pmdb-seqno"
+      debug: 
+        msg: "{{ lookup('niova_ctlrequest', 'lookup', client_uuid.stdout, write_key)['/*/pmdb-seqno'] }}"
+
+    # Wait until write completes from client
+    - name: "{{ recipe_name}}: Wait until write completes from client."
+      vars:
+        stage: "wait_for_write_compltn"
+        write_key:
+          - "/pumice_db_test_client/pmdb-test-apps/*/pmdb-seqno"
+      debug:
+        msg: "Waiting for client to finish writing"
+      until: lookup('niova_ctlrequest', 'lookup', client_uuid.stdout, write_key)['/*/pmdb-seqno'] == (num_writes - 1)
+      retries: 100
+      delay: 2
+
+    - name: "{{ recipe_name}}: Wait until 'app-syc == true'"
+      vars:
+        stage: "wait_for_app_sync"
+        cmd_str:
+           - "/pumice_db_test_client/pmdb-test-apps/*/app-sync"
+      debug:
+        msg: "Wait until write status gets updated"
+      until: lookup('niova_ctlrequest', 'lookup', client_uuid.stdout, cmd_str)['/*/app-sync'] == true
+      retries: 100
+      delay: 2
+
+    #Verify client parameters after successful write operations.
+    - name: "{{ recipe_name }}: Verify client parameters."
+      include_role:
+        name: common
+        tasks_from: verify_client_parameters
+      vars:
+        Client_UUID: "{{ client_uuid.stdout }}"
+
+    - name: "{{ recipe_name }}: Kill the cluster (version=1)."
+      vars:
+        ServerUUID: "{{ NRunningPeers[item] }}"
+      debug:
+       msg: "{{lookup('niova_raftprocess', 'kill', ServerUUID)}}"
+      no_log: False
+      loop: "{{ range(0, NRunningPeers | length - 2) | list }}"
+
+    - pause: seconds=2
+
+    # Start the third cluster
+
+    - name: "Start 3 peers in the cluster (version=2)"
+      include_role:
+        name: common
+        tasks_from: start_server
+      vars:
+        ServerUUID: "{{ NonRunningServers[item] }}"
+        apply_handler_version: True
+        version: 2
+      loop: "{{ range(0, NonRunningServers | length - 2) | list }}"
+
+    - name: "{{ recipe_name }}: Get the running peers list."
+      include_role:
+        name: common
+        tasks_from: get_server_uuid_info
+
+    - name: "{{ recipe_name }}: Get unused client uuid for starting the client"
+      include_role:
+        name: common
+        tasks_from: get_new_client_uuid
+      register: client_uuid
+
+    - name: "{{ recipe_name }}: Start client process"
+      include_role:
+        name: common
+        tasks_from: start_client
+      vars:
+        ClientUUID: "{{ client_uuid.stdout }}"
+
+    - name: "{{ recipe_name }}: Verify leader is viable."
+      include_role:
+        name: common
+        tasks_from: verify_leader_viable
+      vars:
+        ClientUUID: "{{ client_uuid.stdout }}"
+
+    #Create set of required number of app_uuids.
+    - name: "{{ recipe_name }}: Get set of required number of app_uuids."
+      include_role:
+        name: common
+        tasks_from: create_app_uuid_set
+      vars:
+        number_of_apps: "{{ number_of_app_uuids }}"
+
+    - name: "{{ recipe_name }}: Perform write operations on single client."
+      include_role:
+         name: common
+         tasks_from: perform_writes
+      vars:
+        pmdb_apps: "{{ pmdb_app_uuids }}"
+        constant_number_of_writes: 100
+        ClientUUID: "{{ client_uuid.stdout }}"
+
+    - name: "{{ recipe_name}}: Wait until status gets updated from client."
+      vars:
+        stage: "wait_for_write_status"
+        cmd_str:
+           - "/pumice_db_test_client/pmdb-test-apps/*/status"
+      debug:
+        msg: "Wait until write status gets updated"
+      until: lookup('niova_ctlrequest', 'lookup', client_uuid.stdout, cmd_str)['/*/status'] == "Success"
+      retries: 100
+      delay: 2
+
+    - name: "{{ recipe_name }}: DEBUG Print pmdb-seq."
+      vars:
+        write_key:
+          - "/pumice_db_test_client/pmdb-test-apps/*/pmdb-seqno"
+      debug: 
+        msg: "{{ lookup('niova_ctlrequest', 'lookup', client_uuid.stdout, write_key)['/*/pmdb-seqno'] }}"
+
+    # Wait until write completes from client
+    - name: "{{ recipe_name}}: Wait until write completes from client."
+      vars:
+        stage: "wait_for_write_compltn"
+        write_key:
+          - "/pumice_db_test_client/pmdb-test-apps/*/pmdb-seqno"
+      debug:
+        msg: "Waiting for client to finish writing"
+      until: lookup('niova_ctlrequest', 'lookup', client_uuid.stdout, write_key)['/*/pmdb-seqno'] == (num_writes - 1)
+      retries: 100
+      delay: 2
+
+    - name: "{{ recipe_name}}: Wait until 'app-syc == true'"
+      vars:
+        stage: "wait_for_app_sync"
+        cmd_str:
+           - "/pumice_db_test_client/pmdb-test-apps/*/app-sync"
+      debug:
+        msg: "Wait until write status gets updated"
+      until: lookup('niova_ctlrequest', 'lookup', client_uuid.stdout, cmd_str)['/*/app-sync'] == true
+      retries: 100
+      delay: 2
+
+    #Verify client parameters after successful write operations.
+    - name: "{{ recipe_name }}: Verify client parameters."
+      include_role:
+        name: common
+        tasks_from: verify_client_parameters
+      vars:
+        Client_UUID: "{{ client_uuid.stdout }}"
+
+    - name: "Start a new node in the cluster (version=2)"
+      include_role:
+        name: common
+        tasks_from: start_server
+      vars:
+        ServerUUID: "{{ NonRunningServers[0] }}"
+        apply_handler_version: True
+        version: 2  

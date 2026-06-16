@@ -219,12 +219,57 @@ class LookupModule(LookupBase):
         proc_operation = terms[0]
         uuid = terms[1]
 
+        # default values for optional args
         sleep_after_op = False
+        sinfo = None
+        apply_handler = False
+        version = 0
 
         if len(terms) == 3:
-            # User asked to sleep after operation completion.
-            sleep_after_op = True
-            sinfo = terms[2]
+            third = terms[2]
+            if isinstance(third, dict):
+                sleep_after_op = True
+                sinfo = third
+            else:
+                # treat as apply_handler boolean (backwards-compatible)
+                try:
+                    apply_handler = bool(third)
+                except Exception:
+                    apply_handler = False
+        elif len(terms) >= 4:
+            try:
+                apply_handler = bool(terms[2])
+            except Exception:
+                apply_handler = False
+            try:
+                version = int(terms[3])
+            except Exception:
+                version = 0
+
+        # export NIOVA_APPLY_HANDLER_VERSION if applicable
+        if version == 1:
+            os.environ['NIOVA_APPLY_HANDLER_VERSION'] = '1'
+        elif version == 2:
+            os.environ['NIOVA_APPLY_HANDLER_VERSION'] = '2'
+
+        # sleep_after_op = False
+        # sinfo = None
+
+        # if len(terms) == 3:
+        #     # User asked to sleep after operation completion.
+        #     sleep_after_op = True
+        #     sinfo = terms[2]
+
+        # elif len(terms) == 4:
+        #     apply_handler = bool(terms[2])
+        #     print(type(apply_handler))
+        #     version = int(terms[3])
+        #     print(type(version))
+        #         #export NIOVA_APPLY_HANDLER_VERSION
+        #     if version == 1:
+        #         os.environ['NIOVA_APPLY_HANDLER_VERSION'] = '1'
+        #     if version == 2:
+        #         os.environ['NIOVA_APPLY_HANDLER_VERSION'] = '2'
 
         # Initialize the logger
         initialize_logger(cluster_params)
