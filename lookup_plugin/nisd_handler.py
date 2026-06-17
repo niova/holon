@@ -595,13 +595,12 @@ def start_niova_block_test(cluster_params, input_values):
     env = os.environ.copy()
     os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
     os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
-    os.environ["NIOVA_LOG_LEVEL"] = "5"
 
     enable_authentication = input_values["enable_auth"]
     
     if enable_authentication == 1:
         os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = "1"
-        os.environ["NIOVA_NISD_SECRET"] = "NISD-secret"
+        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
 
     #get input parameters
     cp_mode = input_values['cp_mode']

@@ -182,14 +182,30 @@ def get_the_output(outfilePath):
             counter += 1
             time.sleep(1)
             if counter == timeout:
-                return {'outfile_status':-1}
+                return {'outfile_status': -1}
         else:
             break
 
+    # File exists, but may still be mid-write. Retry parsing until it's
+    # valid JSON or we exhaust the same timeout budget.
     output_data = {}
+    parse_counter = 0
+    parse_timeout = 30
+    while True:
+        try:
+            with open(outfile, "r", encoding="utf-8") as json_file:
+                content = json_file.read()
+                if not content.strip():
+                    raise json.JSONDecodeError("empty file", content, 0)
+                output_data = json.loads(content)
+            break
+        except (json.JSONDecodeError, ValueError):
+            parse_counter += 1
+            time.sleep(0.5)
+            if parse_counter >= parse_timeout:
+                return {'outfile_status': -1}
+
     json_data = {}
-    with open(outfile, "r+", encoding="utf-8") as json_file:
-        output_data = json.load(json_file)
     json_data['outfile_status'] = 0
     json_data['output_data'] = output_data
     return json_data
