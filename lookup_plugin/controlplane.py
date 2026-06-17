@@ -13,6 +13,7 @@ from genericcmd import *
 from func_timeout import func_timeout, FunctionTimedOut
 import time as time_global
 from inotifypath import *
+from constants import NIOVA_LIBEXEC_DIR
 
 def start_ncpc(cluster_params, Key, Value, Operation,
                                      OutfileName, IP_addr, Port, NumWrites, seqNo, lookout_uuid, nisd_uuid, cmd):
@@ -22,7 +23,7 @@ def start_ncpc(cluster_params, Key, Value, Operation,
 
     # Prepare path for executables.
     binary_dir = os.getenv('NIOVA_BIN_PATH')
-    bin_path = '%s/ncpc' % binary_dir
+    bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "ncpc")
 
     # Prepare path for log file.
     log_file = "%s/%s/%s_ncpc_log.txt" % (base_dir, raft_uuid, app_name)
@@ -228,7 +229,7 @@ def start_niova_lookout_process(cluster_params, uport):
     gossipNodes = "%s/%s/gossipNodes" % (base_dir, raft_uuid)
     
     #start niova block test process
-    bin_path = '%s/nisdLookout' % binary_dir
+    bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "nisdLookout")
 
       #writing the information of lookout uuids dict into raft_uuid.json
     recipe_conf = load_recipe_op_config(cluster_params)
@@ -240,7 +241,6 @@ def start_niova_lookout_process(cluster_params, uport):
 
     genericcmdobj.recipe_json_dump(recipe_conf)
     logging.info("starting niova-lookout process")
-    value = "-std=true"
     http_port_path = "%s/%s/http_port.json" % (base_dir, raft_uuid)
     if app_name == "controlplane":
         process_popen = subprocess.Popen([bin_path, '-dir', str(ctl_interface_path), '-c', gossipNodes,
@@ -249,7 +249,7 @@ def start_niova_lookout_process(cluster_params, uport):
     else:
         process_popen = subprocess.Popen([bin_path, '-dir', str(ctl_interface_path), '-c', gossipNodes,
                                             '-n', lookout_uuid, '-r', raft_uuid,
-                                            '-u', uport, value, '-pr', http_port_path], stdout = fp, stderr = fp)
+                                            '-u', uport, '-pr', http_port_path], stdout = fp, stderr = fp)
 
     #Check if niova-lookout process exited with error
     if process_popen.poll() is None:
@@ -303,7 +303,7 @@ def start_testApp(cluster_params, input_values):
 
     #Prepare path for executables.
     binary_dir = os.getenv('NIOVA_BIN_PATH')
-    bin_path = '%s/testApp' % binary_dir
+    bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "testApp")
     start_range = port
     end_range = port+50
     Port_range = str(start_range)+"-"+str(end_range)
@@ -329,7 +329,7 @@ def lease(cluster_params, Key, Value, Operation, OutfileName, Port):
 
     # Prepare path for executables.
     binary_dir = os.getenv('NIOVA_BIN_PATH')
-    bin_path = '%s/ncpc' % binary_dir
+    bin_path = os.path.join(binary_dir, NIOVA_LIBEXEC_DIR, "ncpc")
 
     # Prepare path for log file.
     log_file = "%s/%s/%s_ncpc_lease_log.txt" % (base_dir, raft_uuid, app_name)

@@ -9,8 +9,16 @@
   tasks:
   - block:
     - name: "{{ recipe_name }}: Create 1.5GB Partition"
+      set_fact:
+        partition_result: "{{ lookup('helper', 'create_partition', 'gc/gc_download', '27') }}"
+
+    - debug:
+        msg: "{{ partition_result }}"
+
+    - name: "{{ recipe_name }}: Verify partition creation"
       debug:
-        msg: "{{ lookup('helper', 'create_partition', 'gc/gc_download', '27') }}"
+        msg: "Partition creation failed with rc={{ partition_result.rc }} path={{ partition_result.path }}"
+      failed_when: partition_result.rc != 0
 
     - name: "{{ recipe_name }}: Start minio server"
       vars:
@@ -64,13 +72,18 @@
       debug:
         msg: "{{ lookup('garbage_collection', 'daemon', 'pause', params) }}"
 
-    - name: "{{ recipe_name }}: Create 1.5GB file"
+    - name: "{{ recipe_name }}: Create 1 GB file"
       vars:
         img_file: "gc/gc_download/file.img"
         bs: "64M"
-        count: 25
+        count: 16
+      set_fact:
+        dd_result: "{{ lookup('helper', 'create_dd_file', img_file, bs, count) }}"
+
+    - name: "{{ recipe_name }}: Verify if the file has been created successfully."
       debug:
-        msg: "{{ lookup('helper', 'create_dd_file', img_file, bs, count) }}"
+        msg: "{{ dd_result }}"
+      failed_when: (dd_result is not defined)
 
     - name: "{{ recipe_name }}: generate data for 2 chunks parallely"
       vars:

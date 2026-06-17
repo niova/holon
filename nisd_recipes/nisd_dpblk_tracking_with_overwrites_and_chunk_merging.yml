@@ -29,8 +29,8 @@
               - "/nisd_chunks/0/vblks-read"
               - "/nisd_chunks/0/num-cme"
               - "/nisd_chunks/0/ref-cnt"
-              - "/nisd_chunks/0/chunk-merge-cnt"
-              - "/nisd_chunks/0/chunk-merge-status"
+              - "/nisd_chunks/0/merge-info/shallow-cnt"
+              - "/nisd_chunks/0/merge-info/full-status"
 
   tasks:
   - block:
@@ -42,58 +42,75 @@
      - name: "{{ recipe_name }}: Capture the /nisd_root_entry Values left by the parent."
        vars:
          stage: "initial_value"
-         process_type: "nisd"
          lookout_uuid: "{{ get_lookout[0] }}"
-         origVal: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_root_keys, 'nisd', lookout_uuid) }}"
-       debug:
-         msg: "Get nisd root entry values: {{ origVal }}"
-       no_log: True
-       with_items:
-        - "{{ origVal }}"
-       register: initialValues
-
-     - name: Generate new vdev-uuid
-       shell: "/usr/bin/uuid"
-       register: vdev
-
-     - debug:
-         msg: "{{ vdev.stdout }}"
-
-     - name: Generate new client-uuid for niova-block-test
-       shell: "/usr/bin/uuid"
-       register: old_cli_uuid
+         origVal: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_root_keys, 'nisd', lookout_uuid) }}"
+       set_fact:
+         initialValues: >-
+            {{
+              initialValues | default([]) +
+              [{
+                'nisd_uuid': item,
+                'entry': origVal
+              }]
+            }}
+       loop: "{{ get_nisd }}"
 
      - debug:
-         msg: "{{ old_cli_uuid.stdout }}"
+         msg: "{{ initialValues }}"
+
+     - name: "{{ recipe_name }}: Reset VdevUUIDS list."
+       set_fact:
+         VdevUUIDS: []
+
+     - name: "{{ recipe_name }}: Reset ClientUUIDS list."
+       set_fact:
+         ClientUUIDS: []
+
+     # Get multiple vdev uuids using common task.
+     - name: "Get multiple vdev uuids."
+       include_role:
+        name: common
+        tasks_from: get_multiple_vdev_uuids
+       loop: "{{ range(0, get_nisd | length) | list }}"
+
+     # Get multiple client uuids using common task.
+     - name: "Get multiple client uuids."
+       include_role:
+        name: common
+        tasks_from: get_multiple_client_uuids
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      #2 - Perform a Number of Single Block Writes to the NISD
      - name: "{{ recipe_name }}: Perform some Writes to the NISD."
        vars:
          input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd }}',
-                 'vdev' : '{{ vdev.stdout}}',
-                 'read_operation_ratio_percentage' : '0',
-                 'random_seed' : '987',
-                 'client_uuid' : '{{ old_cli_uuid.stdout }}',
-                 'request_size_in_bytes' : '1',
-                 'queue_depth' : '1',
-                 'num_ops' : '512',
-                 'integrity_check' : True,
-                 'sequential_writes' : False,
-                 'blocking_process' : False,
+                 'enable_auth': 0,
+                 'cp_mode': 0,
+                 'nisd_uuid_to_write': 'unix:{{ get_nisd[item] }}',
+                 'vdev': '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio': '0',
+                 'random_seed_pt': '987',
+                 'client_uuid': '{{ ClientUUIDS[item] }}',
+                 'request_size_in_bytes': '1',
+                 'queue_depth': '1',
+                 'num_ops': '512',
+                 'integrity_check': True,
+                 'sequential_writes': False,
+                 'blocking_process': False,
                  'lookout_uuid': '{{ get_lookout[0] }}'
                  }
-         wr_success: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
+       set_fact:
+         write_success: "{{ (write_success | default([])) + [lookup('nisd_handler', 'niova-block-test', input_param) | string] }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
+    
+     - name: "{{ recipe_name }}: Show write results."
        debug:
-         msg: "get write's return code"
-       no_log:  True
-       with_items:
-        - "{{ wr_success }}"
-       register: get_wr
+         msg: "Read results: {{ write_success }}"
 
-     - debug:
-         msg: "Verify write is success"
-       failed_when: (get_wr['results'][0]['item'] != "0")
+     - name: "{{ recipe_name }}: Fail if any write failed."
+       debug:
+         msg: "One or more niova-block-test reads failed: {{ write_success }}"
+       failed_when: (write_success | reject('equalto', '0') | list | length) > 0
 
      #3 - Issue a Merge on the Chunk
      - name: "{{ recipe_name}}: Wait until 'chunk-merge-status' : 'idle'"
@@ -102,54 +119,65 @@
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "Waiting for nisd to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd, '/nisd_chunks/0/chunk-merge-status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "idle"
+       until: lookup('niova_ctlrequest', 'lookup', item, '/nisd_chunks/0/merge-info/full-status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "idle"
        retries: 10
        delay: 1
+       loop: "{{ get_nisd }}"
 
      - name: "{{ recipe_name }}: Capture the value of “chunk-merge-cnt”."
        vars:
-         stage: "chunk_merge_cnt"
+         stage: "orig_chunk_merge_cnt"
          lookout_uuid: "{{ get_lookout[0] }}"
-         getChunkCnt: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_chunk_keys, 'nisd', lookout_uuid) }}"
-       debug:
-         msg: "Get nisd root entry values: {{ getChunkCnt }}"
-       no_log: True
-       with_items:
-        - "{{ getChunkCnt }}"
-       register: origChunkCnt
+         getChunkCnt: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_chunk_keys, 'nisd', lookout_uuid) }}"
+       set_fact:
+         origChunkCnt: >-
+           {{
+             origChunkCnt | default([]) +
+              [{
+                'nisd_uuid': item,
+                'entry': getChunkCnt
+              }]
+           }}
+       loop: "{{ get_nisd }}"
+
+     - debug:
+         msg: "{{ origChunkCnt }}"
 
      - name: "{{ recipe_name }}: Issue chunk merge cmd."
        vars:
          stage: "chunkMerge"
          cmd: "chunk-merge-status@merge"
-         where: "/nisd_chunks/vdev-uuid@{{ vdev.stdout }}"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
-         msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd, cmd, where, 'nisd', lookout_uuid) }}"
-       no_log: true
+         msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       no_log: false
 
      - name: "{{ recipe_name}}: Wait until chunk cnt gets updated."
        vars:
-         orig_merge_cnt: "{{ origChunkCnt['results'][0]['item']['/0/chunk-merge-cnt'] }}"
+         orig_merge_cnt: "{{ origChunkCnt[item].entry['/merge-info/shallow-cnt'] }}"
          stage: "wait_for_chunk_cnt"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "Waiting for nisd to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd, '/nisd_chunks/0/chunk-merge-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/0/merge-info/shallow-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
        retries: 10
        delay: 1
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      #4 - Verify Chunk Values.
      - name: "{{ recipe_name }}: Verify nisd chunk values."
        vars:
          stage: "verify_nisd_chunk"
          lookout_uuid: "{{ get_lookout[0] }}"
-         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_chunk_keys, 'nisd', lookout_uuid) }}"
+         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_chunk_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd values after writes: {{ getNiovaBlockTest }}"
-       no_log: True
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       no_log: false
        failed_when: >
-         (getNiovaBlockTest['/0/chunk-merge-status'] != "idle") or
+         (getNiovaBlockTest['/merge-info/full-status'] != "idle") or
          (getNiovaBlockTest['/0/vblks-written'] != 512) or
          (getNiovaBlockTest['/0/metablock-seqno'] != 511) or
          (getNiovaBlockTest['/0/ref-cnt'] != 1) or
@@ -157,17 +185,18 @@
          (getNiovaBlockTest['/0/num-meta-pblks'] != 1) or
          (getNiovaBlockTest['/0/num-reserved-meta-pblks'] != 1)
 
-     #5 - Verify /nisd_root_entry Values against those taken in Step #1
+     # 5 - Verify /nisd_root_entry Values against those taken in Step #1
      - name: "{{ recipe_name }}: Verify /nisd_root_entry Values against those taken in Step #1."
        vars:
          stage: "verify_nisd_root_keys"
-         old_num_block_used: "{{ initialValues['results'][0]['item']['/0/num-pblks-used'] }}"
-         old_num_reserved_block_used: "{{ initialValues['results'][0]['item']['/0/num-reserved-pblks-used'] }}"
+         old_num_block_used: "{{ initialValues[item].entry['/0/num-pblks-used'] }}"
+         old_num_reserved_block_used: "{{ initialValues[item].entry['/0/num-reserved-pblks-used'] }}"
          lookout_uuid: "{{ get_lookout[0] }}"
-         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_root_keys, 'nisd', lookout_uuid) }}"
+         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_root_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd values after writes: {{ getNiovaBlockTest }}, {{ old_num_block_used }}, {{ old_num_reserved_block_used }}"
-       no_log: True
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       no_log: false
        failed_when: >
          (getNiovaBlockTest['/0/num-pblks-used'] != ((old_num_block_used | int) + 17)) or
          (getNiovaBlockTest['/0/num-reserved-pblks-used'] != ((old_num_reserved_block_used | int) + 1))
@@ -176,11 +205,13 @@
      - name: "{{ recipe_name }}: Issue a Read of the Vblks."
        vars:
          input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd }}',
-                 'vdev' : '{{ vdev.stdout}}',
-                 'read_operation_ratio_percentage' : '100',
-                 'random_seed' : '987',
-                 'client_uuid' : '{{ old_cli_uuid.stdout }}',
+                 'enable_auth': 0,
+                 'cp_mode': 0,
+                 'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
+                 'vdev' : '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio' : '100',
+                 'random_seed_pt' : '987',
+                 'client_uuid' : '{{ ClientUUIDS[item] }}',
                  'request_size_in_bytes' : '1',
                  'queue_depth' : '1',
                  'num_ops' : '512',
@@ -189,33 +220,54 @@
                  'blocking_process' : False,
                  'lookout_uuid': '{{ get_lookout[0] }}'
                  }
-         rd_success: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
+       set_fact:
+          read_success: "{{ (read_success | default([])) + [lookup('nisd_handler', 'niova-block-test', input_param) | string] }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
+
+     - name: "{{ recipe_name }}: Show read results."
        debug:
-         msg: "get read's return code"
-       with_items:
-        - "{{ rd_success }}"
-       register: get_rd
+         msg: "Read results: {{ read_success }}"
+
+     - name: "{{ recipe_name }}: Fail if any read failed."
+       debug:
+         msg: "One or more niova-block-test reads failed: {{ read_success }}"
+       failed_when: (read_success | reject('equalto', '0') | list | length) > 0
+
+     - name: "{{ recipe_name }}: Store the old client list for later step."
+       set_fact:
+         OldClientUUIDS: "{{ ClientUUIDS | default([]) }}"
 
      - debug:
-         msg: "Verify read must pass"
-       failed_when: (get_rd['results'][0]['item'] != "0")
+         msg: "OldClientUUIDS: {{ OldClientUUIDS }}"
 
-     - name: Generate new client-uuid for niova-block-test
-       shell: "/usr/bin/uuid"
-       register: new_cli_uuid
+     - name: "{{ recipe_name }}: Reset ClientUUIDS list."
+       set_fact:
+         ClientUUIDS: []
 
      - debug:
-         msg: "{{ new_cli_uuid.stdout }}"
+         msg: "Reset ClientUUIDS: {{ ClientUUIDS }}"
 
-     #7 - Overwrite the Vblks Using a New CLIENT_UUID
+     # Get multiple client uuids using common task.
+     - name: "Get multiple client uuids."
+       include_role:
+        name: common
+        tasks_from: get_multiple_client_uuids
+       loop: "{{ range(0, get_nisd | length) | list }}"
+
+     - debug:
+         msg: "New ClientUUIDS: {{ ClientUUIDS }}"
+
+     # 7 - Overwrite the Vblks Using a New CLIENT_UUID
      - name: "{{ recipe_name }}: Overwrite the Vblks Using a New CLIENT_UUID."
        vars:
          input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd }}',
-                 'vdev' : '{{ vdev.stdout}}',
-                 'read_operation_ratio_percentage' : '0',
-                 'random_seed' : '987',
-                 'client_uuid' : '{{ new_cli_uuid.stdout }}',
+                 'enable_auth': 0,
+                 'cp_mode': 0,
+                 'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
+                 'vdev' : '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio' : '0',
+                 'random_seed_pt' : '987',
+                 'client_uuid' : '{{ ClientUUIDS[item] }}',
                  'request_size_in_bytes' : '1',
                  'queue_depth' : '1',
                  'num_ops' : '512',
@@ -224,27 +276,30 @@
                  'blocking_process' : False,
                  'lookout_uuid': '{{ get_lookout[0] }}'
                  }
-         wr_success: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
-       debug:
-         msg: "get write's return code"
-       no_log:  True
-       with_items:
-        - "{{ wr_success }}"
-       register: check_wr
+       set_fact:
+          overwr_success: "{{ (overwr_success | default([])) + [lookup('nisd_handler', 'niova-block-test', input_param) | string] }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
-     - debug:
-         msg: "Verify write is success"
-       failed_when: (check_wr['results'][0]['item'] != "0")
+     - name: "{{ recipe_name }}: Show overwrite results."
+       debug:
+         msg: "Overwrite results: {{ overwr_success }}"
+
+     - name: "{{ recipe_name }}: Fail if any writes failed."
+       debug:
+         msg: "One or more niova-block-test writes failed: {{ overwr_success }}"
+       failed_when: (overwr_success | reject('equalto', '0') | list | length) > 0
 
      #8 - Issue a Read of the Vblks using $CLIENT_UUID
      - name: "{{ recipe_name }}: Issue a Read of the Vblks using old CLIENT_UUID."
        vars:
          input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd }}',
-                 'vdev' : '{{ vdev.stdout}}',
-                 'read_operation_ratio_percentage' : '100',
-                 'random_seed' : '987',
-                 'client_uuid' : '{{ old_cli_uuid.stdout }}',
+                 'enable_auth': 0,
+                 'cp_mode': 0,
+                 'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
+                 'vdev' : '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio' : '100',
+                 'random_seed_pt' : '987',
+                 'client_uuid' : '{{ OldClientUUIDS[item] }}',
                  'request_size_in_bytes' : '1',
                  'queue_depth' : '1',
                  'num_ops' : '512',
@@ -253,26 +308,30 @@
                  'blocking_process' : False,
                  'lookout_uuid': '{{ get_lookout[0] }}'
                  }
-         rd_failure: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
-       debug:
-         msg: "read's return code:"
-       with_items:
-        - "{{ rd_failure }}"
-       register: perform_rd
+       set_fact:
+          rd_failure: "{{ (rd_failure | default([])) + [lookup('nisd_handler', 'niova-block-test', input_param) | string] }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
-     - debug:
-         msg: "Verify read must fail"
-       failed_when: (perform_rd['results'][0]['item'] == "0")
+     - name: "{{ recipe_name }}: Show read failure results."
+       debug:
+         msg: "Read results: {{ rd_failure }}"
+
+     - name: "{{ recipe_name }}: Verify if all readsfailed."
+       debug:
+         msg: "One or more niova-block-test reads failed: {{ rd_results }}"
+       failed_when: (rd_failure | reject('equalto', '0') | list | length) != 0
 
      #9 - Issue a Read of the Vblks using $CLIENT_UUID_NEW
      - name: "{{ recipe_name }}: Issue a Read of the Vblks using CLIENT_UUID_NEW."
        vars:
          input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd }}',
-                 'vdev' : '{{ vdev.stdout}}',
-                 'read_operation_ratio_percentage' : '100',
-                 'random_seed' : '987',
-                 'client_uuid' : '{{ new_cli_uuid.stdout }}',
+                 'enable_auth': 0,
+                 'cp_mode': 0,
+                 'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
+                 'vdev' : '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio' : '100',
+                 'random_seed_pt' : '987',
+                 'client_uuid' : '{{ ClientUUIDS[item] }}',
                  'request_size_in_bytes' : '1',
                  'queue_depth' : '1',
                  'num_ops' : '512',
@@ -281,62 +340,74 @@
                  'blocking_process' : False,
                  'lookout_uuid': '{{ get_lookout[0] }}'
                  }
-         rd_success: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
+       set_fact:
+          new_rd_success: "{{ (new_rd_success | default([])) + [lookup('nisd_handler', 'niova-block-test', input_param) | string] }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
+
+     - name: "{{ recipe_name }}: Show new client read results."
        debug:
-         msg: "get read's return code"
-       with_items:
-        - "{{ rd_success }}"
-       register: verify_rd_pass
+         msg: "Read results: {{ new_rd_success }}"
+
+     - name: "{{ recipe_name }}: Fail if any read failed."
+       debug:
+         msg: "One or more niova-block-test reads failed: {{ new_rd_success }}"
+       failed_when: (new_rd_success | reject('equalto', '0') | list | length) > 0
+
+     - name: "{{ recipe_name }}: Capture the value of “chunk-merge-cnt” after new client reads."
+       vars:
+         stage: "get_merge_cnt_after_new_rds"
+         lookout_uuid: "{{ get_lookout[0] }}"
+         getChunkCnt: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_chunk_keys, 'nisd', lookout_uuid) }}"
+       set_fact:
+         ChunkCntAftrNewRds: >-
+           {{
+             ChunkCntAftrNewRds | default([]) +
+              [{
+                'nisd_uuid': item,
+                'entry': getChunkCnt
+              }]
+           }}
+       loop: "{{ get_nisd }}"
 
      - debug:
-         msg: "Verify read must pass with new client-uuid"
-       failed_when: (verify_rd_pass['results'][0]['item'] != "0")
-
-     - name: "{{ recipe_name }}: Capture the value of “chunk-merge-cnt”."
-       vars:
-         stage: "get_merge_cnt"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         getChunkCnt: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_chunk_keys, 'nisd', lookout_uuid) }}"
-       debug:
-         msg: "Get nisd root entry values: {{ getChunkCnt }}"
-       no_log: True
-       with_items:
-        - "{{ getChunkCnt }}"
-       register: bfrMergeChunkCnt
+         msg: "{{ ChunkCntAftrNewRds }}"
 
      #10 - Repeat Step #3 - Issue a Merge on the Chunk
      - name: "{{ recipe_name }}: Issue a Merge on the Chunk"
        vars:
-         stage: "issueChunkMerge"
+         stage: "issueChunkMergeAftrNewRds"
          cmd: "chunk-merge-status@merge"
-         where: "/nisd_chunks/vdev-uuid@{{ vdev.stdout }}"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
-         msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd, cmd, where, 'nisd', lookout_uuid) }}"
+         msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
        no_log: true
 
-     - name: "{{ recipe_name}}: Wait until chunk cnt gets updated."
+     - name: "{{ recipe_name}}: Wait until chunk cnt gets updated after issuing merge after new reads."
        vars:
-         orig_merge_cnt: "{{ bfrMergeChunkCnt['results'][0]['item']['/0/chunk-merge-cnt'] }}"
-         stage: "wait_for_chunk_cnt"
+         orig_merge_cnt: "{{ ChunkCntAftrNewRds[item].entry['/merge-info/shallow-cnt'] }}"
+         stage: "wait_for_chunk_cnt_after_issuing_merge_after_new_reads"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "Waiting for nisd to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd, '/nisd_chunks/0/chunk-merge-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/0/merge-info/shallow-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
        retries: 10
        delay: 1
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      #11 - Repeat Step #5 - Verifying pblk counts
      - name: "{{ recipe_name }}: Verify the overwrite of the vblk data should have resulted in no additional pblk allocations."
        vars:
          stage: "verify_pblkCnt"
-         old_num_block_used: "{{ initialValues['results'][0]['item']['/0/num-pblks-used'] }}"
-         old_num_reserved_block_used: "{{ initialValues['results'][0]['item']['/0/num-reserved-pblks-used'] }}"
+         old_num_block_used: "{{ initialValues[item].entry['/0/num-pblks-used'] }}"
+         old_num_reserved_block_used: "{{ initialValues[item].entry['/0/num-reserved-pblks-used'] }}"
          lookout_uuid: "{{ get_lookout[0] }}"
-         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_root_keys, 'nisd', lookout_uuid) }}"
+         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_root_keys, 'nisd', lookout_uuid) }}"
        debug:
-         msg: "Verify nisd values after writes: {{ getNiovaBlockTest }}, {{ old_num_block_used }}, {{ old_num_reserved_block_used }}"
-       no_log: True
+         msg: "Verify nisd values after overwrites: {{ getNiovaBlockTest }}, {{ old_num_block_used }}, {{ old_num_reserved_block_used }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       no_log: false
        failed_when: >
          (getNiovaBlockTest['/0/num-pblks-used'] != ((old_num_block_used | int) + 17)) or
          (getNiovaBlockTest['/0/num-reserved-pblks-used'] != ((old_num_reserved_block_used | int) + 1))
@@ -345,11 +416,13 @@
      - name: "{{ recipe_name }}: Verify that the post-merge vblk data are intact."
        vars:
          input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd }}',
-                 'vdev' : '{{ vdev.stdout}}',
-                 'read_operation_ratio_percentage' : '100',
-                 'random_seed' : '987',
-                 'client_uuid' : '{{ new_cli_uuid.stdout }}',
+                 'enable_auth': 0,
+                 'cp_mode': 0,
+                 'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
+                 'vdev' : '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio' : '100',
+                 'random_seed_pt' : '987',
+                 'client_uuid' : '{{ ClientUUIDS[item] }}',
                  'request_size_in_bytes' : '1',
                  'queue_depth' : '1',
                  'num_ops' : '512',
@@ -358,16 +431,18 @@
                  'blocking_process' : False,
                  'lookout_uuid': '{{ get_lookout[0] }}'
                  }
-         rd_success: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
-       debug:
-         msg: "get read's return code"
-       with_items:
-        - "{{ rd_success }}"
-       register: postMergeData
+       set_fact:
+          postMerge_rd_results: "{{ (postMerge_rd_results | default([])) + [lookup('nisd_handler', 'niova-block-test', input_param) | string] }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
-     - debug:
-         msg: "Verify that the post-merge vblk data are intact"
-       failed_when: (postMergeData['results'][0]['item'] != "0")
+     - name: "{{ recipe_name }}: Show post merge read results."
+       debug:
+         msg: "Post merge Read results: {{ postMerge_rd_results }}"
+
+     - name: "{{ recipe_name }}: Fail if any post merge read failed."
+       debug:
+         msg: "One or more niova-block-test reads failed: {{ postMerge_rd_results }}"
+       failed_when: (postMerge_rd_results | reject('equalto', '0') | list | length) > 0
 
     rescue:
      - name: "Recipe: {{ recipe_name }} failed"

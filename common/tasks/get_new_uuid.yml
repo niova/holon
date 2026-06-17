@@ -1,0 +1,8 @@
+---
+
+   - name: "{{ recipe_name }}: Generate New UUID"
+     shell: "/usr/bin/uuid"
+     register: new_uuid
+
+   - debug:
+       msg: "{{ new_uuid.stdout }}"

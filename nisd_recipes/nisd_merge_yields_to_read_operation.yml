@@ -11,8 +11,8 @@
     nisd_keys:
               - "/nisd_chunks/0/vblks-written"
               - "/nisd_chunks/0/metablock-seqno"
-              - "/nisd_chunks/0/chunk-merge-status"
-              - "/nisd_chunks/0/chunk-merge-cnt"
+              - "/nisd_chunks/0/merge-info/shallow-cnt"
+              - "/nisd_chunks/0/merge-info/full-status"
               - "/nisd_chunks/0/read-op-seqno"
               - "/nisd_chunks/0/merge-read-op-seqno"
               - "/nisd_chunks/0/vblks-read"
@@ -28,23 +28,39 @@
        debug: msg="Check if parent recipe {{ parent }} failed"
        failed_when: terminate_recipe == true
 
-     - name: Generate new vdev-uuid
-       shell: "/usr/bin/uuid"
-       register: mergeVdev
+     - name: "{{ recipe_name }}: Reset VdevUUIDS list."
+       set_fact:
+         VdevUUIDS: []
 
-     - name: Generate new client-uuid for niova-block-test
-       shell: "/usr/bin/uuid"
-       register: mergeClient
+     - name: "{{ recipe_name }}: Reset ClientUUIDS list."
+       set_fact:
+         ClientUUIDS: []
+
+     # Get multiple vdev uuids using common task.
+     - name: "Get multiple vdev uuids."
+       include_role:
+        name: common
+        tasks_from: get_multiple_vdev_uuids
+       loop: "{{ range(0, get_nisd | length) | list }}"
+
+     # Get multiple client uuids using common task.
+     - name: "Get multiple client uuids."
+       include_role:
+        name: common
+        tasks_from: get_multiple_client_uuids
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      #1 - Perform Writes to a new Chunk/Fill Entire Reserved Pblk
      - name: "{{ recipe_name }}: Perform some Writes to the NISD."
        vars:
          input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd }}',
-                 'vdev' : '{{ mergeVdev.stdout }}',
-                 'read_operation_ratio_percentage' : '0',
-                 'random_seed' : Null,
-                 'client_uuid' : '{{ mergeClient.stdout }}',
+                 'enable_auth': 0,
+                 'cp_mode': 0,
+                 'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
+                 'vdev' : '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio' : '0',
+                 'random_seed_pt' : Null,
+                 'client_uuid' : '{{ ClientUUIDS[item] }}',
                  'request_size_in_bytes' : '32',
                  'queue_depth' : '1',
                  'num_ops' : '{{ no_of_ops | string }}',
@@ -53,38 +69,49 @@
                  'blocking_process' : False,
                  'lookout_uuid': '{{ get_lookout[0] }}'
                  }
-         wr_success: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
+       set_fact:
+         write_results: "{{ (write_results | default([])) + [lookup('nisd_handler', 'niova-block-test', input_param) | string] }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
+
+     - name: "{{ recipe_name }}: Show write results."
        debug:
-         msg: "get write's return code"
-       failed_when: wr_success != "0"
+         msg: "Write results: {{ write_results }}"
+
+     - name: "{{ recipe_name }}: Fail if any write failed."
+       debug:
+         msg: "One or more niova-block-test writes failed: {{ write_results }}"
+       failed_when: (write_results | reject('equalto', '0') | list | length) > 0
 
      - name: "{{ recipe_name }}: Get nisd_chunk info."
        vars:
          stage: "verifyAftrWr"
          lookout_uuid: "{{ get_lookout[0] }}"
-         aftrWrNisdChunk: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrWrNisdChunk: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd values after writes: {{ aftrWrNisdChunk }}"
        #no_log: True
        failed_when: >
          (aftrWrNisdChunk['/0/vblks-written'] != (no_of_ops | int) * 32) or
          (aftrWrNisdChunk['/0/metablock-seqno'] != ((no_of_ops | int) - 1)) or
-         (aftrWrNisdChunk['/0/chunk-merge-cnt'] != 0) or
+         (aftrWrNisdChunk['/merge-info/shallow-cnt'] != 0) or
          (aftrWrNisdChunk['/0/num-meta-pblks'] != 0) or
          (aftrWrNisdChunk['/0/num-data-pblks'] != (no_of_ops | int)) or
          (aftrWrNisdChunk['/0/num-reserved-meta-pblks'] != 1)
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Capture values after 1st write."
        vars:
          stage: "verify_nisd_chunk"
          lookout_uuid: "{{ get_lookout[0] }}"
-         getPrevValues: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_keys, 'nisd', lookout_uuid) }}"
-       debug:
-         msg: "Store num-data-pblks: {{ getPrevValues }}"
+         getPrevValues: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_keys, 'nisd', lookout_uuid) }}"
+       set_fact:
+         origValues: >-
+           {{
+             origValues | default([]) +
+             [{'nisd_uuid': item, 'entry': getPrevValues}]
+           }}
        no_log: True
-       with_items:
-        - "{{ getPrevValues }}"
-       register: origValues
+       loop: "{{ get_nisd }}"
 
      #2 - Apply the Fault Injection “read_preempts_merge”
      - name: "{{ recipe_name }}: Apply the Fault Injection “read_preempts_merge”"
@@ -93,28 +120,36 @@
          tasks_from: apply_fi_on_nisd
        vars:
          numRemaining: "{{ num_of_remaining }}"
-         NisdUUID: "{{ get_nisd }}"
+         NisdUUID: "{{ nisd_uuid }}"
          LookoutUUID: "{{ get_lookout[0] }}"
          fault_injection_name: "read_preempts_merge"
+       loop: "{{ get_nisd }}"
+       loop_control:
+         loop_var: nisd_uuid
 
      - name: "{{ recipe_name }}: Apply the Fault Injection “read_preempts_merge”."
        include_role:
          name: common
          tasks_from: enable_fi_on_nisd
        vars:
-         NisdUUID: "{{ get_nisd }}"
+         NisdUUID: "{{ nisd_uuid }}"
          LookoutUUID: "{{ get_lookout[0] }}"
          fault_injection_name: "read_preempts_merge"
+       loop: "{{ get_nisd }}"
+       loop_control:
+         loop_var: nisd_uuid
 
      #3 -  Launch Reads (num_remaining - 1)
      - name: "{{ recipe_name }}: Launch Reads (num_remaining - 1)."
        vars:
          input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd }}',
-                 'vdev' : '{{ mergeVdev.stdout }}',
-                 'read_operation_ratio_percentage' : '100',
-                 'random_seed' : Null,
-                 'client_uuid' : '{{ mergeClient.stdout }}',
+                 'enable_auth': 0,
+                 'cp_mode': 0,
+                 'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
+                 'vdev' : '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio' : '100',
+                 'random_seed_pt' : Null,
+                 'client_uuid' : '{{ ClientUUIDS[item] }}',
                  'request_size_in_bytes' : '32',
                  'queue_depth' : '3',
                  'num_ops' : '3',
@@ -125,6 +160,7 @@
                  }
        debug:
          msg: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name}}: Wait until 'conns' gets updated"
        vars:
@@ -132,80 +168,83 @@
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "Waiting for 'conns' to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd, '/conns/0/num-pending', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == 3
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/conns/0/num-pending', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == 3
        retries: 60
        delay: 2
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Verify conns, tasks and nisd_chunk."
        vars:
          stage: "verfyAftrRd"
          lookout_uuid: "{{ get_lookout[0] }}"
-         aftrRdNisdChunk: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrRdNisdChunk: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd values after read: {{ aftrRdNisdChunk }}"
-       no_log: True
+       no_log: false
        failed_when: >
          (aftrRdNisdChunk['/0/vblks-read'] != 0) or
          (aftrRdNisdChunk['/0/read-op-seqno'] != 2) or
          (aftrRdNisdChunk['/0/merge-read-op-seqno'] != -1) or
          (aftrRdNisdChunk['/0/num-pending'] != 3) or
          (aftrRdNisdChunk['/0/vblks-pending'] != 96)
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
-     - name: "{{ recipe_name }}: Get list of '/tasks'."
+     - name: "Verify wait-fault-injection task."
+       include_role:
+         name: common
+         tasks_from: verify_nisd_task_wait_fault_injection
        vars:
-        stage: "wait-fault-inject"
-        lookout_uuid: "{{ get_lookout[0] }}"
-        task_key:
-         - '/tasks'
-       set_fact:
-         getFaultInject: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, task_key, 'nisd', lookout_uuid) }}"
-
-     - name: "{{ recipe_name }}: Verify 'wait-fault-inject'."
-       set_fact:
-         wait_fault_inject: "{{ getFaultInject['//tasks'][item]['wait-fault-inject'] }}"
-       when: (getFaultInject['//tasks'][item]['type'] == "vblk-read")
-       loop: "{{  range(0, getFaultInject['//tasks'] |length) | list }}"
-
-     - debug:
-        msg: "{{ recipe_name }}: Verify wait-fault-inject has been configured."
-       failed_when: >
-         ((wait_fault_inject | int) != 3)
+         NisdUUID: "{{ nisd_uuid }}"
+         LookoutUUID: "{{ get_lookout[0] }}"
+       loop: "{{ get_nisd }}"
+       loop_control:
+         loop_var: nisd_uuid
 
      #4 - Pause Compaction on the Chunk
      - name: "{{ recipe_name }}: Pause Compaction on the Chunk."
        vars:
          stage: "chunkPause"
-         cmd: "chunk-merge-status@pause"
-         where: "/nisd_chunks/vdev-uuid@{{ mergeVdev.stdout }}"
+         cmd: "full-status@pause"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
-         msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd, cmd, where, 'nisd', lookout_uuid) }}"
-       no_log: true
+         msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
+       no_log: false
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Verify after pause compaction."
        vars:
          stage: "verifyAftrPause"
          lookout_uuid: "{{ get_lookout[0] }}"
-         aftrPause: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrPause: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify after pause compaction: {{ aftrPause }}"
-       no_log: True
+       no_log: false
        failed_when: >
-         (aftrPause['/0/chunk-merge-status'] != "paused")
+         (aftrPause['/merge-info/full-status'] != "paused")
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      #5 - Overwrite the VBLKS from Step #1 using a new CLIENT_UUID
-     - name: Generate new client-uuid for niova-block-test
-       shell: "/usr/bin/uuid"
-       register: newMergeClient
+     - name: "{{ recipe_name }}: Reset ClientUUIDS list."
+       set_fact:
+         ClientUUIDS: []
+
+     - name: "Get multiple client uuids."
+       include_role:
+        name: common
+        tasks_from: get_multiple_client_uuids
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Overwrite the VBLKS from Step #1 using a new CLIENT_UUID."
        vars:
          input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd }}',
-                 'vdev' : '{{ mergeVdev.stdout }}',
-                 'read_operation_ratio_percentage' : '0',
-                 'random_seed' : Null,
-                 'client_uuid' : '{{ newMergeClient.stdout }}',
+                 'enable_auth': 0,
+                 'cp_mode': 0,
+                 'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
+                 'vdev' : '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio' : '0',
+                 'random_seed_pt' : Null,
+                 'client_uuid' : '{{ ClientUUIDS[item] }}',
                  'request_size_in_bytes' : '32',
                  'queue_depth' : '1',
                  'num_ops' : '{{ no_of_ops | string }}',
@@ -214,91 +253,96 @@
                  'blocking_process' : False,
                  'lookout_uuid': '{{ get_lookout[0] }}'
                  }
-         wr_success: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
+       set_fact:
+         overwrite_results: "{{ (overwrite_results | default([])) + [lookup('nisd_handler', 'niova-block-test', input_param) | string] }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
+
+     - name: "{{ recipe_name }}: Show overwrite results."
        debug:
-         msg: "get write's return code"
-       failed_when: wr_success != "0"
+         msg: "Overwrite results: {{ overwrite_results }}"
+
+     - name: "{{ recipe_name }}: Fail if any overwrite failed."
+       debug:
+         msg: "One or more niova-block-test overwrites failed: {{ overwrite_results }}"
+       failed_when: (overwrite_results | reject('equalto', '0') | list | length) > 0
 
      - name: "{{ recipe_name }}: Verify after overwrite."
        vars:
          stage: "verfyAftr2ndWr"
-         old_values: "{{ origValues['results'][0]['item'] }}"
+         old_values: "{{ origValues[item].entry }}"
          lookout_uuid: "{{ get_lookout[0] }}"
-         aftrWr: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrWr: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify compaction has NOT occurred: {{ aftrWr }}"
-       no_log: True
+       no_log: false
        failed_when: >
          (aftrWr['/0/vblks-written'] != ((old_values['/0/vblks-written'] | int) * 2)) or
          (aftrWr['/0/num-reserved-meta-pblks'] != ((old_values['/0/num-reserved-meta-pblks'] | int) + 1)) or
-         (aftrWr['/0/chunk-merge-status'] != "paused")
+         (aftrWr['/merge-info/full-status'] != "paused")
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      #6 - Resume and Force Compaction
      - name: "{{ recipe_name }}: Resume Compaction."
        vars:
          stage: "chunkResume"
-         cmd: "chunk-merge-status@resume"
-         where: "/nisd_chunks/vdev-uuid@{{ mergeVdev.stdout }}"
+         cmd: "full-status@resume"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
-         msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd, cmd, where, 'nisd', lookout_uuid) }}"
-       no_log: true
+         msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
+       no_log: false
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Force Compaction."
        vars:
          stage: "chunkForce"
-         cmd: "chunk-merge-status@merge"
-         where: "/nisd_chunks/vdev-uuid@{{ mergeVdev.stdout }}"
+         cmd: "full-status@merge"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
-         msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd, cmd, where, 'nisd', lookout_uuid) }}"
-       no_log: true
+         msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
+       no_log: false
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Verify after unpause compaction."
        vars:
          stage: "aftrForceCompaction"
          lookout_uuid: "{{ get_lookout[0] }}"
-         aftrForceCompct: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrForceCompct: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify after pause compaction: {{ aftrForceCompct }}"
-       no_log: True
+       no_log: false
        failed_when: >
          (aftrForceCompct['/0/num-meta-pblks'] != 1) or
          (aftrForceCompct['/0/num-reserved-meta-pblks'] != 2) or
          (aftrForceCompct['/0/num-data-pblks'] != ((no_of_ops | int) * 2)) or
-         (aftrForceCompct['/0/chunk-merge-status'] != "merging") or
-         (aftrForceCompct['/0/chunk-merge-cnt'] != 1) or
+         (aftrForceCompct['/merge-info/full-status'] != "merging") or
+         (aftrForceCompct['/merge-info/shallow-cnt'] != 1) or
          (aftrForceCompct['/0/merge-read-op-seqno'] != 2)
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
-     - name: "{{ recipe_name }}: Get list of '/tasks'."
+     - name: "Verify wait-merge-preempted task."
+       include_role:
+         name: common
+         tasks_from: verify_wait_merge_preempted
        vars:
-        stage: "wait-merge-preempted"
-        lookout_uuid: "{{ get_lookout[0] }}"
-        task_key:
-              - '/tasks'
-       set_fact:
-         getTaskValue: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, task_key, 'nisd', lookout_uuid) }}"
-
-     - name: "{{ recipe_name }}: Verify 'wait-merge-preempted'."
-       set_fact:
-         wait_merge_preempted: "{{ getTaskValue['//tasks'][item]['wait-merge-preempted'] }}"
-       when: (getTaskValue['//tasks'][item]['type'] == "compaction")
-       loop: "{{  range(0, getTaskValue['//tasks'] |length) | list }}"
-
-     - debug:
-        msg: "{{ recipe_name }}: Verify wait-merge-preempted has been configured."
-       failed_when: >
-         ((wait_merge_preempted | int) != 1)
+         NisdUUID: "{{ nisd_uuid }}"
+         LookoutUUID: "{{ get_lookout[0] }}"
+       loop: "{{ get_nisd }}"
+       loop_control:
+         loop_var: nisd_uuid
 
      #7 - Enqueue Reads from the Client Used in Step #5
      - name: "{{ recipe_name }}: Enqueue Reads from the Client Used in Step #5"
        vars:
          input_param: {
-                 'nisd_uuid_to_write' : 'unix:{{ get_nisd }}',
-                 'vdev' : '{{ mergeVdev.stdout }}',
-                 'read_operation_ratio_percentage' : '100',
-                 'random_seed' : Null,
-                 'client_uuid' : '{{ newMergeClient.stdout }}',
+                 'enable_auth': 0,
+                 'cp_mode': 0,
+                 'nisd_uuid_to_write' : 'unix:{{ get_nisd[item] }}',
+                 'vdev' : '{{ VdevUUIDS[item] }}',
+                 'rd_op_ratio' : '100',
+                 'random_seed_pt' : Null,
+                 'client_uuid' : '{{ ClientUUIDS[item] }}',
                  'request_size_in_bytes' : '32',
                  'queue_depth' : '1',
                  'num_ops' : '{{ no_of_ops | string }}',
@@ -309,16 +353,17 @@
                  }
        debug:
          msg: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Verify nisd_chunks Checks"
        vars:
          stage: "aftrRead"
-         old_values: "{{ origValues['results'][0]['item'] }}"
+         old_values: "{{ origValues[item].entry }}"
          lookout_uuid: "{{ get_lookout[0] }}"
-         aftrRead: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd, nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrRead: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd_chunks Checks: {{ aftrRead }}"
-       no_log: True
+       no_log: false
        failed_when: >
          (aftrRead['/0/vblks-read'] != 2816) or
          (aftrRead['/0/vblks-written'] != ((old_values['/0/vblks-written'] | int) * 2)) or
@@ -328,8 +373,9 @@
          (aftrRead['/0/metablock-seqno'] != (((no_of_ops | int) * 2) - 1)) or
          (aftrRead['/0/read-op-seqno'] != ((no_of_ops | int) + 2)) or
          (aftrRead['/0/merge-read-op-seqno'] != -1) or
-         (aftrRead['/0/chunk-merge-cnt'] != 1) or
-         (aftrRead['/0/chunk-merge-status'] != "idle")
+         (aftrRead['/merge-info/shallow-cnt'] != 1) or
+         (aftrRead['/merge-info/full-status'] != "idle")
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
     rescue:
      - name: "Recipe: {{ recipe_name }} failed"

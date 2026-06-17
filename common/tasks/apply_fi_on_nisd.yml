@@ -8,6 +8,10 @@
       set_fact:
          fault_injection: "{{ lookup('niova_ctlrequest', 'apply_cmd', NisdUUID, cmd, where, 'nisd', lookout_uuid) }}"
 
+    - name: "{{ recipe_name }}: Debug fault injection."
+      debug:
+        msg: "{{ fault_injection }}"
+
     - name: "{{ recipe_name }}: Get list of fault-injections."
       vars:
         stage: "fault_injection_check"
@@ -17,6 +21,10 @@
       set_fact:
          fault_injection_points: "{{ lookup('niova_ctlrequest', 'lookup', NisdUUID, fi_key, 'nisd', lookout_uuid) }}"
 
+    - name: "{{ recipe_name }}: Debug list of fault injection."
+      debug:
+        msg: "{{ fault_injection_points['//fault_injection_points'] }}"
+
     - name: "{{ recipe_name }}: Verify fault injected on nisd properly."
       set_fact:
          getNumRemaining: "{{ fault_injection_points['//fault_injection_points'][index]['num_remaining'] }}"
@@ -24,6 +32,10 @@
       loop: "{{  range(0, fault_injection_points['//fault_injection_points'] |length) | list }}"
       loop_control:
           loop_var: index
+
+    - name: "{{ recipe_name }}: Debug."
+      debug:
+        msg: "{{ getNumRemaining }}"
 
     - debug:
         msg: "{{ recipe_name }}: Verify the fault injection has been configured."
