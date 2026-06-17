@@ -103,6 +103,8 @@ def niova_raft_lookup_values(ctlreq_dict, raft_key_list):
                 raft_values_dict[output_key] = "null"
             return raft_values_dict
 
+    logging.warning("DEBUG out_fpath=%s exists after %s sec wait" % (out_fpath, exist_counter))
+
     '''
     File exists, but may still be mid-write. Retry parsing until it's
     valid JSON or we exhaust the same timeout budget.
@@ -128,9 +130,7 @@ def niova_raft_lookup_values(ctlreq_dict, raft_key_list):
                     raft_values_dict[output_key] = "null"
                 return raft_values_dict
 
-    # Read the output file and lookup for the raft key value
-    with open(out_fpath, 'r') as json_file:
-        raft_dict = json.load(json_file)
+    logging.warning("DEBUG out_fpath=%s parsed successfully after %s attempt(s): raft_dict=%s" % (out_fpath, parse_counter + 1, raft_dict))
 
     '''
     Lookup each key from the raft_key_list.
