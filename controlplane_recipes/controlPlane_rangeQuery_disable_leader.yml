@@ -26,6 +26,8 @@
             name: common
             tasks_from: get_follower_stats
 
+        - pause: seconds=5
+
         - name: "{{ recipe_name }}: Starting controlplane_client to do rangeWrite with n as 5."
           vars:
             input_param:
