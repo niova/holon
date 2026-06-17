@@ -29,15 +29,15 @@
           debug:
             msg: "Killed node names are: {{ proxy_node_names }}"
 
-        - name: "{{ recipe_name }}: Kill the Proxy server."
+        - name: "{{ recipe_name }}: Kill the Proxy servers."
           debug:
             msg: "{{lookup('niova_raftprocess', 'kill', ClientUUIDS[item])}}"
           loop: "{{ range(0, ClientUUIDS | length) |list }}"
           no_log: false
 
-        - pause: seconds=10
+        - pause: seconds=5
 
-        - name: "{{ recipe_name }}: Wait until the proxy servers' status changes after killing them."
+        - name: "{{ recipe_name }}: Wait until the proxy servers' status changes after killing both of them."
           vars:
             NodeName: "{{ item }}"
             input_param:
@@ -49,7 +49,7 @@
           debug:
             msg: "Verifying node status"
           until: lookup('controlplane', 'ncpc', input_param)['membership']['output_data'][NodeName]['Status'] == "failed"
-          retries: 20
+          retries: 10
           delay: 1
           loop: "{{ proxy_node_names }}"
 
@@ -115,8 +115,8 @@
           debug:
             msg: "Verifying node status"
           until: lookup('controlplane', 'ncpc', input_param)['membership']['output_data'][NodeName]['Status'] == "alive"
-          retries: 20
-          delay: 1
+          retries: 60
+          delay: 2
           loop: "{{ proxy_node_names }}"
 
         - name: "{{ recipe_name }}: get the list of non-running servers."
