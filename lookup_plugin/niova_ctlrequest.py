@@ -90,6 +90,22 @@ def niova_raft_lookup_values(ctlreq_dict, raft_key_list):
     raft_values_dict = {}
     out_fpath = ctlreq_dict['output_fpath']
 
+    # Check if the output file exists before trying to read it
+    if not os.path.exists(out_fpath):
+        logging.warning("DEBUG out_fpath=%s does NOT exist" % out_fpath)
+        for key in raft_key_list:
+            output_key = "/%s/%s" % (os.path.basename(os.path.dirname(key)), os.path.basename(key))
+            raft_values_dict[output_key] = "null"
+        return raft_values_dict
+
+    # Check if the file is empty
+    if os.path.getsize(out_fpath) == 0:
+        logging.warning("DEBUG out_fpath=%s exists but is EMPTY" % out_fpath)
+        for key in raft_key_list:
+            output_key = "/%s/%s" % (os.path.basename(os.path.dirname(key)), os.path.basename(key))
+            raft_values_dict[output_key] = "null"
+        return raft_values_dict
+
     # Read the output file and lookup for the raft key value
     with open(out_fpath, 'r') as json_file:
         raft_dict = json.load(json_file)
@@ -99,6 +115,9 @@ def niova_raft_lookup_values(ctlreq_dict, raft_key_list):
     The output would be stored in another dictionary with key as
     last two keys from the complete key path.
     '''
+    # log the raw output file contents and path once, before the loop
+    logging.warning("DEBUG out_fpath=%s raft_dict=%s" % (out_fpath, raft_dict))
+
     for key in raft_key_list:
         value = dpath.util.values(raft_dict, key)
         if len(value) == 0:
