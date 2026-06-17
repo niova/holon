@@ -106,6 +106,9 @@
                 'entry': nisdRootEntryVal
               }]
             }}
+       until: nisdRootEntryVal['/0/status'] is defined and nisdRootEntryVal['/0/status'] != "null"
+       retries: 30
+       delay: 1
        loop: "{{ get_nisd }}"
 
      - debug:
