@@ -90,21 +90,43 @@ def niova_raft_lookup_values(ctlreq_dict, raft_key_list):
     raft_values_dict = {}
     out_fpath = ctlreq_dict['output_fpath']
 
-    # Check if the output file exists before trying to read it
-    if not os.path.exists(out_fpath):
-        logging.warning("DEBUG out_fpath=%s does NOT exist" % out_fpath)
-        for key in raft_key_list:
-            output_key = "/%s/%s" % (os.path.basename(os.path.dirname(key)), os.path.basename(key))
-            raft_values_dict[output_key] = "null"
-        return raft_values_dict
+    # Wait till the output JSON file gets created.
+    exist_counter = 0
+    exist_timeout = 300
+    while not os.path.exists(out_fpath):
+        exist_counter += 1
+        time.sleep(1)
+        if exist_counter >= exist_timeout:
+            logging.warning("DEBUG out_fpath=%s does NOT exist after %s sec wait" % (out_fpath, exist_timeout))
+            for key in raft_key_list:
+                output_key = "/%s/%s" % (os.path.basename(os.path.dirname(key)), os.path.basename(key))
+                raft_values_dict[output_key] = "null"
+            return raft_values_dict
 
-    # Check if the file is empty
-    if os.path.getsize(out_fpath) == 0:
-        logging.warning("DEBUG out_fpath=%s exists but is EMPTY" % out_fpath)
-        for key in raft_key_list:
-            output_key = "/%s/%s" % (os.path.basename(os.path.dirname(key)), os.path.basename(key))
-            raft_values_dict[output_key] = "null"
-        return raft_values_dict
+    '''
+    File exists, but may still be mid-write. Retry parsing until it's
+    valid JSON or we exhaust the same timeout budget.
+    '''
+    raft_dict = {}
+    parse_counter = 0
+    parse_timeout = 30
+    while True:
+        try:
+            with open(out_fpath, "r", encoding="utf-8") as json_file:
+                content = json_file.read()
+                if not content.strip():
+                    raise json.JSONDecodeError("empty file", content, 0)
+                raft_dict = json.loads(content)
+            break
+        except (json.JSONDecodeError, ValueError):
+            parse_counter += 1
+            time.sleep(0.5)
+            if parse_counter >= parse_timeout:
+                logging.warning("DEBUG out_fpath=%s did not contain valid JSON after %s retries" % (out_fpath, parse_timeout))
+                for key in raft_key_list:
+                    output_key = "/%s/%s" % (os.path.basename(os.path.dirname(key)), os.path.basename(key))
+                    raft_values_dict[output_key] = "null"
+                return raft_values_dict
 
     # Read the output file and lookup for the raft key value
     with open(out_fpath, 'r') as json_file:
@@ -115,8 +137,6 @@ def niova_raft_lookup_values(ctlreq_dict, raft_key_list):
     The output would be stored in another dictionary with key as
     last two keys from the complete key path.
     '''
-    # log the raw output file contents and path once, before the loop
-    logging.warning("DEBUG out_fpath=%s raft_dict=%s" % (out_fpath, raft_dict))
 
     for key in raft_key_list:
         value = dpath.util.values(raft_dict, key)
