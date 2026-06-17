@@ -99,14 +99,16 @@
           nisdRootEntryVal: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_root_keys, 'nisd', lookout_uuid) }}"
        debug:
           msg: "nisd_root_entry output for {{ item }}: {{ nisdRootEntryVal }}"
-       until: nisdRootEntryVal['/0/status'] is defined and nisdRootEntryVal['/0/status'] != "null"
+       until: nisdRootEntryVal['/0/status'] is defined and 
+              nisdRootEntryVal['/0/status'] != "null" and 
+              nisdRootEntryVal['/0/status'] == "running"
        retries: 30
        delay: 1
        loop: "{{ get_nisd }}"
 
      - name: "{{ recipe_name }}: Get nisd_root_entry info."
        vars:
-          stage: "get_nisd_root_entry"
+          stage: "collect_nisd_root_entry"
           lookout_uuid: "{{ get_lookout[0] }}"
           nisdRootEntryVal: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_root_keys, 'nisd', lookout_uuid) }}"
        set_fact:
@@ -118,9 +120,6 @@
                 'entry': nisdRootEntryVal
               }]
             }}
-       until: nisdRootEntryVal['/0/status'] is defined and nisdRootEntryVal['/0/status'] != "null"
-       retries: 30
-       delay: 1
        loop: "{{ get_nisd }}"
 
      - debug:
