@@ -1,0 +1,90 @@
+- name: "tidb_setup"
+  hosts: localhost
+  connection: local
+  vars:
+    recipe_name: "tidb_setup"
+    api_base_url: "http://localhost:8081"
+    infra_payload: "/home/himani/mdsvc-tidb/examples/e2e.json"
+    vdev_payload: "/home/himani/mdsvc-tidb/examples/create_vdev_100gb_1replica.json"
+
+  tasks:
+    - block:
+
+        # Check for the app_type
+        - name: "{{ recipe_name }}: Check if the app_type is 'tidb'."
+          vars:
+            app_type: "{{ app_type }}"
+          debug:
+            msg: "app_type is: {{ app_type }}"
+          failed_when:
+            (app_type != "tidb")
+
+        # -----------------------------
+        # 1. Create Infra
+        # -----------------------------
+
+        - name: Create infra
+          set_fact:
+            infra_result: "{{ lookup('tidb_api',
+                'POST',
+                '/infra',
+                file=infra_payload,
+                base_url=api_base_url) }}"
+
+        - name: Debug infra response
+          debug:
+            var: infra_result
+
+        # -----------------------------
+        # 2. Create VDEV
+        # -----------------------------
+        
+        - name: Create vdev
+          set_fact:
+            vdev_result: "{{ lookup('tidb_api',
+                'POST',
+                '/vdev',
+                file=vdev_payload,
+                base_url=api_base_url) }}"
+
+        - name: Debug vdev result
+          debug:
+            msg: "{{ vdev_result }}"
+
+        - name: Extract vdev UUID
+          set_fact:
+            vdev_uuid: "{{ vdev_result.vdev_id }}"
+
+        - name: Debug vdev UUID
+          debug:
+            msg: "Created VDEV UUID: {{ vdev_uuid }}"
+
+        - name: Extract number of chunks
+          set_fact:
+            num_of_chunks: "{{ vdev_result.data.num_chunks }}"
+
+        - name: Debug num of chunks
+          debug:
+            msg: "Number of chunks: {{ num_of_chunks }}"
+
+        # -----------------------------
+        # 3. Get Chunks
+        # -----------------------------
+
+        - name: Fetch all chunks
+          set_fact:
+            chunk_info: >-
+              {{
+                lookup('tidb_api', 'GET', '/chunks',
+                  params={
+                    'vdev_id': vdev_uuid,
+                    'start_chunk_idx': 0,
+                    'limit': 4
+                  }
+                )
+              }}
+            
+        - name: "{{ recipe_name }}: DEBUG number of chunks fetched."
+          debug:
+            msg: "{{ chunk_info }}"
+
