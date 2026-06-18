@@ -75,7 +75,7 @@ def run_nisd_command(cluster_params, input_values):
     os.makedirs(sock_dir, exist_ok=True)
 
     if enable_authentication == 1:
-        os.environ["NIOVA_NISD_SECRET"] = "NISD-secret"
+        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
         os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
 
     os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
@@ -600,7 +600,7 @@ def start_niova_block_test(cluster_params, input_values):
     
     if enable_authentication == 1:
         os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = "1"
-        os.environ["NIOVA_NISD_SECRET"] = "NISD-secret"
+        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
 
     #get input parameters
     cp_mode = input_values['cp_mode']
