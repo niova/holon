@@ -4,6 +4,7 @@
   vars:
     recipe_name: "controlPlane_authentication_mechanism_test"
     nisd_uuid: 7467890a-2299-11f1-9fc3-ebb3b3f1fb90
+    client_id: 743f08ae-6b00-11f1-bb16-e7f7f153e6d3
     parent: None
 
   tasks:
@@ -20,6 +21,20 @@
           include_role:
             name: common
             tasks_from: start_pmdb_and_get_membership.yml
+
+        - name: "{{ recipe_name }}: create nisd device"
+          vars:
+            img_dir: "/s3DV_nisd.device"
+            bs: "64M"
+            count: 160
+          debug:
+            msg:
+              - "{{ lookup('helper', 'create_dd_file', img_dir, bs, count) }}"
+          register: nisd_dev_path
+
+        - name: "{{ recipe_name }}: Print the device path."
+          debug: 
+            msg: "{{ nisd_dev_path.msg[0] }}"
 
         - name: Get NIOVA_BIN_PATH
           set_fact:
@@ -130,20 +145,6 @@
           debug:
             msg: "{{ user2_secret }}"
 
-        - name: "{{ recipe_name }}: create nisd device"
-          vars:
-            img_dir: "/s3DV_nisd.device"
-            bs: "64M"
-            count: 160
-          debug:
-            msg:
-              - "{{ lookup('helper', 'create_dd_file', img_dir, bs, count) }}"
-          register: nisd_dev_path
-
-        - name: "{{ recipe_name }}: Print the device path."
-          debug: 
-            msg: "{{ nisd_dev_path.msg[0] }}"
-
         - name: "{{ recipe_name }}: Start niova-block-ctl process."
           vars:
             input_param: {
@@ -166,9 +167,9 @@
             msg:
               - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
 
-        - name: "{{ recipe_name }}: wait for 25 seconds"
+        - name: "{{ recipe_name }}: wait for 10 seconds"
           pause:
-            seconds: 25
+            seconds: 10
 
         - name: "{{ recipe_name }}: Start niova-block-test process."
           vars:
@@ -179,11 +180,11 @@
                  'auth_secret': '{{ user1_secret }}',
                  'nisd_uuid_to_write' : 'unix:{{ nisd_uuid }}',
                  'vdev' : '{{ vdev_id }}',
-                 'client_uuid': '{{ vdev_id }}',
-                 'rd_op_ratio': '100',
-                 'num_ops': '100',
+                 'client_uuid': '{{ client_id }}',
+                 'rd_op_ratio': '0',
+                 'num_ops': '50',
                  'random_seed_pt': '123',
-                 'request_size_in_bytes': '0',
+                 'request_size_in_bytes': '1',
                  'queue_depth' : '0',
                  'integrity_check': False,
                  'sequential_writes': False,

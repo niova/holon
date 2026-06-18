@@ -116,6 +116,10 @@ def niova_raft_lookup_values(ctlreq_dict, raft_key_list):
     appear in it (the file can be valid-but-incomplete JSON if it's
     written incrementally and the requested keys land later).
     '''
+
+    # File is present. Give it 1 second to finish writing.
+    time.sleep(1)
+
     raft_dict = None
     parse_timeout = 30
     content_timeout = 30
