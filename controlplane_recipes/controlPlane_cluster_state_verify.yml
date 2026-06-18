@@ -250,13 +250,16 @@
               {
                 "Operation": "membership",
                 "OutfileName": "check_restartedPmdbServerStatus",
-                "wait_for_outfile": True,
               }
             verifyPmdbServerStatus: "{{ lookup('controlplane', 'ncpc', input_param) }}"
           debug:
-            msg: "Verify killed pmdb server status"
-          failed_when: verifyPmdbServerStatus['membership']['output_data'][restartedPmdbServer]['Status'] != "alive"
-
+            msg: 
+              - "Verify killed pmdb server status"
+              - "{{ verifyPmdbServerStatus['membership']['output_data'][restartedPmdbServer] }}"
+          until: verifyPmdbServerStatus['membership']['output_data'][restartedPmdbServer]['Status'] == "alive"
+          retries: 60
+          delay: 2
+          
       rescue:
         - name: "Recipe: {{ recipe_name }} failed"
           set_fact:

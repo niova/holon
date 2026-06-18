@@ -44,7 +44,6 @@
               {
                 "Operation": "membership",
                 "OutfileName": "wait_for_proxyStatus_after_killing_proxy_servers",
-                "wait_for_outfile": True,
               }
           debug:
             msg: "Verifying node status"
@@ -110,10 +109,11 @@
               {
                 "Operation": "membership",
                 "OutfileName": "wait_for_proxyStatus_after_restarting_killed_proxy_servers",
-                "wait_for_outfile": True,
               }
           debug:
-            msg: "Verifying node status"
+            msg: 
+              - "Verifying node status"
+              - "{{ lookup('controlplane', 'ncpc', input_param)['membership']['output_data'][NodeName] }}"
           until: lookup('controlplane', 'ncpc', input_param)['membership']['output_data'][NodeName]['Status'] == "alive"
           retries: 60
           delay: 2
@@ -139,7 +139,7 @@
           with_items:
             - "{{ ncpcliwr }}"
           register: writeres_afterStartingProxy
-          no_log: false
+          no_log: true
 
         - name: "{{ recipe_name }}: Verify outfile status"
           debug:
@@ -174,7 +174,7 @@
           with_items:
             - "{{ ncpclird }}"
           register: readres_afterStartingProxy
-          no_log: false
+          no_log: true
 
         - name: "{{ recipe_name }}: Verify outfile status and read status"
           debug:
