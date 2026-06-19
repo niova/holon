@@ -167,21 +167,8 @@
             msg:
               - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
 
-        # Pause for 2 seconds for NISD to start successfully
-        - pause: seconds=2
-
-        - name: "{{ recipe_name}}: Wait until nisd_root_entry gets updated"
-          vars:
-            stage: "wait_for_nisd_root_entry"
-            lookout_uuid: ""
-          debug:
-            msg:
-              - "Waiting for nisd to get updated"
-              - "{{ lookup('niova_ctlrequest', 'lookup', nisd_uuid, '/nisd_root_entry/0/status', 'nisd', lookout_uuid) }}"
-          no_log: false
-          until: lookup('niova_ctlrequest', 'lookup', nisd_uuid, '/nisd_root_entry/0/status', 'nisd', lookout_uuid)['/0/status'] == "running"
-          retries: 10
-          delay: 1
+        # Pause for 5 seconds for NISD to start successfully
+        - pause: seconds=5
 
         - name: "{{ recipe_name }}: Start niova-block-test process."
           vars:
