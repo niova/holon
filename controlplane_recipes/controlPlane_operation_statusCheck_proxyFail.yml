@@ -98,9 +98,9 @@
             ClientUUID: "{{ ClientUUIDS[item] }}"
           loop: "{{ range(0, ClientUUIDS | length) |list }}"
 
-        - name: "{{ recipe_name }}: Pause for 10 seconds to start pmdb and proxy servers properly."
+        - name: "{{ recipe_name }}: Pause for 5 seconds to start pmdb and proxy servers properly."
           pause:
-            seconds: 10
+            seconds: 5
 
         - name: "{{ recipe_name }}: Wait until the proxy servers' status changes after restarting after killing them."
           vars:

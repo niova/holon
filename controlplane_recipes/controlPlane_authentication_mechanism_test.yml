@@ -167,10 +167,6 @@
             msg:
               - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
 
-        - name: "{{ recipe_name }}: wait for 10 seconds"
-          pause:
-            seconds: 10
-
         - name: "{{ recipe_name }}: Start niova-block-test process."
           vars:
             input_param: {
