@@ -82,6 +82,7 @@ def run_nisd_command(cluster_params, input_values):
 
     os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}" 
+    os.environ["NIOVA_LOG_LEVEL"] = "5"
     
     env = os.environ.copy()
     os.environ["NIOVA_BLOCK_TCP_PEER_PORT"] = str(peer_port)
@@ -605,7 +606,6 @@ def start_niova_block_test(cluster_params, input_values):
         os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
         os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
         os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
-        # os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = "1"
 
     #get input parameters
     cp_mode = input_values['cp_mode']
