@@ -82,17 +82,70 @@ def niova_ctlreq_cmd_send(recipe_conf, ctlreq_dict, peer_uuid, get_process_type,
     return ctlreqobj.__dict__
 
 '''
-Lookup the raft key(s) in the output JSON file and return
-the values in the dictionary format for recipes to read it.
+Lookup the raft keys for the given peer, first by sending
+the ctlrequest to the peer and then reading the values
+from the output JSON file.
 '''
 def niova_raft_lookup_values(ctlreq_dict, raft_key_list):
 
     raft_values_dict = {}
     out_fpath = ctlreq_dict['output_fpath']
 
-    # Read the output file and lookup for the raft key value
-    with open(out_fpath, 'r') as json_file:
-        raft_dict = json.load(json_file)
+    def all_null():
+        d = {}
+        for key in raft_key_list:
+            output_key = "/%s/%s" % (os.path.basename(os.path.dirname(key)), os.path.basename(key))
+            d[output_key] = "null"
+        return d
+
+    # Wait till the output JSON file gets created.
+    exist_timeout = 300
+    for exist_counter in range(1, exist_timeout + 1):
+        if os.path.exists(out_fpath):
+            break
+        time.sleep(1)
+    else:
+        logging.warning("DEBUG out_fpath=%s does NOT exist after %s sec wait" % (out_fpath, exist_timeout))
+        return all_null()
+
+    logging.warning("DEBUG out_fpath=%s exists after %s sec wait" % (out_fpath, exist_counter))
+
+    '''
+    File exists, but may still be mid-write. Retry parsing until it's
+    valid JSON, and once parsed, until the requested keys actually
+    appear in it (the file can be valid-but-incomplete JSON if it's
+    written incrementally and the requested keys land later).
+    '''
+
+    # File is present. Give it 1 second to finish writing.
+    time.sleep(1)
+
+    raft_dict = None
+    parse_timeout = 30
+    content_timeout = 30
+
+    for parse_counter in range(1, parse_timeout + 1):
+        try:
+            with open(out_fpath, "r", encoding="utf-8") as json_file:
+                content = json_file.read()
+                if not content.strip():
+                    raise json.JSONDecodeError("empty file", content, 0)
+                raft_dict = json.loads(content)
+        except (json.JSONDecodeError, ValueError):
+            time.sleep(0.5)
+            continue
+
+        # Parsed OK, but may be mid-write w.r.t. the keys we actually need.
+        if any(len(dpath.util.values(raft_dict, key)) > 0 for key in raft_key_list):
+            logging.warning("DEBUG out_fpath=%s parsed with requested keys present after %s attempt(s)" % (out_fpath, parse_counter))
+            break
+
+        logging.warning("DEBUG out_fpath=%s parsed OK but missing requested keys, attempt %s; top-level keys=%s" % (out_fpath, parse_counter, list(raft_dict.keys())))
+        raft_dict = None
+        time.sleep(0.5)
+    else:
+        logging.warning("DEBUG out_fpath=%s did not contain valid+complete JSON after %s attempts" % (out_fpath, parse_timeout))
+        return all_null()
 
     '''
     Lookup each key from the raft_key_list.
@@ -110,11 +163,6 @@ def niova_raft_lookup_values(ctlreq_dict, raft_key_list):
 
     return raft_values_dict
 
-'''
-Lookup the raft keys for the given peer, first by sending
-the ctlrequest to the peer and then reading the values
-from the output JSON file.
-'''
 def niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess_type, lookout_uuid):
     raft_keys = ctlreq_cmd_dict['lookup_key']
     if isinstance(raft_keys, list):

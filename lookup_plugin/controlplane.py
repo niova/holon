@@ -177,22 +177,42 @@ def get_the_output(outfilePath):
     timeout = 300
 
     # Wait till the output json file gets created.
-    while True:
-        if not os.path.exists(outfile):
-            counter += 1
-            time.sleep(1)
-            if counter == timeout:
-                return {'outfile_status':-1}
-        else:
-            break
+    while not os.path.exists(outfile):
+        counter += 1
+        time.sleep(1)
+
+        if counter >= timeout:
+            return {'outfile_status': -1, 'output_data': {}}
+
+    # File is present. Give ncpc 1 second to finish writing.
+    time.sleep(1)
 
     output_data = {}
-    json_data = {}
-    with open(outfile, "r+", encoding="utf-8") as json_file:
-        output_data = json.load(json_file)
-    json_data['outfile_status'] = 0
-    json_data['output_data'] = output_data
-    return json_data
+    parse_counter = 0
+    parse_timeout = 30
+
+    while True:
+        try:
+            with open(outfile, "r", encoding="utf-8") as json_file:
+                content = json_file.read()
+
+            if not content.strip():
+                raise json.JSONDecodeError("empty file", content, 0)
+
+            output_data = json.loads(content)
+            break
+
+        except (json.JSONDecodeError, ValueError):
+            parse_counter += 1
+            time.sleep(1)
+
+            if parse_counter >= parse_timeout:
+                return {'outfile_status': -1, 'output_data': {}}
+
+    return {
+        'outfile_status': 0,
+        'output_data': output_data
+    }
 
 def set_environment_variables(cluster_params,lookout_uuid):
     niova_lookout_ctl_interface_path = "%s/%s/niova_lookout/%s" % (cluster_params['base_dir'],

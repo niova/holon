@@ -29,26 +29,15 @@
           debug:
             msg: "Killed node names are: {{ proxy_node_names }}"
 
-        - name: "{{ recipe_name }}: Kill the Proxy server."
+        - name: "{{ recipe_name }}: Kill the Proxy servers."
           debug:
             msg: "{{lookup('niova_raftprocess', 'kill', ClientUUIDS[item])}}"
           loop: "{{ range(0, ClientUUIDS | length) |list }}"
-          no_log: True
+          no_log: false
 
         - pause: seconds=10
 
-        - name: "{{ recipe_name }}: Starting controlplane_client to get membership details."
-          vars:
-            input_param:
-              { "Operation": "membership", "OutfileName": "membership_output_after_killing_proxy_servers" }
-            ncpclires: "{{ lookup('controlplane', 'ncpc', input_param) }}"
-          debug:
-            msg: "get membership details of running servers."
-          with_items:
-            - "{{ ncpclires }}"
-          register: membership
-
-        - name: "{{ recipe_name }}: Wait until the proxy servers' status changes after killing them."
+        - name: "{{ recipe_name }}: Wait until the proxy servers' status changes after killing both of them."
           vars:
             NodeName: "{{ item }}"
             input_param:
@@ -78,7 +67,7 @@
           with_items:
             - "{{ ncpcliwr }}"
           register: writeres5keys
-          no_log: true
+          no_log: false
 
         - name: "{{ recipe_name }}: Verify outfile status"
           debug:
@@ -91,7 +80,7 @@
         - name: "{{ recipe_name }}: Verify write status."
           debug:
             msg: "Check write response status"
-          no_log: true
+          no_log: false
           failed_when: >
             (writeres5keys['results'][0]['item']['output_data']['Response']['Status'] != -1)
 
@@ -111,20 +100,9 @@
 
         - name: "{{ recipe_name }}: Pause for 5 seconds to start pmdb and proxy servers properly."
           pause:
-            seconds: 10
+            seconds: 5
 
-        - name: "{{ recipe_name }}: Starting controlplane_client to get membership details."
-          vars:
-            input_param:
-              { "Operation": "membership", "OutfileName": "membership_output_after_restarting_killed_proxy_servers" }
-            ncpclires: "{{ lookup('controlplane', 'ncpc', input_param) }}"
-          debug:
-            msg: "get membership details of running servers."
-          with_items:
-            - "{{ ncpclires }}"
-          register: membership_after_restart
-
-        - name: "{{ recipe_name }}: Wait until the proxy servers' status changes after killing them."
+        - name: "{{ recipe_name }}: Wait until the proxy servers' status changes after restarting after killing them."
           vars:
             NodeName: "{{ item }}"
             input_param:
@@ -132,37 +110,18 @@
                 "Operation": "membership",
                 "OutfileName": "wait_for_proxyStatus_after_restarting_killed_proxy_servers",
               }
+            membershipData: "{{ lookup('controlplane', 'ncpc', input_param) }}"
           debug:
-            msg: "Verifying node status"
-          until: lookup('controlplane', 'ncpc', input_param)['membership']['output_data'][NodeName]['Status'] == "alive"
-          retries: 10
-          delay: 1
-          loop: "{{ proxy_node_names }}"
-
-        - name: "{{ recipe_name }}: Starting controlplane_client to get membership details."
-          vars:
-            input_param:
-              { "Operation": "membership", "OutfileName": "membership_output_after_restarting_killed_proxy_servers" }
-            ncpclires: "{{ lookup('controlplane', 'ncpc', input_param) }}"
-          debug:
-            msg: "get membership details of running servers."
-          with_items:
-            - "{{ ncpclires }}"
-          register: membership_after_restart
-
-        - name: "{{ recipe_name }}: Wait until the proxy servers' status changes after killing them."
-          vars:
-            NodeName: "{{ item }}"
-            input_param:
-              {
-                "Operation": "membership",
-                "OutfileName": "wait_for_proxyStatus_after_restarting_killed_proxy_servers",
-              }
-          debug:
-            msg: "Verifying node status"
-          until: lookup('controlplane', 'ncpc', input_param)['membership']['output_data'][NodeName]['Status'] == "alive"
-          retries: 10
-          delay: 1
+            msg: 
+              - "Verifying node status"
+              - "{{ membershipData['membership'] }}"
+          until: >
+            membershipData['membership']['outfile_status'] == 0 and
+            membershipData['membership']['output_data']
+            .get(NodeName, {})
+            .get('Status', '') == "alive"
+          retries: 60
+          delay: 2
           loop: "{{ proxy_node_names }}"
 
         - name: "{{ recipe_name }}: get the list of non-running servers."
@@ -191,14 +150,14 @@
           debug:
             msg:
               - "Check write outfile status: {{ writeres_afterStartingProxy['results'][0]['item']['outfile_status'] }}"
-          no_log: true
+          no_log: false
           failed_when: >
             (writeres_afterStartingProxy['results'][0]['item']['outfile_status'] != 0)
 
         - name: "{{ recipe_name }}: Verify write status"
           debug:
             msg: "Check write response status"
-          no_log: true
+          no_log: false
           failed_when: >
             (item['Response']['Status'] != 0)
           loop: "{{ writeres_afterStartingProxy['results'][0]['item']['output_data'] }}"
@@ -227,7 +186,7 @@
             msg:
               - "Check read outfile status: {{ readres_afterStartingProxy['results'][0]['item']['outfile_status'] }}"
               - "Check read response status: {{ readres_afterStartingProxy['results'][0]['item']['output_data'][0]['Response']['Status'] }}"
-          no_log: true
+          no_log: false
           failed_when:
             (readres_afterStartingProxy['results'][0]['item']['outfile_status'] != 0) or
             (readres_afterStartingProxy['results'][0]['item']['output_data'][0]['Response']['Status'] != 0)

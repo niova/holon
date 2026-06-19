@@ -88,17 +88,6 @@
         - pause:
             seconds: 2
 
-        - name: "{{ recipe_name }}: Starting controlplane_client to get membership details."
-          vars:
-            input_param:
-              { "Operation": "membership", "OutfileName": "membership_output" }
-            ncpclires: "{{ lookup('controlplane', 'ncpc', input_param) }}"
-          debug:
-            msg: "get membership details of running servers."
-          with_items:
-            - "{{ ncpclires }}"
-          register: membership
-
         - name: "{{ recipe_name }}: Get the nodename of killed proxy server."
           vars:
             node: "{{ 'Node_' + ClientUUIDS[0] }}"
@@ -115,6 +104,7 @@
               {
                 "Operation": "membership",
                 "OutfileName": "wait_for_proxyStatus",
+                "wait_for_outfile": True
               }
           debug:
             msg: "Verifying node status"
@@ -129,6 +119,7 @@
               {
                 "Operation": "membership",
                 "OutfileName": "verify_proxyServerStatus",
+                "wait_for_outfile": True,
               }
             getProxyServerData: "{{ lookup('controlplane', 'ncpc', input_param) }}"
           debug:
@@ -188,6 +179,7 @@
               {
                 "Operation": "membership",
                 "OutfileName": "wait_for_killedPmdbServerStatus",
+                "wait_for_outfile": True,
               }
           debug:
             msg: "Verifying pmdb server's status"
@@ -202,6 +194,7 @@
               {
                 "Operation": "membership",
                 "OutfileName": "check_killedPmdbServerStatus",
+                "wait_for_outfile": True,
               }
             verifyPmdbServerStatus: "{{ lookup('controlplane', 'ncpc', input_param) }}"
           debug:
@@ -212,12 +205,54 @@
           debug:
             msg: "{{ lookup('niova_raftprocess', 'start', ClientUUIDS[0]) }}"
 
-        - pause: seconds=5
+        - pause: seconds=10
+
+        - name: "{{ recipe_name }}: Wait until proxy node status gets changed after starting the killed proxy server."
+          vars:
+            getNodeName: "{{ killed_node['results'][0]['item'] }}"
+            input_param:
+              {
+                "Operation": "membership",
+                "OutfileName": "wait_for_proxyStatus_after_restart",
+              }
+            membershipData: "{{ lookup('controlplane', 'ncpc', input_param) }}"
+          debug:
+            msg: 
+              - "Verifying node status"
+              - "{{ membershipData['membership'] }}"
+          until: >
+            membershipData['membership']['outfile_status'] == 0 and
+            membershipData['membership']['output_data']
+            .get(getNodeName, {})
+            .get('Status', '') == "alive"
+          retries: 60
+          delay: 2
 
         - name: "{{ recipe_name }}: Start Killed pmdb server."
           debug:
             msg: "{{ lookup('niova_raftprocess', 'start', Peer5['results'][0]['item']) }}"
 
+        - name: "{{ recipe_name }}: Check if killed pmdb server's status gets changed after restarting it."
+          vars:
+            restartedPmdbServer: "{{ Peer5['results'][0]['item'] }}"
+            input_param:
+              {
+                "Operation": "membership",
+                "OutfileName": "check_restartedPmdbServerStatus",
+              }
+            verifyPmdbServerStatus: "{{ lookup('controlplane', 'ncpc', input_param) }}"
+          debug:
+            msg: 
+              - "Verify killed pmdb server status"
+              - "{{ verifyPmdbServerStatus['membership'] }}"
+          until: >
+            verifyPmdbServerStatus['membership']['outfile_status'] == 0 and
+            verifyPmdbServerStatus['membership']['output_data']
+            .get(restartedPmdbServer, {})
+            .get('Status', '') == "alive"
+          retries: 60
+          delay: 2
+          
       rescue:
         - name: "Recipe: {{ recipe_name }} failed"
           set_fact:

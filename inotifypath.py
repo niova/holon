@@ -51,7 +51,6 @@ class InotifyPath:
             logging.warning("exporting NIOVA_INOTIFY_PATH=%s",
                             os.environ['NIOVA_INOTIFY_PATH'])
 
-
     '''
     Method: init path initialization
     Purpose: export init path

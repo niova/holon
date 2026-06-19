@@ -92,11 +92,9 @@
        delay: 1
        loop: "{{ get_nisd }}"
 
-     - pause: seconds=2
-
      - name: "{{ recipe_name }}: Get nisd_root_entry info."
        vars:
-          stage: "get_nisd_root_entry"
+          stage: "collect_nisd_root_entry"
           lookout_uuid: "{{ get_lookout[0] }}"
           nisdRootEntryVal: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_root_keys, 'nisd', lookout_uuid) }}"
        set_fact:
