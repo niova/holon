@@ -205,7 +205,7 @@
           debug:
             msg: "{{ lookup('niova_raftprocess', 'start', ClientUUIDS[0]) }}"
 
-        - pause: seconds=5
+        - pause: seconds=10
 
         - name: "{{ recipe_name }}: Wait until proxy node status gets changed after starting the killed proxy server."
           vars:
@@ -214,30 +214,19 @@
               {
                 "Operation": "membership",
                 "OutfileName": "wait_for_proxyStatus_after_restart",
-                "wait_for_outfile": True,
               }
+            membershipData: "{{ lookup('controlplane', 'ncpc', input_param) }}"
           debug:
             msg: 
               - "Verifying node status"
-              - "{{ lookup('controlplane', 'ncpc', input_param)['membership']['output_data'][getNodeName] }}"
-          until: lookup('controlplane', 'ncpc', input_param)['membership']['output_data'][getNodeName]['Status'] == "alive"
+              - "{{ membershipData['membership'] }}"
+          until: >
+            membershipData['membership']['outfile_status'] == 0 and
+            membershipData['membership']['output_data']
+            .get(getNodeName, {})
+            .get('Status', '') == "alive"
           retries: 60
           delay: 2
-
-        - name: "{{ recipe_name }}: Verify proxy server's status."
-          vars:
-            getNodeName: "{{ killed_node['results'][0]['item'] }}"
-            input_param:
-              {
-                "Operation": "membership",
-                "OutfileName": "verify_proxyServerStatus_after_restart",
-                "wait_for_outfile": True,
-              }
-            getProxyServerData: "{{ lookup('controlplane', 'ncpc', input_param) }}"
-          debug:
-            msg: "Verify proxy server status: {{ getProxyServerData }}"
-          no_log: true
-          failed_when: getProxyServerData['membership']['output_data'][getNodeName]['Status'] != "alive"
 
         - name: "{{ recipe_name }}: Start Killed pmdb server."
           debug:
@@ -255,8 +244,12 @@
           debug:
             msg: 
               - "Verify killed pmdb server status"
-              - "{{ verifyPmdbServerStatus['membership']['output_data'][restartedPmdbServer] }}"
-          until: verifyPmdbServerStatus['membership']['output_data'][restartedPmdbServer]['Status'] == "alive"
+              - "{{ verifyPmdbServerStatus['membership'] }}"
+          until: >
+            verifyPmdbServerStatus['membership']['outfile_status'] == 0 and
+            verifyPmdbServerStatus['membership']['output_data']
+            .get(restartedPmdbServer, {})
+            .get('Status', '') == "alive"
           retries: 60
           delay: 2
           
