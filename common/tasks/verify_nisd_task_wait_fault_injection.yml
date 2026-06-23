@@ -14,15 +14,19 @@
       set_fact:
         VblkReadFaultInjectList: >-
           {{
-            (VblkReadFaultInjectList | default([]))
-            + [item['wait']['fault-inject'] | string]
+            getFaultInject['//tasks']
+            | selectattr('type', 'equalto', 'vblk-read')
+            | map(attribute='wait.fault-inject')
+            | map('string')
+            | list
           }}
-      loop: "{{ getFaultInject['//tasks'] }}"
       no_log: false
 
-    - name: "{{ recipe_name }}: Verify 'wait-fault-inject'."
+    - name: "{{ recipe_name }}: Verify vblk-read wait-fault-inject."
       debug:
-        msg: "Verify 'wait-fault-inject'."
-      failed_when: item != "3"
-      loop: "{{ VblkReadFaultInjectList }}"
+        msg:
+          - "vblk-read fault-inject values: {{ VblkReadFaultInjectList }}"
+      failed_when: >
+        VblkReadFaultInjectList | length == 0 or
+        (VblkReadFaultInjectList | difference(['3']) | length > 0)
       no_log: false

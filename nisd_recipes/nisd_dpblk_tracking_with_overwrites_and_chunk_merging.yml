@@ -17,20 +17,20 @@
               - "/nisd_root_entry/0/num-pblks-used"
               - "/nisd_root_entry/0/num-reserved-pblks-used"
     nisd_chunk_keys:
-              - "/nisd_chunks/0/vdev-uuid"
-              - "/nisd_chunks/0/number"
-              - "/nisd_chunks/0/num-data-pblks"
-              - "/nisd_chunks/0/num-meta-pblks"
-              - "/nisd_chunks/0/num-reserved-meta-pblks"
-              - "/nisd_chunks/0/metablock-seqno"
-              - "/nisd_chunks/0/read-op-seqno"
-              - "/nisd_chunks/0/merge-read-op-seqno"
+              - "/nisd_chunks/15/vdev-uuid"
+              - "/nisd_chunks/15/number"
+              - "/nisd_chunks/15/num-data-pblks"
+              - "/nisd_chunks/15/num-meta-pblks"
+              - "/nisd_chunks/15/num-reserved-meta-pblks"
+              - "/nisd_chunks/15/metablock-seqno"
+              - "/nisd_chunks/15/read-op-seqno"
+              - "/nisd_chunks/15/merge-read-op-seqno"
               - "/nisd_root_entry/0/vblks-written"
-              - "/nisd_chunks/0/vblks-read"
-              - "/nisd_chunks/0/num-cme"
-              - "/nisd_chunks/0/ref-cnt"
-              - "/nisd_chunks/0/merge-info/shallow-cnt"
-              - "/nisd_chunks/0/merge-info/full-status"
+              - "/nisd_chunks/15/vblks-read"
+              - "/nisd_chunks/15/num-cme"
+              - "/nisd_chunks/15/ref-cnt"
+              - "/nisd_chunks/15/merge-info/shallow-cnt"
+              - "/nisd_chunks/15/merge-info/shallow-status"
 
   tasks:
   - block:
@@ -119,7 +119,7 @@
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "Waiting for nisd to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', item, '/nisd_chunks/0/merge-info/full-status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "idle"
+       until: lookup('niova_ctlrequest', 'lookup', item, '/nisd_chunks/15/merge-info/shallow-status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "idle"
        retries: 10
        delay: 1
        loop: "{{ get_nisd }}"
@@ -146,8 +146,8 @@
      - name: "{{ recipe_name }}: Issue chunk merge cmd."
        vars:
          stage: "chunkMerge"
-         cmd: "chunk-merge-status@merge"
-         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}"
+         cmd: "shallow-status@merge"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
@@ -161,7 +161,7 @@
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "Waiting for nisd to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/0/merge-info/shallow-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/15/merge-info/shallow-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
        retries: 10
        delay: 1
        loop: "{{ range(0, get_nisd | length) | list }}"
@@ -179,11 +179,11 @@
        failed_when: >
          (getNiovaBlockTest['/merge-info/full-status'] != "idle") or
          (getNiovaBlockTest['/0/vblks-written'] != 512) or
-         (getNiovaBlockTest['/0/metablock-seqno'] != 511) or
-         (getNiovaBlockTest['/0/ref-cnt'] != 1) or
-         (getNiovaBlockTest['/0/num-data-pblks'] != 16) or
-         (getNiovaBlockTest['/0/num-meta-pblks'] != 1) or
-         (getNiovaBlockTest['/0/num-reserved-meta-pblks'] != 1)
+         (getNiovaBlockTest['/15/metablock-seqno'] != 511) or
+         (getNiovaBlockTest['/15/ref-cnt'] != 1) or
+         (getNiovaBlockTest['/15/num-data-pblks'] != 16) or
+         (getNiovaBlockTest['/15/num-meta-pblks'] != 1) or
+         (getNiovaBlockTest['/15/num-reserved-meta-pblks'] != 1)
 
      # 5 - Verify /nisd_root_entry Values against those taken in Step #1
      - name: "{{ recipe_name }}: Verify /nisd_root_entry Values against those taken in Step #1."
@@ -376,8 +376,8 @@
      - name: "{{ recipe_name }}: Issue a Merge on the Chunk"
        vars:
          stage: "issueChunkMergeAftrNewRds"
-         cmd: "chunk-merge-status@merge"
-         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}"
+         cmd: "shallow-status@merge"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
@@ -391,7 +391,7 @@
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "Waiting for nisd to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/0/merge-info/shallow-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/15/merge-info/shallow-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
        retries: 10
        delay: 1
        loop: "{{ range(0, get_nisd | length) | list }}"

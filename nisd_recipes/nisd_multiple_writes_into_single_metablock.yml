@@ -27,14 +27,14 @@
        loop_control:
          loop_var: nisd_uuid
 
-     - name: "{{ recipe_name }}: Apply fault injection on NISD and verify."
+     - name: "{{ recipe_name }}: Enable fault injection on NISD and verify."
        include_role:
          name: common
          tasks_from: enable_fi_on_nisd
        vars:
          NisdUUID: "{{ nisd_uuid }}"
          LookoutUUID: "{{ get_lookout[0] }}"
-         fault_injection_name: "out_of_order_metablock_sync"
+         fault_injection_name: "metablock_multi_fill"
        loop: "{{ get_nisd }}"
        loop_control:
          loop_var: nisd_uuid
@@ -97,7 +97,8 @@
            - "/nisd_chunks"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
-         msg: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[0], nisd_keys, 'nisd', lookout_uuid) }}"
+         msg: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Get nisd_chunks info for VdevUUIDS."
        vars:
@@ -114,6 +115,7 @@
              [
                all_nisd_chunks
                | selectattr('vdev-uuid', 'equalto', VdevUUIDS[item] | string)
+               | selectattr('number', 'equalto', 0)
                | list
                | first
              ]
@@ -131,9 +133,9 @@
          msg: "Verify nisd values after writes for {{ get_nisd[item] }} and vdev {{ VdevUUIDS[item] }}: {{ VdevChunkInfo[item] }}"
        no_log: True
        failed_when: >
-         ((VdevChunkInfo[item]['vdev-uuid']) != VdevUUIDS[item])
+         ((VdevChunkInfo[item]['vdev-uuid']) != VdevUUIDS[item]) or
          ((VdevChunkInfo[item]['vblks-written'] | int) != (no_of_ops | int)) or
-         ((VdevChunkInfo[item]['metablock-seqno'] | int) != 0) or
+         ((VdevChunkInfo[item]['metablock-seqno'] | int) != (no_of_ops | int) - 1) or
          ((VdevChunkInfo[item]['num-data-pblks'] | int) != 1) or
          ((VdevChunkInfo[item]['num-reserved-meta-pblks'] | int) != 1)
        loop: "{{ range(0, get_nisd | length) | list }}"

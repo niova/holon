@@ -299,11 +299,11 @@
          nisd_keys:
               - "/nisd_root_entry/0/num-pblks-used"
               - "/nisd_root_entry/0/num-reserved-pblks-used"
-              - "/nisd_chunks/0/vblks-written"
-              - "/nisd_chunks/0/vdev-uuid"
-              - "/nisd_chunks/0/num-data-pblks"
-              - "/nisd_chunks/0/num-meta-pblks"
-              - "/nisd_chunks/0/num-reserved-meta-pblks"
+              - "/nisd_chunks/15/vblks-written"
+              - "/nisd_chunks/15/vdev-uuid"
+              - "/nisd_chunks/15/num-data-pblks"
+              - "/nisd_chunks/15/num-meta-pblks"
+              - "/nisd_chunks/15/num-reserved-meta-pblks"
          lookout_uuid: "{{ get_lookout[0] }}"
          getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
@@ -312,11 +312,11 @@
        until: >
          (getNiovaBlockTest['/0/num-pblks-used'] == ((old_num_block_used | int) + 50)) and
          (getNiovaBlockTest['/0/num-reserved-pblks-used'] == 1) and
-         (getNiovaBlockTest['/0/vdev-uuid'] == VdevUUIDS[idx]) and
-         (getNiovaBlockTest['/0/num-data-pblks'] == 50) and
-         (getNiovaBlockTest['/0/num-meta-pblks'] == 0) and
-         (getNiovaBlockTest['/0/num-reserved-meta-pblks'] == 1) and
-         (getNiovaBlockTest['/0/vblks-written'] == 1600)
+         (getNiovaBlockTest['/15/vdev-uuid'] == VdevUUIDS[idx]) and
+         (getNiovaBlockTest['/15/num-data-pblks'] == 50) and
+         (getNiovaBlockTest['/15/num-meta-pblks'] == 0) and
+         (getNiovaBlockTest['/15/num-reserved-meta-pblks'] == 1) and
+         (getNiovaBlockTest['/15/vblks-written'] == 1600)
        retries: 10
        delay: 1
        loop: "{{ get_nisd }}"
@@ -331,9 +331,12 @@
          oldMetablockSeqNos: >-
            {{
              oldMetablockSeqNos | default([]) +
-             [lookup('niova_ctlrequest', 'lookup', item, '/nisd_chunks/0/metablock-seqno', 'nisd', lookout_uuid)['/0/metablock-seqno']]
+             [lookup('niova_ctlrequest', 'lookup', item, '/nisd_chunks/15/metablock-seqno', 'nisd', lookout_uuid)['/15/metablock-seqno']]
            }}
        loop: "{{ get_nisd }}"
+
+     - debug:
+         msg: "oldMetablockSeqNos: {{ oldMetablockSeqNos  }}"
 
      - name: "{{ recipe_name }}: Kill the nisd process."
        debug:
@@ -367,8 +370,7 @@
        retries: 10
        delay: 1
        loop: "{{ get_nisd }}"
-
-      
+ 
      # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
      # (aftrRestart['/0/num-pblks-used'] != (old_num_block_used | int) + 50)
      
@@ -475,15 +477,19 @@
 
      - name: "{{ recipe_name }}: Verify nisd_chunk checks."
        vars:
+         nisd_keys:
+              - "/nisd_chunks/15/vblks-read"
+              - "/nisd_chunks/15/num-cme"
+              - "/nisd_chunks/15/ref-cnt"
          stage: "aftrRead_nisd_chunk"
          lookout_uuid: "{{ get_lookout[0] }}"
-         aftrRead: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_chunk_keys, 'nisd', lookout_uuid) }}"
+         aftrRead: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd_chunks: {{ aftrRead }}"
        no_log: false
        failed_when: >
-         (aftrRead['/0/vblks-read'] != 1600) or
-         (aftrRead['/0/ref-cnt'] != ((aftrRead['/0/num-cme'] | int) + 1))
+         (aftrRead['/15/vblks-read'] != 1600) or
+         (aftrRead['/15/ref-cnt'] != ((aftrRead['/15/num-cme'] | int) + 1))
        loop: "{{ get_nisd }}"
 
     rescue:

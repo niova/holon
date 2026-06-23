@@ -94,9 +94,9 @@
        vars:
          stage: "get_nisd_chunk"
          nisd_keys:
-              - "/nisd_chunks/0/vblks-written"
-              - "/nisd_chunks/0/metablock-seqno"
-              - "/nisd_chunks/0/ooo-mb-sync-cnt"
+              - "/nisd_chunks/15/vblks-written"
+              - "/nisd_chunks/15/metablock-seqno"
+              - "/nisd_chunks/15/ooo-mb-sync-cnt"
          lookout_uuid: "{{ get_lookout[0] }}"
          getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
@@ -105,9 +105,9 @@
        retries: 20
        delay: 1
        failed_when: >
-         ((getNiovaBlockTest['/0/vblks-written'] | int) != (no_of_ops | int)) or
-         ((getNiovaBlockTest['/0/metablock-seqno'] | int) < ((num_of_remaining | int) - 1)) or
-         ((getNiovaBlockTest['/0/ooo-mb-sync-cnt'] | int) < ((num_of_remaining | int) - 1))
+         ((getNiovaBlockTest['/15/vblks-written'] | int) != (no_of_ops | int)) or
+         ((getNiovaBlockTest['/15/metablock-seqno'] | int) < ((num_of_remaining | int) - 1)) or
+         ((getNiovaBlockTest['/15/ooo-mb-sync-cnt'] | int) < ((num_of_remaining | int) - 1))
        loop: "{{ get_nisd }}"
 
     rescue:
