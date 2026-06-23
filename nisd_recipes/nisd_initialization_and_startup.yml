@@ -498,6 +498,10 @@
 
      - name: "{{ recipe_name }}: Verify nisd_chunk checks after read of previously written VBLKS."
        vars:
+         nisd_keys:
+              - "/nisd_chunks/15/vblks-read"
+              - "/nisd_chunks/15/num-cme"
+              - "/nisd_chunks/15/ref-cnt"
          stage: "aftrRead_nisd_chunk"
          chunk_info_after_read: "{{ ChunkInfo[item].chunk_info }}"
        debug:
