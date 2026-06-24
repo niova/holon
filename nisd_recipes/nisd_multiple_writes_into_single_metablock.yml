@@ -121,10 +121,6 @@
              ]
            }}
        loop: "{{ range(0, get_nisd | length) | list }}"
-         
-     - name: "{{ recipe_name }}: Show nisd_chunks info for VdevUUIDS."
-       debug:
-         msg: "{{ VdevChunkInfo }}"
 
      - name: "{{ recipe_name }}: Verify nisd_chunk info."
        vars:

@@ -26,7 +26,7 @@
               - "/nisd_chunks/0/num-cme"
               - "/nisd_chunks/0/ref-cnt"
               - "/nisd_chunks/0/merge-info/shallow-cnt"
-              - "/nisd_chunks/0/merge-info/full-status"
+              - "/nisd_chunks/0/merge-info/shallow-status"
 
   tasks:
   - block:
@@ -101,14 +101,27 @@
          msg: "One or more niova-block-test writes failed: {{ write_success }}"
        failed_when: (write_success | reject('equalto', '0') | list | length) > 0
 
+     - name: "{{ recipe_name }}: Reset ChunkIndexes list."
+       set_fact:
+         ChunkIndexes: []
+
+     - name: "{{ recipe_name }}: Get chunk index for all nisds."
+       include_role:
+         name: common
+         tasks_from: get_chunk_index.yml
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       loop_control:
+         loop_var: nisd_idx
+
      #3 - Issue a Merge on the Chunk
      - name: "{{ recipe_name}}: Wait until 'chunk-merge-status': 'idle'"
        vars:
          stage: "wait_for_nisd_chunk"
          lookout_uuid: "{{ get_lookout[0] }}"
+         chunk_index: "{{ ChunkIndexes[item] }}"
        debug:
          msg: "Waiting for nisd to get 'idle'"
-       until: lookup('niova_ctlrequest', 'lookup', item, '/nisd_chunks/0/merge-info/full-status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "idle"
+       until: lookup('niova_ctlrequest', 'lookup', item, '/nisd_chunks/{{ chunk_index }}/merge-info/shallow-status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "idle"
        retries: 10
        delay: 1
        loop: "{{ get_nisd }}"
@@ -117,22 +130,26 @@
        vars:
          stage: "chunk_merge_cnt"
          lookout_uuid: "{{ get_lookout[0] }}"
-         getChunkCnt: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_chunk_keys, 'nisd', lookout_uuid) }}"
+         chunk_index: "{{ ChunkIndexes[item] }}"
+         getChunkCnt: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/{{ chunk_index }}/merge-info/shallow-cnt', 'nisd', lookout_uuid) }}"
        set_fact:
          origChunkCnt: >-
            {{
              origChunkCnt | default([]) +
              [{
-               'nisd_uuid': item,
+               'nisd_uuid': get_nisd[item],
                'entry': getChunkCnt
              }]
            }}
-       loop: "{{ get_nisd }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
+
+     - debug:
+         msg: "{{ origChunkCnt }}" 
 
      - name: "{{ recipe_name }}: Issue chunk merge cmd."
        vars:
          stage: "chunkMerge"
-         cmd: "full-status@merge"
+         cmd: "shallow-status@merge"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
@@ -145,9 +162,10 @@
          orig_merge_cnt: "{{ origChunkCnt[item].entry['/merge-info/shallow-cnt'] }}"
          stage: "wait_for_chunk_cnt"
          lookout_uuid: "{{ get_lookout[0] }}"
+         chunk_index: "{{ ChunkIndexes[item] }}"
        debug:
          msg: "Waiting for chunk-cnt to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/0/merge-info/shallow-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/{{ chunk_index }}/merge-info/shallow-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
        retries: 20
        delay: 1
        loop: "{{ range(0, get_nisd | length) | list }}"
@@ -157,35 +175,45 @@
        vars:
          stage: "verify_nisd_chunk"
          lookout_uuid: "{{ get_lookout[0] }}"
-         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_chunk_keys, 'nisd', lookout_uuid) }}"
+         chunk_index: "{{ ChunkIndexes[item] }}"
+         nisd_keys:
+              - "/nisd_chunks/{{ chunk_index }}/num-data-pblks"
+              - "/nisd_chunks/{{ chunk_index }}/num-meta-pblks"
+              - "/nisd_chunks/{{ chunk_index }}/num-reserved-meta-pblks"
+              - "/nisd_chunks/{{ chunk_index }}/metablock-seqno"
+              - "/nisd_root_entry/0/vblks-written"
+              - "/nisd_chunks/{{ chunk_index }}/ref-cnt"
+              - "/nisd_chunks/{{ chunk_index }}/merge-info/shallow-status"
+         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd values after writes: {{ getNiovaBlockTest }}"
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
        failed_when: >
-         (getNiovaBlockTest['/merge-info/full-status'] != "idle") or
+         (getNiovaBlockTest['/' ~ chunk_index ~ '/merge-info/full-status'] != "idle") or
          (getNiovaBlockTest['/0/vblks-written'] != 1000) or
-         (getNiovaBlockTest['/0/metablock-seqno'] != 999) or
-         (getNiovaBlockTest['/0/ref-cnt'] != 1) or
-         (getNiovaBlockTest['/0/num-meta-pblks'] != 1) or
-         (getNiovaBlockTest['/0/num-reserved-meta-pblks'] != 1)
+         (getNiovaBlockTest['/' ~ chunk_index ~ '/metablock-seqno'] != 999) or
+         (getNiovaBlockTest['/' ~ chunk_index ~ '/ref-cnt'] != 1) or
+         (getNiovaBlockTest['/' ~ chunk_index ~ '/num-meta-pblks'] != 1) or
+         (getNiovaBlockTest['/' ~ chunk_index ~ '/num-reserved-meta-pblks'] != 1)
 
      #4a - Capture num-data-pblks
      - name: "{{ recipe_name }}: Capture num-data-pblks."
        vars:
          stage: "verify_nisd_chunk"
          lookout_uuid: "{{ get_lookout[0] }}"
-         getNumDataPblks: "{{ lookup('niova_ctlrequest', 'lookup', item, '/nisd_chunks/0/num-data-pblks', 'nisd', lookout_uuid) }}"
+         chunk_index: "{{ ChunkIndexes[item] }}"
+         getNumDataPblks: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/{{ chunk_index }}/num-data-pblks', 'nisd', lookout_uuid) }}"
        set_fact:
          origNumDataPblk: >-
            {{
              origNumDataPblk | default([]) +
              [{
-               'nisd_uuid': item,
+               'nisd_uuid': get_nisd[item],
                'entry': getNumDataPblks
              }]
            }}
-       loop: "{{ get_nisd }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - debug:
          msg: "{{ origNumDataPblk }}"
@@ -279,7 +307,7 @@
      - name: "{{ recipe_name }}: Issue chunk merge cmd."
        vars:
          stage: "chunkMerge"
-         cmd: "full-status@merge"
+         cmd: "shallow-status@merge"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
@@ -289,16 +317,17 @@
 
      - name: "{{ recipe_name }}: Verify num-data-pblks is equal to the original value captured in Step #4."
        vars:
-         old_value: "{{ origNumDataPblk[item].entry['/0/num-data-pblks'] }}"
+         chunk_index: "{{ ChunkIndexes[item] }}"
+         old_value: "{{ origNumDataPblk[item].entry['/' ~ chunk_index ~ '/num-data-pblks'] }}"
          stage: "verify_numDataPblk"
          lookout_uuid: "{{ get_lookout[0] }}"
-         verifyNumDataPblks: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/0/num-data-pblks', 'nisd', lookout_uuid) }}"
+         verifyNumDataPblks: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks//{{ chunk_index }}num-data-pblks', 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify num-data-pblks is equal to the original value: {{ verifyNumDataPblks }}"
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
        failed_when: >
-         (verifyNumDataPblks['/0/num-data-pblks'] != (old_value | int))
+         (verifyNumDataPblks['/' ~ chunk_index ~ '/num-data-pblks'] != (old_value | int))
 
      #7e - Re-Read the Vblks Using varying Queue Depths.
      - name: "{{ recipe_name }}: Perform Read to the NISD."

@@ -1,0 +1,21 @@
+---
+    - name: "{{ recipe_name }}: Get all chunks for one nisd."
+      vars:
+        stage: "getAllChunks"
+        nisd_keys:
+          - "/nisd_chunks"
+        lookout_uuid: "{{ get_lookout[0] }}"
+      set_fact:
+        all_nisd_chunks: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[nisd_idx], nisd_keys, 'nisd', lookout_uuid)['//nisd_chunks'] }}"
+
+    - name: "{{ recipe_name }}: Store matching chunk index."
+      set_fact:
+        ChunkIndexes: >-
+          {{ (ChunkIndexList | default([])) + [chunk_idx] }}
+      loop: "{{ all_nisd_chunks }}"
+      loop_control:
+        index_var: chunk_idx
+        loop_var: chunk
+      when:
+        - chunk['vdev-uuid'] == (VdevUUIDS[nisd_idx] | string)
+        - chunk['number'] | int == 0
