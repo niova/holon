@@ -598,7 +598,7 @@ def start_niova_block_test(cluster_params, input_values):
     env = os.environ.copy()
     os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
     os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
-    # os.environ["NIOVA_LOG_LEVEL"] = "5"
+    os.environ["NIOVA_LOG_LEVEL"] = "5"
 
     enable_authentication = input_values["enable_auth"]
     
