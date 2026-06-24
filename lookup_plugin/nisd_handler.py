@@ -75,7 +75,7 @@ def run_nisd_command(cluster_params, input_values):
     os.makedirs(sock_dir, exist_ok=True)
 
     if enable_authentication == 1:
-        os.environ["NIOVA_NISD_SECRET"] = "NISD-secret"
+        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
         os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
     else:
         os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '0'
