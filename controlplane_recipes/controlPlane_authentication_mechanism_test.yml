@@ -168,7 +168,7 @@
               - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
 
         # Pause for 5 seconds for NISD to start successfully
-        - pause: seconds=5
+        - pause: seconds=15
 
         - name: "{{ recipe_name }}: Start niova-block-test process."
           vars:
