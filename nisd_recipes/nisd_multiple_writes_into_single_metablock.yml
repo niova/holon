@@ -115,6 +115,7 @@
      - name: "{{ recipe_name }}: Verify nisd_chunk info."
        vars:
          stage: "verify_nisd_chunk"
+         lookout_uuid: "{{ get_lookout[0] }}"
          chunk_index: "{{ ChunkIndexes[item] }}"
          nisd_keys:
               - "/nisd_chunks/{{ chunk_index }}/vdev-uuid"
@@ -125,13 +126,13 @@
          aftrWrNisdChunk: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd values after writes for {{ get_nisd[item] }} and vdev {{ VdevUUIDS[item] }}: {{ aftrWrNisdChunk }}"
-       no_log: True
+       no_log: false
        failed_when: >
-         ((aftrWrNisdChunk['/' ~ chunk_index ~ 'vdev-uuid']) != VdevUUIDS[item]) or
-         ((aftrWrNisdChunk['/' ~ chunk_index ~ 'vblks-written'] | int) != (no_of_ops | int)) or
-         ((aftrWrNisdChunk['/' ~ chunk_index ~ 'metablock-seqno'] | int) != (no_of_ops | int) - 1) or
-         ((aftrWrNisdChunk['/' ~ chunk_index ~ 'num-data-pblks'] | int) != 1) or
-         ((aftrWrNisdChunk['/' ~ chunk_index ~ 'num-reserved-meta-pblks'] | int) != 1)
+         ((aftrWrNisdChunk['/' ~ chunk_index ~ '/vdev-uuid']) != VdevUUIDS[item]) or
+         ((aftrWrNisdChunk['/' ~ chunk_index ~ '/vblks-written'] | int) != (no_of_ops | int)) or
+         ((aftrWrNisdChunk['/' ~ chunk_index ~ '/metablock-seqno'] | int) != (no_of_ops | int) - 1) or
+         ((aftrWrNisdChunk['/' ~ chunk_index ~ '/num-data-pblks'] | int) != 1) or
+         ((aftrWrNisdChunk['/' ~ chunk_index ~ '/num-reserved-meta-pblks'] | int) != 1)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Verify fault-injection values."
