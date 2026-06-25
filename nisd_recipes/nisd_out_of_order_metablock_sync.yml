@@ -111,7 +111,7 @@
               - "/nisd_chunks/{{ chunk_index }}/metablock-seqno"
               - "/nisd_chunks/{{ chunk_index }}/ooo-mb-sync-cnt"
          lookout_uuid: "{{ get_lookout[0] }}"
-         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', item, nisd_keys, 'nisd', lookout_uuid) }}"
+         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd values after writes for {{ item }}: {{ getNiovaBlockTest }}"
        no_log: false
@@ -121,7 +121,7 @@
          ((getNiovaBlockTest['/' ~ chunk_index ~ '/vblks-written'] | int) != (no_of_ops | int)) or
          ((getNiovaBlockTest['/' ~ chunk_index ~ '/metablock-seqno'] | int) < ((num_of_remaining | int) - 1)) or
          ((getNiovaBlockTest['/' ~ chunk_index ~ '/ooo-mb-sync-cnt'] | int) < ((num_of_remaining | int) - 1))
-       loop: "{{ get_nisd }}"
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
     rescue:
      - name: "Recipe: {{ recipe_name }} failed"
