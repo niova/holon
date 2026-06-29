@@ -10,8 +10,8 @@
 
     - name: "{{ recipe_name }}: Store matching chunk index."
       set_fact:
-        ChunkIndexes: >-
-          {{ (ChunkIndexList | default([])) + [chunk_idx] }}
+        ChunkInfo: >-
+          {{ (ChunkIndexList | default([])) + [{'nisd_uuid': get_nisd[nisd_idx], 'chunk_index': chunk_idx, 'chunk_info': chunk}] }}
       loop: "{{ all_nisd_chunks }}"
       loop_control:
         index_var: chunk_idx
