@@ -110,11 +110,11 @@
          msg: "Verify nisd values after writes for {{ get_nisd[item] }} and vdev {{ VdevUUIDS[item] }}: {{ chunk_info_after_write }}"
        no_log: false
        failed_when: >
-         ((chunk_info_after_write['/vdev-uuid']) != VdevUUIDS[item]) or
-         ((chunk_info_after_write['/vblks-written'] | int) != (no_of_ops | int)) or
-         ((chunk_info_after_write['/metablock-seqno'] | int) != (no_of_ops | int) - 1) or
-         ((chunk_info_after_write['/num-data-pblks'] | int) != 1) or
-         ((chunk_info_after_write['/num-reserved-meta-pblks'] | int) != 1)
+         ((chunk_info_after_write['vdev-uuid']) != VdevUUIDS[item]) or
+         ((chunk_info_after_write['vblks-written'] | int) != (no_of_ops | int)) or
+         ((chunk_info_after_write['metablock-seqno'] | int) != (no_of_ops | int) - 1) or
+         ((chunk_info_after_write['num-data-pblks'] | int) != 1) or
+         ((chunk_info_after_write['num-reserved-meta-pblks'] | int) != 1)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Verify fault-injection values."

@@ -112,9 +112,9 @@
        retries: 20
        delay: 1
        failed_when: >
-         ((chunk_info_after_write['/vblks-written'] | int) != (no_of_ops | int)) or
-         ((chunk_info_after_write['/metablock-seqno'] | int) < ((num_of_remaining | int) - 1)) or
-         ((chunk_info_after_write['/ooo-mb-sync-cnt'] | int) < ((num_of_remaining | int) - 1))
+         ((chunk_info_after_write['vblks-written'] | int) != (no_of_ops | int)) or
+         ((chunk_info_after_write['metablock-seqno'] | int) < ((num_of_remaining | int) - 1)) or
+         ((chunk_info_after_write['ooo-mb-sync-cnt'] | int) < ((num_of_remaining | int) - 1))
        loop: "{{ range(0, get_nisd | length) | list }}"
 
     rescue:
