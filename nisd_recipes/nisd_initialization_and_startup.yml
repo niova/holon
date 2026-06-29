@@ -310,7 +310,6 @@
         stage: "get_nisd_chunk_after_writes"
         old_num_block_used: "{{ aftrRestartNisd[item].entry['/0/num-pblks-used'] }}"
         chunk_info_after_writes: "{{ ChunkInfo[item].chunk_info }}"
-        chunk_index: "{{ ChunkInfo[item].chunk_index }}"
         nisd_keys:
           - "/nisd_root_entry/0/num-pblks-used"
           - "/nisd_root_entry/0/num-reserved-pblks-used"
@@ -337,7 +336,6 @@
        vars:
          stage: "get_metablock_seqno"
          chunk_info: "{{ ChunkInfo[item].chunk_info }}"
-         chunk_index: "{{ ChunkInfo[item].chunk_index }}"
        set_fact:
          oldMetablockSeqNos: >-
            {{
@@ -501,9 +499,7 @@
      - name: "{{ recipe_name }}: Verify nisd_chunk checks after read of previously written VBLKS."
        vars:
          stage: "aftrRead_nisd_chunk"
-         lookout_uuid: "{{ get_lookout[0] }}"
          chunk_info_after_read: "{{ ChunkInfo[item].chunk_info }}"
-         chunk_index: "{{ ChunkInfo[item].chunk_index }}"
        debug:
          msg: "Verify nisd_chunks: {{ chunk_info_after_read }}"
        no_log: false
