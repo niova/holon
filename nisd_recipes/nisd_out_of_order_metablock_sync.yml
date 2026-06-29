@@ -107,8 +107,8 @@
          stage: "get_nisd_chunk"
          chunk_info_after_write: "{{ ChunkInfo[item].chunk_info }}"
        debug:
-         msg: "Verify nisd values after writes for {{ item }}: {{ getNiovaBlockTest }}"
-       no_log: false
+         msg: "Verify nisd values after writes for {{ item }}: {{ chunk_info_after_write }}"
+       no_log: True
        retries: 20
        delay: 1
        failed_when: >
