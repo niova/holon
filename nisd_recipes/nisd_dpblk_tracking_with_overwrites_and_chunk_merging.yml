@@ -129,10 +129,13 @@
        vars:
          stage: "wait_for_nisd_chunk"
          lookout_uuid: "{{ get_lookout[0] }}"
-         chunk_index: "{{ ChunkInfo[item].chunk_index }}"
+         chunk_index: "{{ ChunkInfo[item].chunk_index | int }}"
+         nisd_key: "/nisd_chunks/{{ chunk_index }}/merge-info/shallow-status"
        debug:
-         msg: "Waiting for nisd to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/{{ chunk_index }}/merge-info/shallow-status', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "idle"
+         msg: 
+          - "Waiting for nisd to get updated"
+          - "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_key, 'nisd', lookout_uuid) }}"
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_key, 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "idle"
        retries: 10
        delay: 1
        loop: "{{ range(0, get_nisd | length) | list }}"
@@ -140,7 +143,7 @@
      - name: "{{ recipe_name }}: Capture the value of “chunk-merge-cnt”."
        vars:
          stage: "orig_chunk_merge_cnt"
-         getChunkCnt: "{{ ChunkInfo[item].chunk_info['merge-info/shallow-cnt'] }}"
+         getChunkCnt: "{{ ChunkInfo[item].chunk_info }}"
        set_fact:
          origChunkCnt: >-
            {{
@@ -158,6 +161,7 @@
      - name: "{{ recipe_name }}: Issue chunk merge cmd."
        vars:
          stage: "chunkMerge"
+         chunk_index: "{{ ChunkInfo[item].chunk_index }}"
          cmd: "shallow-status@merge"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
@@ -166,19 +170,29 @@
        loop: "{{ range(0, get_nisd | length) | list }}"
        no_log: false
 
+     - name: "{{ recipe_name }}: Reset ChunkInfo list after issuing chunk merge command."
+       set_fact:
+         ChunkInfo: []
+
+     - pause: seconds=5
+
+     - name: "{{ recipe_name }}: Get chunk info after issuing chunk merge command."
+       include_role:
+         name: common
+         tasks_from: get_chunk_info
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       loop_control:
+         loop_var: nisd_idx
+
      - name: "{{ recipe_name}}: Wait until chunk cnt gets updated."
        vars:
-         orig_merge_cnt: "{{ origChunkCnt[item].entry['/merge-info/shallow-cnt'] }}"
-         stage: "wait_for_chunk_cnt"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         chunk_index: "{{ ChunkInfo[item].chunk_index }}"
+         orig_merge_cnt: "{{ origChunkCnt[item].entry['merge-info']['shallow-cnt'] }}"
+         chunk_info_after_issuing_chunk_merge: "{{ ChunkInfo[item].chunk_info }}"
        debug:
          msg: 
-          - "Waiting for nisd to get updated"
-          - "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/{{ chunk_index }}/merge-info/shallow-cnt', 'nisd', lookout_uuid) }}"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/{{ chunk_index }}/merge-info/shallow-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
-       retries: 10
-       delay: 1
+          - "Waiting for chunk count to get updated"
+          - "{{ chunk_info_after_issuing_chunk_merge['merge-info']['shallow-cnt'] }}"
+       failed_when: (chunk_info_after_issuing_chunk_merge['merge-info']['shallow-cnt']) != ((orig_merge_cnt | int) + 1)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      #4 - Verify Chunk Values.
