@@ -111,7 +111,7 @@
             vdev_id: >-
               {{
                 (gotest_result_1.parsed_results.tests[0].info_messages
-                | select('search','vdev id')
+                | select('search','accessed their vdev')
                 | first).split(': ')[1]
               }}
 
