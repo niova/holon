@@ -6,18 +6,6 @@
     recipe_name: "nisd_stale_cme_removal"
     parent: "nisd_initialization_and_startup"
     no_of_ops: 85
-    nisd_keys:
-              - "/nisd_chunks/0/vblks-written"
-              - "/nisd_chunks/0/metablock-seqno"
-              - "/nisd_chunks/0/merge-info/shallow-cnt"
-              - "/nisd_chunks/0/merge-info/full-status"
-              - "/nisd_chunks/0/read-op-seqno"
-              - "/nisd_chunks/0/merge-read-op-seqno"
-              - "/nisd_chunks/0/num-cme"
-              - "/nisd_chunks/0/ref-cnt"
-              - "/nisd_chunks/0/vblks-read"
-              - "/nisd_chunks/0/num-meta-pblks"
-              - "/nisd_chunks/0/num-reserved-meta-pblks"
 
   tasks:
   - block:
@@ -77,20 +65,31 @@
          msg: "One or more niova-block-test writes failed: {{ write_results }}"
        failed_when: (write_results | reject('equalto', '0') | list | length) > 0
 
-     - name: "{{ recipe_name }}: Get nisd_chunk info."
+     - name: "{{ recipe_name }}: Reset ChunkInfo list after writes."
+       set_fact:
+         ChunkInfo: []
+
+     - name: "{{ recipe_name }}: Get chunk info after writes."
+       include_role:
+         name: common
+         tasks_from: get_chunk_info
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       loop_control:
+         loop_var: nisd_idx
+
+     - name: "{{ recipe_name }}: Get nisd_chunk info after writes."
        vars:
          stage: "verifyAftrWr"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         aftrWrNisdChunk: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrWrNisdChunk: "{{ ChunkInfo[item].chunk_info }}"
        debug:
          msg: "Verify nisd values after writes: {{ aftrWrNisdChunk }}"
        no_log: false
        failed_when: >
-         (aftrWrNisdChunk['/0/vblks-written'] != (no_of_ops | int)) or
-         (aftrWrNisdChunk['/0/metablock-seqno'] != ((no_of_ops | int) - 1)) or
-         (aftrWrNisdChunk['/merge-info/shallow-cnt'] != 0) or
-         (aftrWrNisdChunk['/0/num-meta-pblks'] != 0) or
-         (aftrWrNisdChunk['/0/num-reserved-meta-pblks'] != 1)
+         (aftrWrNisdChunk['vblks-written'] != (no_of_ops | int)) or
+         (aftrWrNisdChunk['metablock-seqno'] != ((no_of_ops | int) - 1)) or
+         (aftrWrNisdChunk['merge-info/shallow-cnt'] != 0) or
+         (aftrWrNisdChunk['num-meta-pblks'] != 0) or
+         (aftrWrNisdChunk['num-reserved-meta-pblks'] != 1)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      #2 - Read the VBLKS which were written in Step #1.
@@ -125,20 +124,31 @@
          msg: "One or more niova-block-test reads failed: {{ read_results }}"
        failed_when: (read_results | reject('equalto', '0') | list | length) > 0
 
-     - name: "{{ recipe_name }}: Get nisd_chunk info."
+     - name: "{{ recipe_name }}: Reset ChunkInfo list after read."
+       set_fact:
+         ChunkInfo: []
+
+     - name: "{{ recipe_name }}: Get chunk info after read."
+       include_role:
+         name: common
+         tasks_from: get_chunk_info
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       loop_control:
+         loop_var: nisd_idx
+
+     - name: "{{ recipe_name }}: Get nisd_chunk info after read."
        vars:
          stage: "verfyAftrRd"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         aftrRdNisdChunk: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrRdNisdChunk: "{{ ChunkInfo[item].chunk_info }}"
        debug:
          msg: "Verify nisd values after read: {{ aftrRdNisdChunk }}"
        no_log: false
        failed_when: >
-         (aftrRdNisdChunk['/0/vblks-read'] != (no_of_ops | int)) or
-         (aftrRdNisdChunk['/0/metablock-seqno'] != ((no_of_ops | int) - 1)) or
-         (aftrRdNisdChunk['/merge-info/shallow-cnt'] != 0) or
-         (aftrRdNisdChunk['/0/num-cme'] != (no_of_ops | int)) or
-         (aftrRdNisdChunk['/0/ref-cnt'] != ((no_of_ops | int) + 1))
+         (aftrRdNisdChunk['vblks-read'] != (no_of_ops | int)) or
+         (aftrRdNisdChunk['metablock-seqno'] != ((no_of_ops | int) - 1)) or
+         (aftrRdNisdChunk['merge-info/shallow-cnt'] != 0) or
+         (aftrRdNisdChunk['num-cme'] != (no_of_ops | int)) or
+         (aftrRdNisdChunk['ref-cnt'] != ((no_of_ops | int) + 1))
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Cast all VdevUUIDS elements to string"
@@ -154,7 +164,7 @@
      - name: "{{ recipe_name }}: Pause Compaction."
        vars:
          stage: "chunkPause"
-         cmd: "full-status@pause"
+         cmd: "shallow-status@pause"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
@@ -162,16 +172,27 @@
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
 
+     - name: "{{ recipe_name }}: Reset ChunkInfo list after pause compaction."
+       set_fact:
+         ChunkInfo: []
+
+     - name: "{{ recipe_name }}: Get chunk info after pause compaction."
+       include_role:
+         name: common
+         tasks_from: get_chunk_info
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       loop_control:
+         loop_var: nisd_idx
+
      - name: "{{ recipe_name }}: Verify after pause compaction."
        vars:
          stage: "verifyAftrPause"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         aftrPause: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrPause: "{{ ChunkInfo[item].chunk_info }}"
        debug:
          msg: "Verify after pause compaction: {{ aftrPause }}"
        no_log: false
        failed_when: >
-         (aftrPause['merge-info/full-status'] != "paused") or
+         (aftrPause['merge-info/shallow-status'] != "paused") or
          (aftrPause['merge-info/shallow-cnt'] != 0)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
@@ -238,32 +259,42 @@
          msg: "One or more niova-block-test reads failed: {{ additional_read_results }}"
        failed_when: (additional_read_results | reject('equalto', '0') | list | length) > 0
 
+     - name: "{{ recipe_name }}: Reset ChunkInfo list after read."
+       set_fact:
+         ChunkInfo: []
+
+     - name: "{{ recipe_name }}: Get chunk info after read."
+       include_role:
+         name: common
+         tasks_from: get_chunk_info
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       loop_control:
+         loop_var: nisd_idx
+
      #4a - Ensure that the write and read have occurred and compaction has NOT occurred.
      - name: "{{ recipe_name }}: Ensure that the write and read have occurred and compaction has NOT occurred."
        vars:
          stage: "verfyAftrWrRd"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         aftrWrRd: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrWrRd: "{{ ChunkInfo[item].chunk_info }}"
        debug:
          msg: "Verify compaction has NOT occurred: {{ aftrWrRd }}"
        no_log: false
        failed_when: >
-         (aftrWrRd['/0/vblks-read'] != ((no_of_ops | int) + 1)) or
-         (aftrWrRd['/0/vblks-written'] != ((no_of_ops | int) + 1)) or
-         (aftrWrRd['/0/num-reserved-meta-pblks'] != 2) or
-         (aftrWrRd['/0/metablock-seqno'] != (no_of_ops | int)) or
-         (aftrWrRd['/merge-info/shallow-cnt'] != 0) or
-         (aftrWrRd['/merge-info/full-status'] != "paused") or
-         (aftrWrRd['/0/read-op-seqno'] != (no_of_ops | int)) or
-         (aftrWrRd['/0/num-cme'] != ((no_of_ops | int) + 1)) or
-         (aftrWrRd['/0/ref-cnt'] != ((no_of_ops | int) + 2))
+         (aftrWrRd['vblks-read'] != ((no_of_ops | int) + 1)) or
+         (aftrWrRd['vblks-written'] != ((no_of_ops | int) + 1)) or
+         (aftrWrRd['num-reserved-meta-pblks'] != 2) or
+         (aftrWrRd['metablock-seqno'] != (no_of_ops | int)) or
+         (aftrWrRd['merge-info/shallow-cnt'] != 0) or
+         (aftrWrRd['merge-info/full-status'] != "paused") or
+         (aftrWrRd['num-cme'] != ((no_of_ops | int) + 1)) or
+         (aftrWrRd['ref-cnt'] != ((no_of_ops | int) + 2))
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      #5 - Unpause Compaction
      - name: "{{ recipe_name }}: Resume Compaction."
        vars:
          stage: "chunkResume"
-         cmd: "full-status@resume"
+         cmd: "shallow-status@resume"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
@@ -271,29 +302,39 @@
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
 
+     - name: "{{ recipe_name }}: Reset ChunkInfo list after unpause compaction."
+       set_fact:
+         ChunkInfo: []
+
+     - name: "{{ recipe_name }}: Get chunk info after unpause compaction."
+       include_role:
+         name: common
+         tasks_from: get_chunk_info
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       loop_control:
+         loop_var: nisd_idx
+
      - name: "{{ recipe_name }}: Verify after unpause compaction."
        vars:
          stage: "verifyAftrResume"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         aftrResume: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrResume: "{{ ChunkInfo[item].chunk_info }}"
        debug:
          msg: "Verify after pause compaction: {{ aftrResume }}"
        no_log: false
        failed_when: >
-         (aftrResume['/0/num-reserved-meta-pblks'] != 2) or
-         (aftrResume['/0/metablock-seqno'] != (no_of_ops | int)) or
-         (aftrResume['/merge-info/full-status'] != "idle") or
-         (aftrResume['/merge-info/shallow-cnt'] != 0) or
-         (aftrResume['/0/read-op-seqno'] != (no_of_ops | int)) or
-         (aftrResume['/0/num-cme'] != ((no_of_ops | int) + 1)) or
-         (aftrResume['/0/ref-cnt'] != ((no_of_ops | int) + 2))
+         (aftrResume['num-reserved-meta-pblks'] != 2) or
+         (aftrResume['metablock-seqno'] != (no_of_ops | int)) or
+         (aftrResume['merge-info/shallow-status'] != "idle") or
+         (aftrResume['merge-info/shallow-cnt'] != 0) or
+         (aftrResume['num-cme'] != ((no_of_ops | int) + 1)) or
+         (aftrResume['ref-cnt'] != ((no_of_ops | int) + 2))
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      #6 - Force Compaction
      - name: "{{ recipe_name }}: Force Compaction."
        vars:
          stage: "chunkForce"
-         cmd: "full-status@merge"
+         cmd: "shallow-status@merge"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
@@ -301,23 +342,33 @@
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
 
+     - name: "{{ recipe_name }}: Reset ChunkInfo list after forcing compaction."
+       set_fact:
+         ChunkInfo: []
+
+     - name: "{{ recipe_name }}: Get chunk info after forcing compaction."
+       include_role:
+         name: common
+         tasks_from: get_chunk_info
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       loop_control:
+         loop_var: nisd_idx
+
      - name: "{{ recipe_name }}: Verify after unpause compaction."
        vars:
          stage: "aftrForceCompaction"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         aftrForceCompct: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
+         aftrForceCompct: "{{ ChunkInfo[item].chunk_info }}"
        debug:
          msg: "Verify after pause compaction: {{ aftrForceCompct }}"
        no_log: false
        failed_when: >
-         (aftrForceCompct['/0/num-meta-pblks'] != 1) or
-         (aftrForceCompct['/0/num-reserved-meta-pblks'] != 1) or
-         (aftrForceCompct['/0/metablock-seqno'] != (no_of_ops | int)) or
-         (aftrForceCompct['/merge-info/full-status'] != "idle") or
-         (aftrForceCompct['/merge-info/shallow-cnt'] != 1) or
-         (aftrForceCompct['/0/read-op-seqno'] != (no_of_ops | int)) or
-         (aftrForceCompct['/0/num-cme'] != (no_of_ops | int)) or
-         (aftrForceCompct['/0/ref-cnt'] != ((no_of_ops | int) + 1))
+         (aftrForceCompct['num-meta-pblks'] != 1) or
+         (aftrForceCompct['num-reserved-meta-pblks'] != 1) or
+         (aftrForceCompct['metablock-seqno'] != (no_of_ops | int)) or
+         (aftrForceCompct['merge-info/shallow-status'] != "idle") or
+         (aftrForceCompct['merge-info/shallow-cnt'] != 1) or
+         (aftrForceCompct['num-cme'] != (no_of_ops | int)) or
+         (aftrForceCompct['ref-cnt'] != ((no_of_ops | int) + 1))
        loop: "{{ range(0, get_nisd | length) | list }}"
 
     rescue:
