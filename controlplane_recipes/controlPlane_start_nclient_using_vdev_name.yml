@@ -105,6 +105,15 @@
         - name: "{{ recipe_name }}: Print user secret"
           debug:
             msg: "{{ user1_secret }}"
+
+        - name: "{{ recipe_name }}: Start niova-block-ctl process."
+          vars:
+            input_param: {
+              'nisd_device_path': '{{ nisd_dev_path.msg[0] }}',
+              'nisd_uuid': '{{ nisd_uuid }}',
+            }
+          debug:
+            msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
     
         - name: "{{ recipe_name }}: Start nisd"
           vars:

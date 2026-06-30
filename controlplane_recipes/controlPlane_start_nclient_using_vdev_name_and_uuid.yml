@@ -118,6 +118,15 @@
         - name: "{{ recipe_name }}: Print vdev id."
           debug:
             msg: "{{ vdev_id }}"
+
+        - name: "{{ recipe_name }}: Start niova-block-ctl process."
+          vars:
+            input_param: {
+              'nisd_device_path': '{{ nisd_dev_path.msg[0] }}',
+              'nisd_uuid': '{{ nisd_uuid }}',
+            }
+          debug:
+            msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
     
         - name: "{{ recipe_name }}: Start nisd"
           vars:
@@ -148,7 +157,7 @@
                  'rd_op_ratio': '0',
                  'num_ops': '50',
                  'random_seed_pt': '123',
-                 'request_size_in_bytes': '1',
+                 'request_size_in_bytes': '0',
                  'queue_depth' : '0',
                  'integrity_check': False,
                  'sequential_writes': False,
