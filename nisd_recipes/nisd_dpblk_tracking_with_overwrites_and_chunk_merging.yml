@@ -161,7 +161,6 @@
      - name: "{{ recipe_name }}: Issue chunk merge cmd."
        vars:
          stage: "chunkMerge"
-         chunk_index: "{{ ChunkInfo[item].chunk_index }}"
          cmd: "shallow-status@merge"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
@@ -173,8 +172,6 @@
      - name: "{{ recipe_name }}: Reset ChunkInfo list after issuing chunk merge command."
        set_fact:
          ChunkInfo: []
-
-     - pause: seconds=5
 
      - name: "{{ recipe_name }}: Get chunk info after issuing chunk merge command."
        include_role:
