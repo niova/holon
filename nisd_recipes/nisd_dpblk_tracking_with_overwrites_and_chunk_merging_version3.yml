@@ -169,7 +169,7 @@
 
      - name: "{{ recipe_name}}: Wait until chunk cnt gets updated."
        vars:
-         orig_merge_cnt: "{{ origChunkCnt[item].entry['merge-info/shallow-cnt'] }}"
+         orig_merge_cnt: "{{ origChunkCnt[item].entry['merge-info']['shallow-cnt'] }}"
          stage: "wait_for_chunk_cnt"
          lookout_uuid: "{{ get_lookout[0] }}"
          chunk_index: "{{ ChunkInfo[item].chunk_index }}"
@@ -190,7 +190,7 @@
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
        failed_when: >
-         (getNiovaBlockTest['merge-info/full-status'] != "idle") or
+         (getNiovaBlockTest['merge-info']['shallow-cnt'] != "idle") or
          (getNiovaBlockTest['vblks-written'] != 1000) or
          (getNiovaBlockTest['metablock-seqno'] != 999) or
          (getNiovaBlockTest['ref-cnt'] != 1) or

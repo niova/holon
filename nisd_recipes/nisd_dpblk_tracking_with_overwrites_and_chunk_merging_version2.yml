@@ -169,15 +169,15 @@
 
      - name: "{{ recipe_name}}: Wait until chunk cnt gets updated."
        vars:
-         orig_merge_cnt: "{{ origChunkCnt[item].entry['merge-info/shallow-cnt'] }}"
+         orig_merge_cnt: "{{ origChunkCnt[item].entry['merge-info']['shallow-cnt'] }}"
          stage: "wait_for_chunk_cnt"
          lookout_uuid: "{{ get_lookout[0] }}"
-         chunk_index: "{{ ChunkInfo[item].chunk_index }}"
+         chunk_info_after_issuing_chunk_merge: "{{ ChunkInfo[item].chunk_info }}"
        debug:
-         msg: "Waiting for chunk-cnt to get updated"
-       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_chunks/{{ chunk_index }}/merge-info/shallow-cnt', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == ((orig_merge_cnt | int) + 1)
-       retries: 20
-       delay: 1
+         msg: 
+          - "Verify chunk-cnt got updated"
+          - "{{ chunk_info_after_issuing_chunk_merge['merge-info']['shallow-cnt'] }}"
+       failed_when: (chunk_info_after_issuing_chunk_merge['merge-info']['shallow-cnt']) != ((orig_merge_cnt | int) + 1)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      #4 - Verify Chunk Values.
@@ -190,7 +190,7 @@
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
        failed_when: >
-         (getNiovaBlockTest['merge-info/full-status'] != "idle") or
+         (getNiovaBlockTest['merge-info']['shallow-cnt'] != "idle") or
          (getNiovaBlockTest['vblks-written'] != 1000) or
          (getNiovaBlockTest['metablock-seqno'] != 999) or
          (getNiovaBlockTest['ref-cnt'] != 1) or
