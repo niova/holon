@@ -147,18 +147,18 @@
           debug:
             msg: "{{ gotest_result_2.parsed_results.tests[0].info_messages }}"
 
-        # - name: "{{ recipe_name }}: Extract vdev mount counter"
-        #   set_fact:
-        #     current_mount_counter: >-
-        #       {{
-        #         (gotest_result_2.parsed_results.tests[0].info_messages
-        #         | select('search','current mount counter')
-        #         | first).split(': ')[1]
-        #       }}
+        - name: "{{ recipe_name }}: Extract vdev mount counter"
+          set_fact:
+            current_mount_counter: >-
+              {{
+                (gotest_result_2.parsed_results.tests[0].info_messages
+                | select('search','current mount counter')
+                | first).split(': ')[1]
+              }}
 
-        # - name: "{{ recipe_name }}: Print vdev mount counter."
-        #   debug:
-        #     msg: "{{ current_mount_counter }}"
+        - name: "{{ recipe_name }}: Print vdev mount counter."
+          debug:
+            msg: "{{ current_mount_counter }}"
 
       rescue:
         - name: "Recipe: {{ recipe_name }} failed"
