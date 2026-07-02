@@ -218,8 +218,6 @@ def run_niova_ublk(cluster_params, input_values):
 
     if cp_mode == 1:
         command = [
-            "sudo",
-            "-E",
             bin_path,
             "-t", "cp",
             "-v", vdev_uuid,
