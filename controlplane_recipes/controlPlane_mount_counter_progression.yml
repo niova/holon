@@ -134,6 +134,32 @@
               - "{{ lookup('nisd_handler', 'run_ublk_device', input_param) }}"
           register: ublk_uuid
 
+        - name: "{{ recipe_name }}: Get the vdev mount counter from controlplane."
+          vars:
+            input_param:
+              test_path: "{{ niova_bin_path }}/ctlplane_test"
+              test_name: "TestGetVdevMountCounter"
+              output_file: "go_test_output_2"
+          set_fact:
+            gotest_result_2: "{{ lookup('controlplane', 'gotest', input_param) }}"
+
+        - name: "{{ recipe_name }}: DEBUG check info_messages right before extract"
+          debug:
+            msg: "{{ gotest_result_2.parsed_results.tests[0].info_messages }}"
+
+        # - name: "{{ recipe_name }}: Extract vdev mount counter"
+        #   set_fact:
+        #     current_mount_counter: >-
+        #       {{
+        #         (gotest_result_2.parsed_results.tests[0].info_messages
+        #         | select('search','current mount counter')
+        #         | first).split(': ')[1]
+        #       }}
+
+        # - name: "{{ recipe_name }}: Print vdev mount counter."
+        #   debug:
+        #     msg: "{{ current_mount_counter }}"
+
       rescue:
         - name: "Recipe: {{ recipe_name }} failed"
           set_fact:
