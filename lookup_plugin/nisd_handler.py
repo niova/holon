@@ -202,9 +202,13 @@ def run_niova_ublk(cluster_params, input_values):
     if not os.path.exists(gossip_nodes_path):
         gossip_nodes_path = os.path.join(raft_dir, "gossipNodes")
 
+    os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
+    os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}"
+    os.environ['NIOVA_LOCAL_CTL_SVC_DIR'] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
+
     os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
     os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
-    os.environ["NIOVA_LOG_LEVEL"] = "4"
+    os.environ["NIOVA_LOG_LEVEL"] = "5"
 
     if enable_auth == 1:
         os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
@@ -216,6 +220,7 @@ def run_niova_ublk(cluster_params, input_values):
     if cp_mode == 1:
         command = [
             "sudo",
+            "-E",
             bin_path,
             "-t", "cp",
             "-v", vdev_uuid,
