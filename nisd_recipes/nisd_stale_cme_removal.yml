@@ -165,7 +165,7 @@
        vars:
          stage: "chunkPause"
          cmd: "shallow-status@pause"
-         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}&number@0/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
@@ -295,7 +295,7 @@
        vars:
          stage: "chunkResume"
          cmd: "shallow-status@resume"
-         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}&number@0/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
@@ -335,7 +335,7 @@
        vars:
          stage: "chunkForce"
          cmd: "shallow-status@merge"
-         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}&number@0/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"

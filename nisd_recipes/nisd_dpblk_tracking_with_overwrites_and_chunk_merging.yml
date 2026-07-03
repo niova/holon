@@ -162,7 +162,7 @@
        vars:
          stage: "chunkMerge"
          cmd: "shallow-status@merge"
-         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}&number@0/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
@@ -413,7 +413,7 @@
        vars:
          stage: "issueChunkMergeAftrNewRds"
          cmd: "shallow-status@merge"
-         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}/merge-info"
+         where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}&number@0/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
          msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', get_nisd[item], cmd, where, 'nisd', lookout_uuid) }}"
