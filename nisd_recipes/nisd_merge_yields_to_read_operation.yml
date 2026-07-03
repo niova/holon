@@ -91,7 +91,7 @@
        failed_when: >
          (chunk_info_after_write['/vblks-written'] != (no_of_ops | int) * 32) or
          (chunk_info_after_write['/metablock-seqno'] != ((no_of_ops | int) - 1)) or
-         (chunk_info_after_write['/merge-info/shallow-cnt'] != 0) or
+         (chunk_info_after_write['/merge-info']['full-cnt'] != 0) or
          (chunk_info_after_write['/num-meta-pblks'] != 0) or
          (chunk_info_after_write['/num-data-pblks'] != (no_of_ops | int)) or
          (chunk_info_after_write['/num-reserved-meta-pblks'] != 1)
@@ -215,7 +215,7 @@
      - name: "{{ recipe_name }}: Pause Compaction on the Chunk."
        vars:
          stage: "chunkPause"
-         cmd: "shallow-status@pause"
+         cmd: "full-status@pause"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}&number@0/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
@@ -243,7 +243,7 @@
          msg: "Verify after pause compaction: {{ chunk_info_after_pause }}"
        no_log: false
        failed_when: >
-         (chunk_info_after_pause['merge-info/shallow-status'] != "paused")
+         (chunk_info_after_pause['merge-info']['full-status'] != "paused")
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      #5 - Overwrite the VBLKS from Step #1 using a new CLIENT_UUID
@@ -312,14 +312,14 @@
        failed_when: >
          (aftrWr['vblks-written'] != ((old_values['vblks-written'] | int) * 2)) or
          (aftrWr['num-reserved-meta-pblks'] != ((old_values['num-reserved-meta-pblks'] | int) + 1)) or
-         (aftrWr['merge-info/shallow-status'] != "paused")
+         (aftrWr['merge-info']['full-status'] != "paused")
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      #6 - Resume and Force Compaction
      - name: "{{ recipe_name }}: Resume Compaction."
        vars:
          stage: "chunkResume"
-         cmd: "shallow-status@resume"
+         cmd: "full-status@resume"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}&number@0/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
@@ -330,7 +330,7 @@
      - name: "{{ recipe_name }}: Force Compaction."
        vars:
          stage: "chunkForce"
-         cmd: "shallow-status@merge"
+         cmd: "full-status@merge"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}&number@0/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
@@ -361,8 +361,8 @@
          (aftrForceCompct['num-meta-pblks'] != 1) or
          (aftrForceCompct['num-reserved-meta-pblks'] != 2) or
          (aftrForceCompct['num-data-pblks'] != ((no_of_ops | int) * 2)) or
-         (aftrForceCompct['merge-info/shallow-status'] != "merging") or
-         (aftrForceCompct['merge-info/shallow-cnt'] != 1) or
+         (aftrForceCompct['merge-info']['full-status'] != "merging") or
+         (aftrForceCompct['merge-info']['full-cnt'] != 1) or
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "Verify wait-merge-preempted task."
@@ -426,8 +426,8 @@
          (aftrRead['num-meta-pblks'] != 1) or
          (aftrRead['num-reserved-meta-pblks'] != 1) or
          (aftrRead['metablock-seqno'] != (((no_of_ops | int) * 2) - 1)) or
-         (aftrRead['merge-info/shallow-cnt'] != 1) or
-         (aftrRead['merge-info/shallow-status'] != "idle")
+         (aftrRead['merge-info']['full-cnt'] != 1) or
+         (aftrRead['merge-info']['full-status'] != "idle")
        loop: "{{ range(0, get_nisd | length) | list }}"
 
     rescue:

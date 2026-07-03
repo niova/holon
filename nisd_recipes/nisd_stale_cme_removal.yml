@@ -87,7 +87,7 @@
        failed_when: >
          (aftrWrNisdChunk['vblks-written'] != (no_of_ops | int)) or
          (aftrWrNisdChunk['metablock-seqno'] != ((no_of_ops | int) - 1)) or
-         (aftrWrNisdChunk['merge-info/shallow-cnt'] != 0) or
+         (aftrWrNisdChunk['merge-info']['full-cnt'] != 0) or
          (aftrWrNisdChunk['num-meta-pblks'] != 0) or
          (aftrWrNisdChunk['num-reserved-meta-pblks'] != 1)
        loop: "{{ range(0, get_nisd | length) | list }}"
@@ -146,7 +146,7 @@
        failed_when: >
          (aftrRdNisdChunk['vblks-read'] != (no_of_ops | int)) or
          (aftrRdNisdChunk['metablock-seqno'] != ((no_of_ops | int) - 1)) or
-         (aftrRdNisdChunk['merge-info/shallow-cnt'] != 0) or
+         (aftrRdNisdChunk['merge-info']['full-cnt'] != 0) or
          (aftrRdNisdChunk['num-cme'] != (no_of_ops | int)) or
          (aftrRdNisdChunk['ref-cnt'] != ((no_of_ops | int) + 1))
        loop: "{{ range(0, get_nisd | length) | list }}"
@@ -164,7 +164,7 @@
      - name: "{{ recipe_name }}: Pause Compaction."
        vars:
          stage: "chunkPause"
-         cmd: "shallow-status@pause"
+         cmd: "full-status@pause"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}&number@0/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
@@ -192,8 +192,8 @@
          msg: "Verify after pause compaction: {{ aftrPause }}"
        no_log: false
        failed_when: >
-         (aftrPause['merge-info/shallow-status'] != "paused") or
-         (aftrPause['merge-info/shallow-cnt'] != 0)
+         (aftrPause['merge-info']['full-status'] != "paused") or
+         (aftrPause['merge-info']['full-cnt'] != 0)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      #4 - Write one more VBLK to the Chunk and Read it Back
@@ -284,8 +284,8 @@
          (aftrWrRd['vblks-written'] != ((no_of_ops | int) + 1)) or
          (aftrWrRd['num-reserved-meta-pblks'] != 2) or
          (aftrWrRd['metablock-seqno'] != (no_of_ops | int)) or
-         (aftrWrRd['merge-info/shallow-cnt'] != 0) or
-         (aftrWrRd['merge-info/full-status'] != "paused") or
+         (aftrWrRd['merge-info']['full-cnt'] != 0) or
+         (aftrWrRd['merge-info']['full-status'] != "paused") or
          (aftrWrRd['num-cme'] != ((no_of_ops | int) + 1)) or
          (aftrWrRd['ref-cnt'] != ((no_of_ops | int) + 2))
        loop: "{{ range(0, get_nisd | length) | list }}"
@@ -294,7 +294,7 @@
      - name: "{{ recipe_name }}: Resume Compaction."
        vars:
          stage: "chunkResume"
-         cmd: "shallow-status@resume"
+         cmd: "full-status@resume"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}&number@0/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
@@ -324,8 +324,8 @@
        failed_when: >
          (aftrResume['num-reserved-meta-pblks'] != 2) or
          (aftrResume['metablock-seqno'] != (no_of_ops | int)) or
-         (aftrResume['merge-info/shallow-status'] != "idle") or
-         (aftrResume['merge-info/shallow-cnt'] != 0) or
+         (aftrResume['merge-info']['full-status'] != "idle") or
+         (aftrResume['merge-info']['full-cnt'] != 0) or
          (aftrResume['num-cme'] != ((no_of_ops | int) + 1)) or
          (aftrResume['ref-cnt'] != ((no_of_ops | int) + 2))
        loop: "{{ range(0, get_nisd | length) | list }}"
@@ -334,7 +334,7 @@
      - name: "{{ recipe_name }}: Force Compaction."
        vars:
          stage: "chunkForce"
-         cmd: "shallow-status@merge"
+         cmd: "full-status@merge"
          where: "/nisd_chunks/vdev-uuid@{{ VdevUUIDS[item] }}&number@0/merge-info"
          lookout_uuid: "{{ get_lookout[0] }}"
        debug:
@@ -365,8 +365,8 @@
          (aftrForceCompct['num-meta-pblks'] != 1) or
          (aftrForceCompct['num-reserved-meta-pblks'] != 1) or
          (aftrForceCompct['metablock-seqno'] != (no_of_ops | int)) or
-         (aftrForceCompct['merge-info/shallow-status'] != "idle") or
-         (aftrForceCompct['merge-info/shallow-cnt'] != 1) or
+         (aftrForceCompct['merge-info']['full-status'] != "idle") or
+         (aftrForceCompct['merge-info']['full-cnt'] != 1) or
          (aftrForceCompct['num-cme'] != (no_of_ops | int)) or
          (aftrForceCompct['ref-cnt'] != ((no_of_ops | int) + 1))
        loop: "{{ range(0, get_nisd | length) | list }}"
