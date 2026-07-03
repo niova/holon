@@ -121,6 +121,12 @@
         # Pause for 5 seconds for NISD to start successfully
         - pause: seconds=5
 
+        - name: Debug ublksrv
+          run: |
+            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
+            find "$BIN_PATH" -iname 'libublksrv*' || echo "not found in BIN_PATH"
+            ldconfig -p | grep ublksrv || echo "not in system cache"
+
         - name: "{{ recipe_name }}: Start ublk device"
           vars:
             input_param: {
