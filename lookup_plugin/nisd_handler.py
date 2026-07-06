@@ -218,6 +218,8 @@ def run_niova_ublk(cluster_params, input_values):
 
     if cp_mode == 1:
         command = [
+            "sudo",
+            "-E",
             bin_path,
             "-t", "cp",
             "-v", vdev_uuid,
@@ -241,11 +243,18 @@ def run_niova_ublk(cluster_params, input_values):
     full_command = " ".join(str(item) for item in command)
     logger.info(f"ublk command: {full_command}")
     try:
-        # Run the command
-        process = subprocess.Popen(full_command, stdout=fp, stderr=fp, shell=True, executable="/bin/bash",cwd=base_path)
-        logger.info("Command executed successfully.")
+        process = subprocess.Popen(
+            command,
+            stdout=fp,
+            stderr=fp,
+            cwd=base_path,
+            env=os.environ.copy()
+        )
+        logger.info(f"niova-ublk started with PID: {process.pid}")
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
+        logger.error(f"Failed to start niova-ublk: {e}")
+        fp.close()
+        raise
     
     recipe_conf = load_recipe_op_config(cluster_params)
 
@@ -259,6 +268,12 @@ def run_niova_ublk(cluster_params, input_values):
     recipe_conf['ublk_process']['process_type'] = "ublk_process"
     recipe_conf['ublk_process']['process_app_type'] = app_name
     recipe_conf['ublk_process']['process_status'] = ps.status()
+
+    recipe_conf['ublk_process']['ublk_uuid'] = ublk_uuid
+    recipe_conf['ublk_process']['vdev_uuid'] = vdev_uuid
+    recipe_conf['ublk_process']['nisd_uuid'] = nisd_uuid
+    recipe_conf['ublk_process']['command'] = command
+    recipe_conf['ublk_process']['log_file'] = log_file
 
     genericcmdobj = GenericCmds()
     genericcmdobj.recipe_json_dump(recipe_conf)
