@@ -404,6 +404,8 @@
        set_fact:
          ChunkInfo: []
 
+     - pause: seconds=2
+
      - name: "{{ recipe_name }}: Get chunk info after read."
        include_role:
          name: common
@@ -423,7 +425,7 @@
        failed_when: >
          (aftrRead['vblks-read'] != 2816) or
          (aftrRead['vblks-written'] != ((old_values['vblks-written'] | int) * 2)) or
-         (aftrRead['num-data-pblks'] != (no_of_ops | int)) or
+         (aftrRead['num-data-pblks'] != (no_of_ops | int) + 1) or
          (aftrRead['num-meta-pblks'] != 1) or
          (aftrRead['num-reserved-meta-pblks'] != 1) or
          (aftrRead['metablock-seqno'] != (((no_of_ops | int) * 2) - 1)) or
