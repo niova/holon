@@ -159,7 +159,7 @@
          msg: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
        loop: "{{ range(0, get_nisd | length) | list }}"
 
-    # NOTE: Disable the below check.
+    # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
 
     #  - name: "{{ recipe_name}}: Wait until 'conns' gets updated"
     #    vars:
@@ -184,7 +184,7 @@
        loop_control:
          loop_var: nisd_idx
 
-     # NOTE: Remove the below checks for now.
+     # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
      # (aftrRdNisdChunk['/0/num-pending'] != 3) or
      # (aftrRdNisdChunk['/0/vblks-pending'] != 96)
 
@@ -198,6 +198,8 @@
        failed_when: >
          (chunk_info_after_read['vblks-read'] != 0)
        loop: "{{ range(0, get_nisd | length) | list }}"
+
+    # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
 
     #  - name: "Verify wait-fault-injection task."
     #    include_role:
@@ -337,6 +339,8 @@
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
 
+     - pause: seconds=2
+
      - name: "{{ recipe_name }}: Reset ChunkInfo list after unpause compaction."
        set_fact:
          ChunkInfo: []
@@ -349,7 +353,7 @@
        loop_control:
          loop_var: nisd_idx
 
-     # NOTE: Removed below checks.
+     # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
      # (aftrForceCompct['num-data-pblks'] != ((no_of_ops | int) * 2))
      # (aftrForceCompct['merge-info']['full-status'] != "merging")
      # (aftrForceCompct['num-reserved-meta-pblks'] != 2)
@@ -362,9 +366,14 @@
          msg: "Verify after pause compaction: {{ aftrForceCompct }}"
        no_log: false
        failed_when: >
+         (aftrForceCompct['num-data-pblks'] != ((no_of_ops | int) * 2)) or
+         (aftrForceCompct['merge-info']['full-status'] != "merging") or
+         (aftrForceCompct['num-reserved-meta-pblks'] != 2) or
          (aftrForceCompct['num-meta-pblks'] != 1) or
          (aftrForceCompct['merge-info']['full-cnt'] != 1)
        loop: "{{ range(0, get_nisd | length) | list }}"
+
+    # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
 
     #  - name: "Verify wait-merge-preempted task."
     #    include_role:

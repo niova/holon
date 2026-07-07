@@ -206,7 +206,7 @@
        delay: 1
        loop: "{{ range(0, get_nisd | length) | list }}"
 
-     # NOTE: Removed the below checks for now.
+     # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
      # (getNiovaBlockTest['ref-cnt'] != 1)
      # (getNiovaBlockTest['/0/vblks-written'] != 1000)
 
@@ -246,7 +246,7 @@
      - debug:
          msg: "{{ origNumDataPblk }}"
 
-     # NOTE: Removed the below check for now.
+     # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
      # (getNiovaBlockTest['/0/num-pblks-used'] != ((old_num_block_used | int) + (get_dpblk | int) + 1))
 
      #5 - Verify /nisd_root_entry Values against those taken in Step #1
@@ -357,6 +357,8 @@
        loop_control:
          loop_var: nisd_idx
 
+    # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
+
     #  - name: "{{ recipe_name }}: Verify num-data-pblks is equal to the original value captured in Step #4."
     #    vars:
     #      old_value: "{{ origNumDataPblk[item].entry['num-data-pblks'] }}"
@@ -394,7 +396,7 @@
        loop_control:
          loop_var: read_case
 
-     # NOTE: Removed the below check for now
+     # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
      # (reVerifyRootEntry['/0/num-pblks-used'] != ((old_num_block_used | int) + (get_dpblk | int) + 1))
 
      #8 - (Re)Verify /nisd_root_entry Values against those taken in Step #1

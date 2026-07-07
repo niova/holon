@@ -193,8 +193,9 @@
        failed_when: (chunk_info_after_issuing_chunk_merge['merge-info']['full-cnt']) != ((orig_merge_cnt | int) + 1)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
-     # NOTE: Remove the ref-cnt check for now. 
-
+     # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved. 
+     # (getNiovaBlockTest['/0/ref-cnt'] != 1)
+     
      #4 - Verify Chunk Values.
      - name: "{{ recipe_name }}: Verify nisd chunk values."
        vars:
@@ -212,7 +213,8 @@
          (getNiovaBlockTest['num-meta-pblks'] != 1) or
          (getNiovaBlockTest['num-reserved-meta-pblks'] != 1)
 
-     # NOTE: Remove the ['/0/num-pblks-used'] check for now.
+     # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
+     # (getNiovaBlockTest['/0/num-pblks-used'] != ((old_num_block_used | int) + 17))
 
      # 5 - Verify /nisd_root_entry Values against those taken in Step #1
      - name: "{{ recipe_name }}: Verify /nisd_root_entry Values against those taken in Step #1."
@@ -437,7 +439,7 @@
        delay: 1
        loop: "{{ range(0, get_nisd | length) | list }}"
 
-     # NOTE: Removed the below check for now
+     # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
      # (getNiovaBlockTest['/0/num-pblks-used'] != ((old_num_block_used | int) + 17))
 
      #11 - Repeat Step #5 - Verifying pblk counts

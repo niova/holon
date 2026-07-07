@@ -136,7 +136,7 @@
        loop_control:
          loop_var: nisd_idx
 
-    # NOTE: Removed the below checks.
+    # NOTE: These checks in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
     # (aftrRdNisdChunk['num-cme'] != (no_of_ops | int)) or
     # (aftrRdNisdChunk['ref-cnt'] != ((no_of_ops | int) + 1))
 
@@ -273,7 +273,7 @@
        loop_control:
          loop_var: nisd_idx
 
-    # NOTE: Removed the below checks.
+    # NOTE: These checks in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
     #  (aftrWrRd['num-cme'] != ((no_of_ops | int) + 1)) or
     #  (aftrWrRd['ref-cnt'] != ((no_of_ops | int) + 2))
 
@@ -318,7 +318,7 @@
        loop_control:
          loop_var: nisd_idx
 
-    # NOTE: Removed the below checks.
+    # These checks in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
     #  (aftrResume['num-cme'] != ((no_of_ops | int) + 1))
     #  (aftrResume['ref-cnt'] != ((no_of_ops | int) + 2))
 
@@ -360,7 +360,7 @@
        loop_control:
          loop_var: nisd_idx
 
-    # NOTE: Removed the below checks.
+    # NOTE: These checks in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
     # (aftrForceCompct['num-cme'] != (no_of_ops | int)) or
     # (aftrForceCompct['ref-cnt'] != ((no_of_ops | int) + 1))
     #          (aftrForceCompct['num-meta-pblks'] != 1) or
