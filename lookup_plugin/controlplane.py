@@ -476,7 +476,11 @@ def run_go_test(cluster_params, input_values):
         env["RAFT_ID"] = raft_id
         env["GOSSIP_NODES_PATH"] = gossip_nodes_path
 
-        cmd = ["./client.test", "-test.v", "-test.run", go_test_name]
+        extra_env = input_values.get("env", {})
+        for key, value in extra_env.items():
+            env[str(key)] = str(value)
+
+        cmd = ["./client.test", "-test.v", "-test.run", test_regex]
 
         process = subprocess.Popen(cmd, cwd=go_test_path, env=env,
                                    stdout=fp, stderr=subprocess.STDOUT)

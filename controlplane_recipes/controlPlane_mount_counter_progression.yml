@@ -63,7 +63,7 @@
           vars:
             input_param:
               test_path: "{{ niova_bin_path }}/ctlplane_test"
-              test_name: "TestCreateVdevForMountCounter"
+              test_name: "TestUserAuthVdevCreation"
               output_file: "go_test_output_1"
           set_fact:
             gotest_result_1: "{{ lookup('controlplane', 'gotest', input_param) }}"
@@ -79,16 +79,38 @@
             msg: "Number of failed tests: {{ failed_tests }}"
           failed_when: (failed_tests | int) > 0
 
-        - name: "{{ recipe_name }}: DEBUG check info_messages right before extract"
+        - name: "{{ recipe_name }}: Extract username"
+          set_fact:
+            user1_name: >-
+              {{
+                (gotest_result_1.parsed_results.tests[0].info_messages
+                | select('search','Created user')
+                | first).split(': ')[1].split(' with')[0]
+              }}
+
+        - name: "{{ recipe_name }}: Print username"
           debug:
-            msg: "{{ gotest_result_1.parsed_results.tests[0].info_messages }}"
+            msg: "{{ user1_name }}"
+
+        - name: "{{ recipe_name }}: Extract user secret value"
+          set_fact:
+            user1_secret: >-
+              {{
+                (gotest_result_1.parsed_results.tests[0].info_messages
+                | select('search','Secret key')
+                | first).split(': ')[1]
+              }}
+
+        - name: "{{ recipe_name }}: Print user secret"
+          debug:
+            msg: "{{ user1_secret }}"
 
         - name: "{{ recipe_name }}: Extract vdev id"
           set_fact:
             vdev_id: >-
               {{
                 (gotest_result_1.parsed_results.tests[0].info_messages
-                | select('search','Vdev ID')
+                | select('search','accessed their vdev')
                 | first).split(': ')[1]
               }}
 
@@ -121,17 +143,13 @@
         # Pause for 5 seconds for NISD to start successfully
         - pause: seconds=5
 
-        - name: Debug ublksrv
-          run: |
-            echo "LD_LIBRARY_PATH=$LD_LIBRARY_PATH"
-            find "$BIN_PATH" -iname 'libublksrv*' || echo "not found in BIN_PATH"
-            ldconfig -p | grep ublksrv || echo "not in system cache"
-
         - name: "{{ recipe_name }}: Start ublk device"
           vars:
             input_param: {
               'enable_auth': 1,
               'cp_mode': 1,
+              'user_name': '{{ user1_name }}',
+              'user_secret': '{{ user1_secret }}',
               'nisd_uuid': '{{ nisd_uuid }}',
               'vdev_uuid': '{{ vdev_id }}'
             }
@@ -146,6 +164,8 @@
               test_path: "{{ niova_bin_path }}/ctlplane_test"
               test_name: "TestGetVdevMountCounter"
               output_file: "go_test_output_2"
+              env:
+                VDEV_ID: "{{ vdev_id }}"
           set_fact:
             gotest_result_2: "{{ lookup('controlplane', 'gotest', input_param) }}"
 

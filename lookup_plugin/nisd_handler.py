@@ -213,8 +213,8 @@ def run_niova_ublk(cluster_params, input_values):
         os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
         os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
         os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
-        os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = "admin"
-        os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = "test-admin-secret-123"
+        os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['user_name']
+        os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['user_secret']
 
     if cp_mode == 1:
         command = [
@@ -250,16 +250,38 @@ def run_niova_ublk(cluster_params, input_values):
             cwd=base_path,
             env=os.environ.copy()
         )
-        logger.info(f"niova-ublk started with PID: {process.pid}")
+
+        logger.info(f"Launcher PID: {process.pid}")
+
+        time.sleep(1)
+
+        parent = psutil.Process(process.pid)
+        children = parent.children(recursive=True)
+
+        ublk_proc = None
+        for child in children:
+            cmdline = " ".join(child.cmdline())
+            if "niova-ublk" in cmdline:
+                ublk_proc = child
+                break
+
+        if ublk_proc is None:
+            raise RuntimeError(
+                f"Could not find niova-ublk child process for launcher PID {process.pid}"
+            )
+
+        pid = ublk_proc.pid
+        logger.info(f"Actual niova-ublk PID: {pid}")
+
     except Exception as e:
         logger.error(f"Failed to start niova-ublk: {e}")
         fp.close()
         raise
-    
+
     recipe_conf = load_recipe_op_config(cluster_params)
 
-    pid = process.pid
     ps = psutil.Process(pid)
+    process_status = ps.status()
 
     if not "ublk_process" in recipe_conf:
         recipe_conf['ublk_process'] = {}
@@ -267,7 +289,7 @@ def run_niova_ublk(cluster_params, input_values):
     recipe_conf['ublk_process']['process_pid'] = pid
     recipe_conf['ublk_process']['process_type'] = "ublk_process"
     recipe_conf['ublk_process']['process_app_type'] = app_name
-    recipe_conf['ublk_process']['process_status'] = ps.status()
+    recipe_conf['ublk_process']['process_status'] = process_status
 
     recipe_conf['ublk_process']['ublk_uuid'] = ublk_uuid
     recipe_conf['ublk_process']['vdev_uuid'] = vdev_uuid
@@ -279,7 +301,8 @@ def run_niova_ublk(cluster_params, input_values):
     genericcmdobj.recipe_json_dump(recipe_conf)
 
     # Sync the log file so all the logs from run_niova_ublk gets written to log file.
-    os.fsync(fp)
+    fp.flush()
+    os.fsync(fp.fileno())
     return ublk_uuid
 
 # this method is similar to start_niova_block_ctl_process but the difference is it doesn't create the device internally
