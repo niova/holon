@@ -82,7 +82,6 @@ def run_nisd_command(cluster_params, input_values):
 
     os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}" 
-    os.environ["NIOVA_LOG_LEVEL"] = "5"
     
     env = os.environ.copy()
     os.environ["NIOVA_BLOCK_TCP_PEER_PORT"] = str(peer_port)
@@ -598,11 +597,12 @@ def start_niova_block_test(cluster_params, input_values):
     env = os.environ.copy()
     os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
     os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
-    os.environ["NIOVA_LOG_LEVEL"] = "5"
 
     enable_authentication = input_values["enable_auth"]
     
     if enable_authentication == 1:
+        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
+        os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
         os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
         os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
         os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
@@ -666,7 +666,12 @@ def start_niova_block_test(cluster_params, input_values):
     elif blocking_process == False and sequential_writes == False and integrity_check == False:
         if cp_mode == 1:
             logger.debug("Starting niova-block-test in cp mode.....")
-            ps = subprocess.run((bin_path, '-c', 'cp', '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
+            if client_uuid == "":
+                ps = subprocess.run((bin_path, '-c', 'cp', '-v', vdev, '-r', read_operation_ratio_percentage,
+                         '-Z', request_size_in_bytes, '-N', num_ops, '-a', random_seed, '-z', file_size_in_bytes), stdout=fp, stderr=fp)
+
+            else:      
+                ps = subprocess.run((bin_path, '-c', 'cp', '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
                          '-Z', request_size_in_bytes, '-N', num_ops, '-a', random_seed, '-z', file_size_in_bytes), stdout=fp, stderr=fp)
 
         else: 
