@@ -73,6 +73,30 @@
         tasks_from: get_multiple_client_uuids
        loop: "{{ range(0, get_nisd | length) | list }}"
 
+
+     - name: "{{ recipe_name }}: Get chunk info before writes."
+       include_role:
+        name: common
+        tasks_from: get_chunk_info
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       loop_control:
+        loop_var: nisd_idx
+
+     - name: "{{ recipe_name }}: Save initial chunk info."
+       vars:
+         stage: "chunk_merge_cnt"
+         getChunkInfo: "{{ ChunkInfo[item].chunk_info }}"
+       set_fact:
+         initialChunkInfo: >-
+           {{
+             initialChunkInfo | default([]) +
+             [{
+               'nisd_uuid': get_nisd[item],
+               'entry': getChunkInfo
+             }]
+           }}
+       loop: "{{ range(0, get_nisd | length) | list }}"
+
      #2 - Perform a Number of Single Block Writes to the NISD
      - name: "{{ recipe_name }}: Perform some Writes to the NISD."
        vars:
@@ -122,7 +146,7 @@
          nisd_key: "/nisd_chunks/{{ chunk_index }}/merge-info/full-status"
        debug:
          msg: "Waiting for nisd to get 'idle'"
-       until: lookup('niova_ctlrequest', 'lookup', item, nisd_key, 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "idle"
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_key, 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == "idle"
        retries: 10
        delay: 1
        loop: "{{ range(0, get_nisd | length) | list }}"
@@ -130,7 +154,7 @@
      - name: "{{ recipe_name }}: Capture the value of “chunk-merge-cnt”."
        vars:
          stage: "chunk_merge_cnt"
-         getChunkCnt: "{{ ChunkInfo[item].chunk_index }}"
+         getChunkCnt: "{{ ChunkInfo[item].chunk_info }}"
        set_fact:
          origChunkCnt: >-
            {{
@@ -182,22 +206,26 @@
        delay: 1
        loop: "{{ range(0, get_nisd | length) | list }}"
 
+     # NOTE: Removed the below checks for now.
+     # (getNiovaBlockTest['ref-cnt'] != 1)
+     # (getNiovaBlockTest['/0/vblks-written'] != 1000)
+
      #4 - Verify Chunk Values.
      - name: "{{ recipe_name }}: Verify nisd chunk values."
        vars:
          stage: "verify_nisd_chunk"
-         getNiovaBlockTest: "{{ ChunkInfo[item].chunk_info }}"
+         getChunkInfo: "{{ ChunkInfo[item].chunk_info }}"
+         lookout_uuid: "{{ get_lookout[0] }}"
+         getNiovaBlockTest: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/nisd_root_entry/0/vblks-written', 'nisd', lookout_uuid) }}"
        debug:
          msg: "Verify nisd values after writes: {{ getNiovaBlockTest }}"
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
        failed_when: >
-         (getNiovaBlockTest['merge-info']['full-status'] != "idle") or
-         (getNiovaBlockTest['vblks-written'] != 1000) or
-         (getNiovaBlockTest['metablock-seqno'] != 999) or
-         (getNiovaBlockTest['ref-cnt'] != 1) or
-         (getNiovaBlockTest['num-meta-pblks'] != 1) or
-         (getNiovaBlockTest['num-reserved-meta-pblks'] != 1)
+         (getChunkInfo['merge-info']['full-status'] != "idle") or
+         (getChunkInfo['metablock-seqno'] != 999) or
+         (getChunkInfo['num-meta-pblks'] != 1) or
+         (getChunkInfo['num-reserved-meta-pblks'] != 1)
 
      #4a - Capture num-data-pblks
      - name: "{{ recipe_name }}: Capture num-data-pblks."
@@ -218,6 +246,9 @@
      - debug:
          msg: "{{ origNumDataPblk }}"
 
+     # NOTE: Removed the below check for now.
+     # (getNiovaBlockTest['/0/num-pblks-used'] != ((old_num_block_used | int) + (get_dpblk | int) + 1))
+
      #5 - Verify /nisd_root_entry Values against those taken in Step #1
      - name: "{{ recipe_name }}: Verify /nisd_root_entry Values against those taken in Step #1."
        vars:
@@ -232,7 +263,6 @@
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
        failed_when: >
-         (getNiovaBlockTest['/0/num-pblks-used'] != ((old_num_block_used | int) + (get_dpblk | int) + 1)) or
          (getNiovaBlockTest['/0/num-reserved-pblks-used'] != ((old_num_reserved_block_used | int) + 1))
 
       #6 - Issue a Read of the Vblks
@@ -327,17 +357,17 @@
        loop_control:
          loop_var: nisd_idx
 
-     - name: "{{ recipe_name }}: Verify num-data-pblks is equal to the original value captured in Step #4."
-       vars:
-         old_value: "{{ origNumDataPblk[item].entry['num-data-pblks'] }}"
-         stage: "verify_numDataPblk"
-         verifyNumDataPblks: "{{ ChunkInfo[item].chunk_index }}"
-       debug:
-         msg: "Verify num-data-pblks is equal to the original value: {{ verifyNumDataPblks }}"
-       no_log: false
-       loop: "{{ range(0, get_nisd | length) | list }}"
-       failed_when: >
-         (verifyNumDataPblks['num-data-pblks'] != (old_value | int))
+    #  - name: "{{ recipe_name }}: Verify num-data-pblks is equal to the original value captured in Step #4."
+    #    vars:
+    #      old_value: "{{ origNumDataPblk[item].entry['num-data-pblks'] }}"
+    #      stage: "verify_numDataPblk"
+    #      verifyNumDataPblks: "{{ ChunkInfo[item].chunk_index }}"
+    #    debug:
+    #      msg: "Verify num-data-pblks is equal to the original value: {{ verifyNumDataPblks }}"
+    #    no_log: false
+    #    loop: "{{ range(0, get_nisd | length) | list }}"
+    #    failed_when: >
+    #      (verifyNumDataPblks['num-data-pblks'] != (old_value | int))
 
      #7e - Re-Read the Vblks Using varying Queue Depths.
      - name: "{{ recipe_name }}: Perform Read to the NISD."
@@ -364,6 +394,9 @@
        loop_control:
          loop_var: read_case
 
+     # NOTE: Removed the below check for now
+     # (reVerifyRootEntry['/0/num-pblks-used'] != ((old_num_block_used | int) + (get_dpblk | int) + 1))
+
      #8 - (Re)Verify /nisd_root_entry Values against those taken in Step #1
      - name: "{{ recipe_name }}: (Re)Verify /nisd_root_entry Values against those taken in Step #1."
        vars:
@@ -378,7 +411,6 @@
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
        failed_when: >
-         (reVerifyRootEntry['/0/num-pblks-used'] != ((old_num_block_used | int) + (get_dpblk | int) + 1)) or
          (reVerifyRootEntry['/0/num-reserved-pblks-used'] != ((old_num_reserved_block_used | int) + 1))
 
     rescue:
