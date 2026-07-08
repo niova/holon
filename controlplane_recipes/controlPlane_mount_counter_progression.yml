@@ -186,6 +186,11 @@
           debug:
             msg: "{{ current_mount_counter }}"
 
+        - name: "{{ recipe_name }}: Verify if the mount counter has increased."
+          debug:
+            msg: "Verify mount counter"
+          failed_when: (current_mount_counter == 0)
+
       rescue:
         - name: "Recipe: {{ recipe_name }} failed"
           set_fact:
