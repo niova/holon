@@ -33,9 +33,9 @@
           debug:
             var: db_status
  
-        ----------------------------------------
-        2. Create mdsvc schema
-        ----------------------------------------
+        # ----------------------------------------
+        # 2. Create mdsvc schema
+        # ----------------------------------------
  
         - name: "{{ recipe_name }}: Create mdsvc schema."
           set_fact:
@@ -47,9 +47,9 @@
           debug:
             var: schema_result
  
-        ----------------------------------------
-        3. Start mdsvc-api server
-        ----------------------------------------
+        # ----------------------------------------
+        # 3. Start mdsvc-api server
+        # ----------------------------------------
  
         - name: "{{ recipe_name }}: Start mdsvc-api server and wait for readiness."
           set_fact:
@@ -69,9 +69,9 @@
             fail_msg: "mdsvc-api server failed to start. Check {{ server_result.log_file }}"
             success_msg: "mdsvc-api server is up (pid={{ server_result.pid }})."
 
-        -----------------------------
-        1. Create Infra
-        -----------------------------
+        # -----------------------------
+        # 1. Create Infra
+        # -----------------------------
 
         - name: Create infra
           set_fact:
