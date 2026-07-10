@@ -26,7 +26,7 @@
 
         - name: "{{ recipe_name }}: Start mdsvc-tidb using Docker."
           set_fact:
-            docker_status: "{{ lookup('mdsvc_cluster', 'docker_setup') }}"
+            docker_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
 
         - name: "{{ recipe_name }}: Debug Docker status."
           debug:
@@ -51,7 +51,7 @@
             login_result: >-
               {{
                 lookup(
-                  'mdsvc_tidb_api',
+                  'tidb_api',
                   'login',
                   base_url=api_base_url,
                   username='admin',
@@ -73,7 +73,7 @@
             infra_result: >-
               {{
                 lookup(
-                  'mdsvc_tidb_api',
+                  'tidb_api',
                   'create_infra',
                   base_url=api_base_url,
                   token=login_result.access_token,
@@ -142,7 +142,7 @@
             vdev_result: >-
               {{
                 lookup(
-                  'mdsvc_tidb_api',
+                  'tidb_api',
                   'create_vdev',
                   base_url=api_base_url,
                   token=login_result.access_token,
