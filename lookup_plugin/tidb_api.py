@@ -4,384 +4,384 @@ from ansible.errors import AnsibleError
 import json
 import os
 import requests
+import subprocess
 from datetime import datetime
 
-# =========================================================
-# Generic Helpers
-# =========================================================
 
 def load_payload(file_path=None, body=None):
-
     if file_path:
-
         if not os.path.exists(file_path):
-            raise AnsibleError(
-                f"JSON file not found: {file_path}"
-            )
-
+            raise AnsibleError(f"JSON file not found: {file_path}")
         with open(file_path, "r") as fp:
-
-            try:
-                return json.load(fp)
-
-            except Exception as e:
-                raise AnsibleError(
-                    f"Invalid JSON in file "
-                    f"{file_path}: {e}"
-                )
+            return json.load(fp)
 
     if body:
-
         if isinstance(body, dict):
             return body
-
         if isinstance(body, str):
-
-            try:
-                return json.loads(body)
-
-            except Exception:
-                raise AnsibleError(
-                    "Body must be valid JSON string"
-                )
-
-        raise AnsibleError(
-            "Unsupported body format"
-        )
+            return json.loads(body)
 
     return None
 
+
 def get_log_file(log_dir):
-
     os.makedirs(log_dir, exist_ok=True)
+    return os.path.join(log_dir, "mdsvc_tidb_api.log")
 
-    return os.path.join(
-        log_dir,
-        "mdsvc_api.log"
-    )
 
-def write_log(log_file,
-              method,
-              url,
-              payload,
-              response_status,
-              response_data):
-
-    timestamp = datetime.now().strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
+def write_log(log_file, method, url, payload, status, response_data):
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     with open(log_file, "a") as logf:
-
-        logf.write("\n")
+        logf.write("\n" + "=" * 80 + "\n")
+        logf.write(f"[{timestamp}] {method} {url}\n")
         logf.write("=" * 80 + "\n")
-        logf.write(f"[{timestamp}] API REQUEST\n")
-        logf.write("=" * 80 + "\n")
-
-        logf.write(f"METHOD: {method}\n")
-        logf.write(f"URL: {url}\n")
 
         if payload:
-            logf.write(
-                "REQUEST BODY:\n"
-            )
-
-            logf.write(
-                json.dumps(payload, indent=2)
-            )
-
+            logf.write("REQUEST BODY:\n")
+            logf.write(json.dumps(payload, indent=2))
             logf.write("\n")
 
-        logf.write(
-            f"STATUS CODE: {response_status}\n"
-        )
-
-        logf.write(
-            "RESPONSE:\n"
-        )
-
-        logf.write(
-            json.dumps(response_data, indent=2)
-        )
-
+        logf.write(f"STATUS CODE: {status}\n")
+        logf.write("RESPONSE:\n")
+        logf.write(json.dumps(response_data, indent=2))
         logf.write("\n")
 
-# =========================================================
-# Request Helpers
-# =========================================================
-
-def perform_request(api_params):
-
-    method = api_params['method']
-    url = api_params['url']
-    payload = api_params['payload']
-    headers = api_params['headers']
-    timeout = api_params['timeout']
-    params = api_params.get('params')
-
-    try:
-
-        if method == "POST":
-
-            response = requests.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=timeout
-            )
-
-        elif method == "GET":
-
-            response = requests.get(
-                url,
-                params=params,
-                headers=headers,
-                timeout=timeout
-            )
-
-        else:
-            raise AnsibleError(
-                f"Unsupported method: {method}"
-            )
-
-    except Exception as e:
-        raise AnsibleError(
-            f"HTTP request failed: {e}"
-        )
-
-    return response
 
 def parse_response(response):
-
     try:
-        response_data = response.json()
-
+        data = response.json()
     except Exception:
-        raise AnsibleError(
-            f"Invalid JSON response: "
-            f"{response.text}"
-        )
+        raise AnsibleError(f"Invalid JSON response: {response.text}")
 
     if response.status_code not in [200, 201]:
+        raise AnsibleError(f"API failed [{response.status_code}]: {data}")
 
-        raise AnsibleError(
-            f"API failed "
-            f"[{response.status_code}]: "
-            f"{response_data}"
+    return data
+
+
+def login(base_url, username, password, log_file, timeout):
+    payload = {
+        "username": username,
+        "password": password,
+    }
+
+    url = f"{base_url}/users/login"
+
+    response = requests.post(
+        url,
+        json=payload,
+        headers={"Content-Type": "application/json"},
+        timeout=timeout,
+    )
+
+    data = parse_response(response)
+
+    write_log(
+        log_file,
+        "POST",
+        url,
+        payload,
+        response.status_code,
+        data,
+    )
+
+    token = data.get("access_token")
+
+    if not token:
+        raise AnsibleError(f"Login succeeded but access_token missing: {data}")
+
+    return token
+
+
+def make_headers(token=None, extra_headers=None):
+    headers = {
+        "Content-Type": "application/json",
+    }
+
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    if extra_headers:
+        headers.update(extra_headers)
+
+    return headers
+
+
+def perform_request(method, url, payload, params, headers, timeout):
+    if method == "POST":
+        return requests.post(
+            url,
+            json=payload,
+            params=params,
+            headers=headers,
+            timeout=timeout,
         )
 
-    return response_data
+    if method == "GET":
+        return requests.get(
+            url,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+        )
 
-# =========================================================
-# Response Helpers
-# =========================================================
+    if method == "PUT":
+        return requests.put(
+            url,
+            json=payload,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+        )
 
-def extract_fields(response_data):
+    if method == "DELETE":
+        return requests.delete(
+            url,
+            json=payload,
+            params=params,
+            headers=headers,
+            timeout=timeout,
+        )
 
+    raise AnsibleError(f"Unsupported method: {method}")
+
+
+def extract_fields(data):
     extracted = {}
 
-    if not isinstance(response_data, dict):
-        return extracted
-
-    common_keys = [
+    keys = [
         "uuid",
         "vdev_id",
         "infra_id",
         "chunk_uuid",
-        "nisd_uuid"
+        "nisd_uuid",
+        "resource_id",
+        "access_token",
     ]
 
-    for key in common_keys:
+    if isinstance(data, dict):
+        for key in keys:
+            if key in data:
+                extracted[key] = data[key]
 
-        if key in response_data:
-            extracted[key] = response_data[key]
-
-    if (
-        "data" in response_data and
-        isinstance(response_data["data"], dict)
-    ):
-
-        inner = response_data["data"]
-
-        for key in common_keys:
-
-            if key in inner:
-                extracted[key] = inner[key]
+        inner = data.get("data")
+        if isinstance(inner, dict):
+            for key in keys:
+                if key in inner:
+                    extracted[key] = inner[key]
 
     return extracted
 
-# =========================================================
-# API Operation Helpers
-# =========================================================
 
-def perform_api_operation(api_params):
+def paginated_chunks(api_params):
+    all_chunks = []
+    page_count = 0
 
-    method = api_params['method']
-    url = api_params['url']
+    params = dict(api_params.get("params") or {})
 
-    if (
-        method == "GET" and
-        "/chunks" in url
-    ):
+    while True:
+        page_count += 1
 
-        all_chunks = []
-        page_count = 0
-
-        original_params = api_params.get("params")
-
-        if original_params is None:
-            params = {}
-        else:
-            params = dict(original_params)
-
-        while True:
-
-            page_count += 1
-
-            request_params = dict(api_params)
-            request_params["params"] = params
-
-            response = perform_request(
-                request_params
-            )
-
-            response_data = parse_response(
-                response
-            )
-
-            write_log(
-                api_params['log_file'],
-                api_params['method'],
-                api_params['url'],
-                api_params['payload'],
-                response.status_code,
-                response_data
-            )
-
-            chunks = response_data.get(
-                "chunks",
-                []
-            )
-
-            all_chunks.extend(chunks)
-
-            has_more = response_data.get(
-                "has_more",
-                False
-            )
-
-            if not has_more:
-                break
-
-            next_start = response_data.get(
-                "next_start_chunk_idx"
-            )
-
-            if next_start is None:
-
-                raise AnsibleError(
-                    "Pagination error: "
-                    "has_more=true but "
-                    "next_start_chunk_idx missing"
-                )
-
-            params["start_chunk_idx"] = next_start
-
-        final_response = {
-            "success": True,
-            "vdev_id": response_data.get(
-                "vdev_id"
-            ),
-            "chunks": all_chunks,
-            "total_chunks_fetched": len(
-                all_chunks
-            ),
-            "expected_total_chunks": response_data.get(
-                "total_chunks"
-            ),
-            "pages_fetched": page_count,
-            "log_file": api_params['log_file']
-        }
-
-        extracted_fields = extract_fields(
-            response_data
+        response = perform_request(
+            api_params["method"],
+            api_params["url"],
+            api_params["payload"],
+            params,
+            api_params["headers"],
+            api_params["timeout"],
         )
 
-        if extracted_fields:
-            final_response.update(
-                extracted_fields
+        data = parse_response(response)
+
+        write_log(
+            api_params["log_file"],
+            api_params["method"],
+            api_params["url"],
+            api_params["payload"],
+            response.status_code,
+            data,
+        )
+
+        chunks = data.get("chunks", [])
+        all_chunks.extend(chunks)
+
+        if not data.get("has_more", False):
+            break
+
+        next_start = data.get("next_start_chunk_idx")
+
+        if next_start is None:
+            raise AnsibleError(
+                "Pagination error: has_more=true but next_start_chunk_idx missing"
             )
 
-        return final_response
-
-    response = perform_request(api_params)
-
-    response_data = parse_response(response)
-
-    write_log(
-        api_params['log_file'],
-        api_params['method'],
-        api_params['url'],
-        api_params['payload'],
-        response.status_code,
-        response_data
-    )
+        params["start_chunk_idx"] = next_start
 
     result = {
-        "status_code": response.status_code,
-        "data": response_data,
-        "log_file": api_params['log_file']
+        "success": True,
+        "vdev_id": data.get("vdev_id"),
+        "chunks": all_chunks,
+        "total_chunks_fetched": len(all_chunks),
+        "expected_total_chunks": data.get("total_chunks"),
+        "pages_fetched": page_count,
+        "log_file": api_params["log_file"],
     }
 
-    extracted_fields = extract_fields(
-        response_data
-    )
-
-    if extracted_fields:
-        result.update(extracted_fields)
-
+    result.update(extract_fields(data))
     return result
 
-# =========================================================
-# Main Lookup Module
-# =========================================================
+
+def run_schema(repo_path, log_file, mysql_env):
+    schema_script = os.path.join(repo_path, "scripts", "run_schema.sh")
+
+    if not os.path.exists(schema_script):
+        raise AnsibleError(f"Schema script not found: {schema_script}")
+
+    env = os.environ.copy()
+    env.update(mysql_env)
+
+    with open(log_file, "a") as logf:
+        chmod_proc = subprocess.Popen(
+            ["chmod", "+x", schema_script],
+            stdout=logf,
+            stderr=logf,
+        )
+        chmod_rc = chmod_proc.wait()
+
+        if chmod_rc != 0:
+            raise AnsibleError(f"chmod failed for {schema_script}")
+
+        proc = subprocess.Popen(
+            [schema_script],
+            cwd=repo_path,
+            stdout=logf,
+            stderr=logf,
+            env=env,
+        )
+
+        rc = proc.wait()
+
+    if rc != 0:
+        raise AnsibleError(f"Schema setup failed. Check log: {log_file}")
+
+    return {
+        "status": "schema_created",
+        "schema_script": schema_script,
+        "log_file": log_file,
+    }
+
 
 class LookupModule(LookupBase):
 
     def run(self, terms, variables=None, **kwargs):
+        if variables is None:
+            variables = {}
 
-        if len(terms) < 2:
-
+        if len(terms) < 1:
             raise AnsibleError(
-                "Usage: "
-                "lookup("
-                "'mdsvc_tidb_api', "
-                "METHOD, "
-                "PATH)"
+                "Usage: lookup('mdsvc_tidb_api', ACTION, ...)"
             )
 
-        method = terms[0].upper()
-        path = terms[1]
+        action = terms[0]
 
         base_url = kwargs.get(
             "base_url",
-            os.getenv(
-                "MDSVC_API_URL",
-                "http://localhost:8081"
-            )
-        )
-
-        payload = load_payload(
-            kwargs.get("file"),
-            kwargs.get("body")
+            os.getenv("MDSVC_API_URL", "http://localhost:8081"),
         )
 
         log_dir = kwargs.get(
             "log_dir",
-            variables.get(
-                "log_dir",
-                "./logs"
-            )
+            variables.get("log_dir", "./logs"),
+        )
+
+        log_file = get_log_file(log_dir)
+
+        timeout = kwargs.get("timeout", 10)
+
+        username = kwargs.get(
+            "username",
+            os.getenv("INTEGRATION_ADMIN_USERNAME", "admin"),
+        )
+
+        password = kwargs.get(
+            "password",
+            os.getenv("INTEGRATION_ADMIN_PASSWORD", "admin"),
+        )
+
+        disable_auth = str(
+            kwargs.get("disable_auth", os.getenv("DISABLE_AUTH", "false"))
+        ).lower() == "true"
+
+        token = kwargs.get("token")
+
+        if action == "create_schema":
+            repo_path = kwargs.get("repo_path", "/home/himani/mdsvc-tidb")
+
+            mysql_env = {
+                "MDSVC_MYSQL_HOST": str(kwargs.get("mysql_host", "127.0.0.1")),
+                "MDSVC_MYSQL_PORT": str(kwargs.get("mysql_port", "4000")),
+                "MDSVC_MYSQL_USER": str(kwargs.get("mysql_user", "root")),
+                "MDSVC_MYSQL_PASSWORD": str(kwargs.get("mysql_password", "")),
+            }
+
+            return [run_schema(repo_path, log_file, mysql_env)]
+
+        if action == "login":
+            token = login(base_url, username, password, log_file, timeout)
+            return [{
+                "status": "login_success",
+                "access_token": token,
+                "log_file": log_file,
+            }]
+
+        endpoint_map = {
+            "create_infra": ("POST", "/api/infra"),
+            "get_infra": ("GET", "/api/infra"),
+
+            "create_vdev": ("POST", "/api/vdev"),
+            "get_vdev": ("GET", "/api/vdev"),
+
+            "get_chunk": ("GET", "/api/chunk"),
+            "get_chunks": ("GET", "/api/chunks"),
+
+            "get_nisd": ("GET", "/api/nisd"),
+
+            "get_resource": ("GET", "/api/resource"),
+            "put_resource": ("PUT", "/api/resource"),
+
+            "get_users": ("GET", "/api/users"),
+
+            "get_rbac": ("GET", "/api/authz/rbac"),
+            "create_rbac": ("POST", "/api/authz/rbac"),
+            "delete_rbac": ("DELETE", "/api/authz/rbac"),
+
+            "get_abac": ("GET", "/api/authz/abac"),
+            "create_abac": ("POST", "/api/authz/abac"),
+            "delete_abac": ("DELETE", "/api/authz/abac"),
+
+            "proxy_func": ("GET", "/func"),
+        }
+
+        if action not in endpoint_map:
+            raise AnsibleError(f"Unsupported action: {action}")
+
+        method, path = endpoint_map[action]
+
+        if len(terms) >= 2:
+            path = terms[1]
+
+        if not disable_auth and not token and path.startswith("/api/"):
+            token = login(base_url, username, password, log_file, timeout)
+
+        payload = load_payload(
+            kwargs.get("file"),
+            kwargs.get("body"),
+        )
+
+        headers = make_headers(
+            token=token,
+            extra_headers=kwargs.get("headers"),
         )
 
         api_params = {
@@ -389,21 +389,40 @@ class LookupModule(LookupBase):
             "url": f"{base_url}{path}",
             "payload": payload,
             "params": kwargs.get("params"),
-            "headers": kwargs.get(
-                "headers",
-                {
-                    "Content-Type": "application/json"
-                }
-            ),
-            "timeout": kwargs.get(
-                "timeout",
-                10
-            ),
-            "log_file": get_log_file(log_dir)
+            "headers": headers,
+            "timeout": timeout,
+            "log_file": log_file,
         }
 
-        result = perform_api_operation(
-            api_params
+        if action == "get_chunks":
+            return [paginated_chunks(api_params)]
+
+        response = perform_request(
+            api_params["method"],
+            api_params["url"],
+            api_params["payload"],
+            api_params["params"],
+            api_params["headers"],
+            api_params["timeout"],
         )
+
+        data = parse_response(response)
+
+        write_log(
+            log_file,
+            method,
+            api_params["url"],
+            payload,
+            response.status_code,
+            data,
+        )
+
+        result = {
+            "status_code": response.status_code,
+            "data": data,
+            "log_file": log_file,
+        }
+
+        result.update(extract_fields(data))
 
         return [result]

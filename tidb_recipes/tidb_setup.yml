@@ -1,91 +1,97 @@
 - name: "tidb_setup"
   hosts: localhost
   connection: local
+
   vars:
     recipe_name: "tidb_setup"
     log_dir: "{{ dir_path | default('./logs') }}"
     api_base_url: "http://localhost:8081"
+
     infra_payload: "./examples/create_infra.json"
     vdev_payload: "./examples/create_vdev.json"
-    nisd: "7fb3c81f-a112-4531-b7fd-ff7bd9c8161b"
+
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
 
   tasks:
     - block:
 
-        # Check for the app_type
-        - name: "{{ recipe_name }}: Check if the app_type is 'tidb'."
-          vars:
-            app_type: "{{ app_type }}"
+        - name: "{{ recipe_name }}: Check if app_type is tidb."
           debug:
             msg: "app_type is: {{ app_type }}"
-          failed_when:
-            (app_type != "tidb")
+          failed_when: app_type != "tidb"
 
         # ----------------------------------------
-        # 1. Verify database is reachable
+        # 1. Start mdsvc-tidb Docker stack
         # ----------------------------------------
- 
-        - name: "{{ recipe_name }}: Start mdsvc-tidb using docker."
+
+        - name: "{{ recipe_name }}: Start mdsvc-tidb using Docker."
           set_fact:
-            docker_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
- 
-        - name: "{{ recipe_name }}: Debug DB status."
+            docker_status: "{{ lookup('mdsvc_cluster', 'docker_setup') }}"
+
+        - name: "{{ recipe_name }}: Debug Docker status."
           debug:
-            var: db_status
- 
+            var: docker_status
+
+        - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
+          uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+          register: api_health
+          retries: 30
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
         # ----------------------------------------
-        # 2. Create mdsvc schema
+        # 2. Login
         # ----------------------------------------
- 
-        - name: "{{ recipe_name }}: Create mdsvc schema."
+
+        - name: "{{ recipe_name }}: Login to mdsvc-api."
           set_fact:
-            schema_result: "{{ lookup('mdsvc_cluster', 'create_schema',
-                repo_path=repo_path,
-                base_url=api_base_url) }}"
- 
-        - name: "{{ recipe_name }}: Debug schema result."
+            login_result: >-
+              {{
+                lookup(
+                  'mdsvc_tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username='admin',
+                  password='admin',
+                  log_dir=log_dir
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Debug login result."
           debug:
-            var: schema_result
- 
+            msg: "Login successful"
+
         # ----------------------------------------
-        # 3. Start mdsvc-api server
+        # 3. Create Infra
         # ----------------------------------------
- 
-        - name: "{{ recipe_name }}: Start mdsvc-api server and wait for readiness."
+
+        - name: "{{ recipe_name }}: Create infra."
           set_fact:
-            server_result: "{{ lookup('mdsvc_cluster', 'start_server',
-                repo_path=repo_path,
-                server_path=repo_path,
-                base_url=api_base_url) }}"
- 
-        - name: "{{ recipe_name }}: Debug server start result."
-          debug:
-            var: server_result
- 
-        - name: "{{ recipe_name }}: Assert server started successfully."
-          assert:
-            that:
-              - server_result.status == "server_started"
-            fail_msg: "mdsvc-api server failed to start. Check {{ server_result.log_file }}"
-            success_msg: "mdsvc-api server is up (pid={{ server_result.pid }})."
+            infra_result: >-
+              {{
+                lookup(
+                  'mdsvc_tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=infra_payload,
+                  log_dir=log_dir
+                )
+              }}
 
-        # -----------------------------
-        # 1. Create Infra
-        # -----------------------------
-
-        - name: Create infra
-          set_fact:
-            infra_result: "{{ lookup('tidb_api',
-                'POST',
-                '/infra',
-                file=infra_payload,
-                base_url=api_base_url) }}"
-
-        - name: Debug infra response
+        - name: "{{ recipe_name }}: Debug infra response."
           debug:
             var: infra_result
 
-        - name: "{{ recipe_name }}: create nisd device"
+        # ----------------------------------------
+        # 4. Create local NISD backing device
+        # 10 GiB = 64M * 160
+        # ----------------------------------------
+
+        - name: "{{ recipe_name }}: Create NISD device file."
           vars:
             img_dir: "/sample.device"
             bs: "64M"
@@ -95,97 +101,96 @@
               - "{{ lookup('helper', 'create_dd_file', img_dir, bs, count) }}"
           register: nisd_dev_path
 
-        - name: "{{ recipe_name }}: Print the device path."
-          debug: 
+        - name: "{{ recipe_name }}: Print NISD device path."
+          debug:
             msg: "{{ nisd_dev_path.msg[0] }}"
+
+        # ----------------------------------------
+        # 5. Start niova-block-ctl
+        # ----------------------------------------
 
         - name: "{{ recipe_name }}: Start niova-block-ctl process."
           vars:
-            input_param: {
-              'nisd_device_path': '{{ nisd_dev_path.msg[0] }}',
-              'nisd_uuid': '{{ nisd }}',
-            }
+            input_param:
+              nisd_device_path: "{{ nisd_dev_path.msg[0] }}"
+              nisd_uuid: "{{ nisd_uuid }}"
           debug:
             msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
-    
-        - name: "{{ recipe_name }}: Start nisd"
+
+        # ----------------------------------------
+        # 6. Start NISD
+        # ----------------------------------------
+
+        - name: "{{ recipe_name }}: Start NISD."
           vars:
-            input_param: {
-              'nisd_device_path': '{{ nisd_dev_path.msg[0] }}',
-              'nisd_uuid': '{{ nisd }}',
-              'peer_port': '13000',
-              'client_port': '13001',
-              'enable_auth': 1,
-            }
+            input_param:
+              nisd_device_path: "{{ nisd_dev_path.msg[0] }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "13000"
+              client_port: "13001"
+              enable_auth: 1
           debug:
             msg:
               - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
 
-        # -----------------------------
-        # 2. Create VDEV
-        # -----------------------------
-        
-        - name: Create vdev
+        # ----------------------------------------
+        # 7. Create VDEV
+        # ----------------------------------------
+
+        - name: "{{ recipe_name }}: Create vdev."
           set_fact:
-            vdev_result: "{{ lookup('tidb_api',
-                'POST',
-                '/vdev',
-                file=vdev_payload,
-                base_url=api_base_url) }}"
+            vdev_result: >-
+              {{
+                lookup(
+                  'mdsvc_tidb_api',
+                  'create_vdev',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=vdev_payload,
+                  log_dir=log_dir
+                )
+              }}
 
-        - name: Debug vdev result
+        - name: "{{ recipe_name }}: Debug vdev result."
           debug:
-            msg: "{{ vdev_result }}"
+            var: vdev_result
 
-        - name: Extract vdev UUID
+        - name: "{{ recipe_name }}: Extract vdev UUID."
           set_fact:
             vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
 
-        - name: Debug vdev UUID
+        - name: "{{ recipe_name }}: Print vdev UUID."
           debug:
             msg: "Created VDEV UUID: {{ vdev_uuid }}"
 
-        - name: "{{ recipe_name }}: wait for 20 seconds"
+        - name: "{{ recipe_name }}: Wait before starting niova-block-test."
           pause:
             seconds: 25
 
+        # ----------------------------------------
+        # 8. Start niova-block-test
+        # ----------------------------------------
+
         - name: "{{ recipe_name }}: Start niova-block-test process."
           vars:
-            input_param: {
-                 'vdev' : '{{ vdev_uuid }}',
-                 'read_op_ratio': '100',
-                 'num_ops': '100',
-                 'random_seed': '123',
-                 'client_uuid' : "{{ vdev_uuid }}",
-                 'request_size_in_bytes': '0',
-                 'integrity_check': 'False',
-                 'sequential_writes': 'False',
-                 'blocking_process': 'False'
-            }
+            input_param:
+              vdev: "{{ vdev_uuid }}"
+              read_op_ratio: "100"
+              num_ops: "100"
+              random_seed: "123"
+              client_uuid: "{{ vdev_uuid }}"
+              request_size_in_bytes: "0"
+              integrity_check: "False"
+              sequential_writes: "False"
+              blocking_process: "False"
           set_fact:
             nblock_wr: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
 
-        - name: "{{ recipe_name }}: DEBUG niova-block-test result."
+        - name: "{{ recipe_name }}: Debug niova-block-test result."
           debug:
             msg: "{{ nblock_wr }}"
 
-        - name: Find sample.device file
-          find:
-            paths: /home/runner/work/niovad/niovad/holon_log
-            patterns: "sample.device"
-            file_type: file
-            recurse: yes            # To search in all subdirectories
-          register: found_file
-
-        - name: Delete sample.device file if it exists
-          file:
-            path: "{{ item.path }}"
-            state: absent
-          loop: "{{ found_file.files }}"
-          when: found_file.matched > 0
-
-        - name: Validate niova-block-test return code
+        - name: "{{ recipe_name }}: Validate niova-block-test return code."
           debug:
-            msg: "Process failed with return code {{ nblock_wr }}"
+            msg: "niova-block-test return code: {{ nblock_wr }}"
           failed_when: nblock_wr | int != 0
-        
