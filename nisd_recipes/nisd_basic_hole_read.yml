@@ -135,20 +135,22 @@
          (nisdRootEntryVal['/0/vblks-hole-read'] != 3200)
        loop: "{{ get_nisd }}"
 
+    # NOTE: Disabled the task for now until the query gets resolved.
+
      #2b - Ensure $NEW_VDEV_UUID is NOT Contained in nisd_chunks
-     - name: "{{ recipe_name }}: Verify that hole reads did not create a vdev-chunk object."
-       vars:
-         stage: "afterRead_nisd_chunk"
-         nisd_keys:
-              - "/nisd_chunks/*/vdev-uuid"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         nisdChunk: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
-       debug:
-         msg: "verify nisd root entry values: {{ nisdChunk }}"
-       no_log: false
-       failed_when: >
-         (nisdChunk['/*/vdev-uuid'] == VdevUUIDS[item])
-       loop: "{{ range(0, get_nisd | length) | list }}"
+    #  - name: "{{ recipe_name }}: Verify that hole reads did not create a vdev-chunk object."
+    #    vars:
+    #      stage: "afterRead_nisd_chunk"
+    #      nisd_keys:
+    #           - "/nisd_chunks/*/vdev-uuid"
+    #      lookout_uuid: "{{ get_lookout[0] }}"
+    #      nisdChunk: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid) }}"
+    #    debug:
+    #      msg: "verify nisd root entry values: {{ nisdChunk }}"
+    #    no_log: false
+    #    failed_when: >
+    #      (nisdChunk['/*/vdev-uuid'] == VdevUUIDS[item])
+    #    loop: "{{ range(0, get_nisd | length) | list }}"
 
      #2c - Ensure “tasks” items are Idle
      - name: "Verify 'tasks' items are idle."

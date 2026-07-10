@@ -60,6 +60,15 @@
             msg: "Number of failed tests: {{ failed_tests }}"
           failed_when: (failed_tests | int) > 0
 
+        - name: "{{ recipe_name }}: Start niova-block-ctl process."
+          vars:
+            input_param: {
+              'nisd_device_path': '{{ nisd_dev_path.msg[0] }}',
+              'nisd_uuid': '{{ nisd_uuid }}',
+            }
+          debug:
+            msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
+
         - name: "{{ recipe_name }}: Run controlplane Go test to create vdev."
           vars:
             input_param:
@@ -144,15 +153,6 @@
         - name: "{{ recipe_name }}: Print user2 secret"
           debug:
             msg: "{{ user2_secret }}"
-
-        - name: "{{ recipe_name }}: Start niova-block-ctl process."
-          vars:
-            input_param: {
-              'nisd_device_path': '{{ nisd_dev_path.msg[0] }}',
-              'nisd_uuid': '{{ nisd_uuid }}',
-            }
-          debug:
-            msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
     
         - name: "{{ recipe_name }}: Start nisd"
           vars:

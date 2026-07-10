@@ -168,8 +168,11 @@ def niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess
     if isinstance(raft_keys, list):
         ctlreq_cmd_dict['cmd'] = "/.*/.*/.*/.*"
     else:
-        single_key = re.sub('/0/', '/', raft_keys)
-        ctlreq_cmd_dict['cmd'] = single_key
+        if raft_keys.startswith("/nisd_chunks"):
+            ctlreq_cmd_dict['cmd'] = "/.*/.*/.*/.*"
+        else:
+            single_key = re.sub('/0/', '/', raft_keys)
+            ctlreq_cmd_dict['cmd'] = single_key
         '''
         If single key is passed by user, niova_raft_lookup_values expects
         the keys are added in a list. So add the key in the list.

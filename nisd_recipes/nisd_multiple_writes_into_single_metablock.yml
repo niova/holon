@@ -27,14 +27,14 @@
        loop_control:
          loop_var: nisd_uuid
 
-     - name: "{{ recipe_name }}: Apply fault injection on NISD and verify."
+     - name: "{{ recipe_name }}: Enable fault injection on NISD and verify."
        include_role:
          name: common
          tasks_from: enable_fi_on_nisd
        vars:
          NisdUUID: "{{ nisd_uuid }}"
          LookoutUUID: "{{ get_lookout[0] }}"
-         fault_injection_name: "out_of_order_metablock_sync"
+         fault_injection_name: "metablock_multi_fill"
        loop: "{{ get_nisd }}"
        loop_control:
          loop_var: nisd_uuid
@@ -90,52 +90,31 @@
          msg: "One or more niova-block-test writes failed: {{ write_results }}"
        failed_when: (write_results | reject('equalto', '0') | list | length) > 0
 
-     - name: "{{ recipe_name }}: Get all nisd_chunks."
-       vars:
-         stage: "get_all_nisd_chunks"
-         nisd_keys: 
-           - "/nisd_chunks"
-         lookout_uuid: "{{ get_lookout[0] }}"
-       debug:
-         msg: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[0], nisd_keys, 'nisd', lookout_uuid) }}"
-
-     - name: "{{ recipe_name }}: Get nisd_chunks info for VdevUUIDS."
-       vars:
-         stage: "get_nisd_chunks_for_vdevs"
-         nisd_keys:
-           - "/nisd_chunks"
-         lookout_uuid: "{{ get_lookout[0] }}"
-         all_nisd_chunks: "{{ lookup('niova_ctlrequest', 'lookup', get_nisd[item], nisd_keys, 'nisd', lookout_uuid)['//nisd_chunks'] }}"
+     - name: "{{ recipe_name }}: Reset ChunkInfo list after writes."
        set_fact:
-         VdevChunkInfo: >-
-           {{
-             (VdevChunkInfo | default([]))
-             +
-             [
-               all_nisd_chunks
-               | selectattr('vdev-uuid', 'equalto', VdevUUIDS[item] | string)
-               | list
-               | first
-             ]
-           }}
-       loop: "{{ range(0, get_nisd | length) | list }}"
-         
-     - name: "{{ recipe_name }}: Show nisd_chunks info for VdevUUIDS."
-       debug:
-         msg: "{{ VdevChunkInfo }}"
+         ChunkInfo: []
 
-     - name: "{{ recipe_name }}: Verify nisd_chunk info."
+     - name: "{{ recipe_name }}: Get chunk info after writes."
+       include_role:
+         name: common
+         tasks_from: get_chunk_info
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       loop_control:
+         loop_var: nisd_idx
+
+     - name: "{{ recipe_name }}: Verify nisd_chunk info after writes."
        vars:
          stage: "verify_nisd_chunk"
+         chunk_info_after_write: "{{ ChunkInfo[item].chunk_info }}"
        debug:
-         msg: "Verify nisd values after writes for {{ get_nisd[item] }} and vdev {{ VdevUUIDS[item] }}: {{ VdevChunkInfo[item] }}"
-       no_log: True
+         msg: "Verify nisd values after writes for {{ get_nisd[item] }} and vdev {{ VdevUUIDS[item] }}: {{ chunk_info_after_write }}"
+       no_log: false
        failed_when: >
-         ((VdevChunkInfo[item]['vdev-uuid']) != VdevUUIDS[item])
-         ((VdevChunkInfo[item]['vblks-written'] | int) != (no_of_ops | int)) or
-         ((VdevChunkInfo[item]['metablock-seqno'] | int) != 0) or
-         ((VdevChunkInfo[item]['num-data-pblks'] | int) != 1) or
-         ((VdevChunkInfo[item]['num-reserved-meta-pblks'] | int) != 1)
+         ((chunk_info_after_write['vdev-uuid']) != VdevUUIDS[item]) or
+         ((chunk_info_after_write['vblks-written'] | int) != (no_of_ops | int)) or
+         ((chunk_info_after_write['metablock-seqno'] | int) != (no_of_ops | int) - 1) or
+         ((chunk_info_after_write['num-data-pblks'] | int) != 1) or
+         ((chunk_info_after_write['num-reserved-meta-pblks'] | int) != 1)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Verify fault-injection values."
