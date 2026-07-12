@@ -1,0 +1,504 @@
+- name: "tidb_parallel_allocation"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "tidb_parallel_allocation"
+
+    api_base_url: "http://localhost:8081"
+
+    infra_payload: "./examples/e2e.json"
+
+    # If true, bring the mdsvc-tidb stack up via the tidb_setup lookup plugin
+    # before running the recipe. Defaults to false to match the recipe's
+    # stated prerequisite ("The MDSVC-TIDB server is up and running") --
+    # flip this on when this recipe is run standalone rather than after a
+    # setup fixture.
+    run_cluster_setup: false
+    cluster_setup_action: "manual_setup"   # docker_setup | manual_setup | cluster_deploy_setup
+
+    # Allocation matrix from the recipe spec: mixed sizes/replica counts,
+    # fired concurrently as async POST /vdev requests.
+    allocation_matrix:
+      - { size_bytes: 2147483648,   num_replicas: 1 }   # 2GiB  replica=1
+      - { size_bytes: 3221225472,   num_replicas: 2 }   # 3GiB  replica=2
+      - { size_bytes: 5368709120,   num_replicas: 3 }   # 5GiB  replica=3
+      - { size_bytes: 10737418240,  num_replicas: 1 }   # 10GiB replica=1
+      - { size_bytes: 21474836480,  num_replicas: 2 }   # 20GiB replica=2
+      - { size_bytes: 53687091200,  num_replicas: 3 }   # 50GiB replica=3
+      - { size_bytes: 107374182400, num_replicas: 1 }   # 100GiB replica=1
+      - { size_bytes: 214748364800, num_replicas: 2 }   # 200GiB replica=2
+
+    # Async tuning for the concurrent POST /vdev requests.
+    vdev_async_timeout: 300
+    vdev_async_poll_retries: 60
+    vdev_async_poll_delay: 5
+
+    # Used internally by the get_chunks lookup.
+    chunk_page_limit: 4
+
+  tasks:
+    - block:
+
+        # =====================================================
+        # 0. Validate application type / optional cluster setup
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Check if app_type is tidb."
+          debug:
+            msg: "app_type is: {{ app_type }}"
+          failed_when: app_type != "tidb"
+
+        - name: "{{ recipe_name }}: Bring up mdsvc-tidb stack (optional)."
+          set_fact:
+            cluster_setup_result: >-
+              {{
+                lookup('tidb_setup', cluster_setup_action)
+              }}
+          when: run_cluster_setup | bool
+
+        # =====================================================
+        # 1. Login
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Login to mdsvc-api."
+          set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username='admin',
+                  password='admin'
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store access token."
+          set_fact:
+            access_token: "{{ login_result.access_token }}"
+
+        - name: "{{ recipe_name }}: Validate access token."
+          debug:
+            msg: "Authentication completed successfully."
+          failed_when:
+            access_token is not defined or
+            access_token | length == 0
+
+        # =====================================================
+        # 2. Read infra configuration
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Read infra payload."
+          set_fact:
+            infra_payload_data: "{{ lookup('file', infra_payload) | from_json }}"
+
+        - name: "{{ recipe_name }}: Compute expected NISD count from infra payload."
+          set_fact:
+            expected_nisd_count: >-
+              {{
+                infra_payload_data
+                | json_query('pdus[].racks[].hypervisors[].devices[].partitions[].nisd.id')
+                | length
+              }}
+
+        - name: "{{ recipe_name }}: Print allocation matrix."
+          debug:
+            msg:
+              - "Concurrent allocations to fire: {{ allocation_matrix | length }}"
+              - "{{ allocation_matrix }}"
+
+        # =====================================================
+        # 3. Create infrastructure
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=infra_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print infrastructure response."
+          debug:
+            var: infra_result
+
+        - name: "{{ recipe_name }}: Validate infrastructure response."
+          debug:
+            msg: "Infrastructure was created successfully."
+          failed_when:
+            not (
+              infra_result.data.success
+              | default(infra_result.data.success)
+              | default(false)
+              | bool
+            )
+
+        # =====================================================
+        # 4. Capture baseline NISD capacity (step 2 of spec)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Fetch baseline NISD resources."
+          set_fact:
+            baseline_nisd_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_resource',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={
+                    'type': 'nisd'
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store baseline NISD resources."
+          set_fact:
+            baseline_nisd_resources: >-
+              {{
+                baseline_nisd_result.data.resources
+                | default(baseline_nisd_result.resources)
+                | default([])
+              }}
+
+        - name: "{{ recipe_name }}: Validate NISDs are available."
+          debug:
+            msg: "Number of NISDs: {{ baseline_nisd_resources | length }}"
+          failed_when:
+            baseline_nisd_resources | length == 0
+
+        - name: "{{ recipe_name }}: Validate NISD count matches infra configuration."
+          debug:
+            msg:
+              - "Expected NISDs: {{ expected_nisd_count }}"
+              - "Actual NISDs: {{ baseline_nisd_resources | length }}"
+          failed_when:
+            baseline_nisd_resources | length != expected_nisd_count | int
+
+        - name: "{{ recipe_name }}: Compute baseline total available capacity."
+          set_fact:
+            baseline_total_available: >-
+              {{
+                baseline_nisd_resources
+                | map(attribute='available_size')
+                | map('int')
+                | sum
+              }}
+
+        # =====================================================
+        # 5. Build NISD failure-domain map
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Initialize NISD rack map."
+          set_fact:
+            nisd_rack_map: {}
+
+        - name: "{{ recipe_name }}: Build NISD rack map."
+          set_fact:
+            nisd_rack_map: >-
+              {{
+                nisd_rack_map
+                | combine({
+                    item.id | string:
+                      item.fd_rack_id | default('')
+                  })
+              }}
+          loop: "{{ baseline_nisd_resources }}"
+          loop_control:
+            label: "{{ item.id }}"
+
+        # =====================================================
+        # 6. Fire concurrent VDEV creation requests (async, poll=0)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Fire concurrent VDEV creation requests."
+          uri:
+            url: "{{ api_base_url }}/api/vdev"
+            method: POST
+            headers:
+              Content-Type: "application/json"
+              Authorization: "Bearer {{ access_token }}"
+            body_format: json
+            body:
+              size_bytes: "{{ item.size_bytes }}"
+              num_replicas: "{{ item.num_replicas }}"
+            status_code: 200
+          loop: "{{ allocation_matrix }}"
+          loop_control:
+            label: "{{ item.size_bytes }}/{{ item.num_replicas }}"
+          async: "{{ vdev_async_timeout }}"
+          poll: 0
+          register: vdev_async_launch
+
+        - name: "{{ recipe_name }}: Validate all allocation jobs were launched."
+          debug:
+            msg: "Launched {{ vdev_async_launch.results | length }} async VDEV allocation jobs."
+          failed_when:
+            vdev_async_launch.results | length != allocation_matrix | length
+
+        # =====================================================
+        # 7. Wait for allocation completion (step 4 of spec)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Wait for all async VDEV allocation jobs to complete."
+          async_status:
+            jid: "{{ item.ansible_job_id }}"
+          loop: "{{ vdev_async_launch.results }}"
+          loop_control:
+            label: "{{ item.item.size_bytes }}/{{ item.item.num_replicas }}"
+          register: vdev_async_poll
+          until: vdev_async_poll.finished | default(false) | bool
+          retries: "{{ vdev_async_poll_retries }}"
+          delay: "{{ vdev_async_poll_delay }}"
+
+        - name: "{{ recipe_name }}: Build allocation results list."
+          set_fact:
+            vdev_allocations: >-
+              {{
+                vdev_allocations | default([]) + [{
+                  'requested_size_bytes': item.item.item.size_bytes | int,
+                  'requested_num_replicas': item.item.item.num_replicas | int,
+                  'finished': item.finished | default(false) | bool,
+                  'status_code': item.status | default(0) | int,
+                  'success': item.json.success | default(false) | bool,
+                  'vdev_id': item.json.vdev_id | default(''),
+                  'num_chunks': item.json.num_chunks | default(0) | int
+                }]
+              }}
+          loop: "{{ vdev_async_poll.results }}"
+          loop_control:
+            label: "{{ item.item.item.size_bytes }}/{{ item.item.item.num_replicas }}"
+
+        - name: "{{ recipe_name }}: Print allocation results."
+          debug:
+            var: vdev_allocations
+
+        # =====================================================
+        # 8. No-partial-commit / per-job success validation
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Validate every async allocation fully succeeded."
+          vars:
+            job: "{{ item }}"
+          debug:
+            msg:
+              - "Requested: {{ job.requested_size_bytes }} bytes, replicas={{ job.requested_num_replicas }}"
+              - "vdev_id: {{ job.vdev_id }}"
+          failed_when:
+            not job.finished or
+            job.status_code != 200 or
+            not job.success or
+            job.vdev_id | length == 0
+          loop: "{{ vdev_allocations }}"
+          loop_control:
+            label: "{{ item.requested_size_bytes }}/{{ item.requested_num_replicas }}"
+
+        # =====================================================
+        # 9. Validate returned VDEV IDs are unique (step 5 of spec)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Extract allocated VDEV IDs."
+          set_fact:
+            allocated_vdev_ids: >-
+              {{
+                vdev_allocations
+                | map(attribute='vdev_id')
+                | list
+              }}
+
+        - name: "{{ recipe_name }}: Validate allocated VDEV UUID uniqueness."
+          debug:
+            msg:
+              - "Allocated VDEV IDs: {{ allocated_vdev_ids }}"
+              - "Total VDEVs created: {{ allocated_vdev_ids | length }}"
+          failed_when:
+            allocated_vdev_ids | unique | length != allocated_vdev_ids | length
+
+        - name: "{{ recipe_name }}: Validate expected total VDEV count."
+          debug:
+            msg: "Created {{ vdev_allocations | length }} VDEVs from {{ allocation_matrix | length }} requested."
+          failed_when:
+            vdev_allocations | length != allocation_matrix | length
+
+        # =====================================================
+        # 10. Fetch chunk mappings for every VDEV (step 6 of spec)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Fetch chunk mappings for all successful allocations."
+          set_fact:
+            allocation_chunk_results: >-
+              {{
+                allocation_chunk_results | default([]) + [{
+                  'vdev_id': item.vdev_id,
+                  'requested_size_bytes': item.requested_size_bytes,
+                  'requested_num_replicas': item.requested_num_replicas,
+                  'num_chunks': item.num_chunks,
+                  'chunks_result': lookup(
+                    'tidb_api', 'get_chunks',
+                    base_url=api_base_url,
+                    token=access_token,
+                    params={'vdev_id': item.vdev_id, 'limit': chunk_page_limit}
+                  )
+                }]
+              }}
+          loop: "{{ vdev_allocations }}"
+          loop_control:
+            label: "{{ item.vdev_id }}"
+
+        - name: "{{ recipe_name }}: Validate chunk mapping integrity per VDEV."
+          debug:
+            msg:
+              - "VDEV: {{ item.vdev_id }}"
+              - "Expected chunks: {{ item.num_chunks }}"
+              - "Fetched chunks: {{ item.chunks_result.chunks | length }}"
+          failed_when:
+            item.chunks_result.chunks | length != item.num_chunks | int
+          loop: "{{ allocation_chunk_results }}"
+          loop_control:
+            label: "{{ item.vdev_id }}"
+
+        # =====================================================
+        # 11. Per-VDEV invariant validation (step 7 of spec)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Validate replica count, duplicate targets, and anti-affinity per chunk."
+          vars:
+            chunk: "{{ item.1 }}"
+            expected_replica_count: "{{ item.0.requested_num_replicas }}"
+            replica_domains: "{{ chunk.nisd_ids | map('extract', nisd_rack_map) | list }}"
+          debug:
+            msg:
+              - "VDEV: {{ item.0.vdev_id }}"
+              - "Chunk: {{ chunk.chunk_idx }}"
+              - "Replica NISDs: {{ chunk.nisd_ids }}"
+              - "Replica failure domains: {{ replica_domains }}"
+          failed_when:
+            chunk.nisd_ids | length != expected_replica_count | int or
+            chunk.nisd_ids | unique | length != chunk.nisd_ids | length or
+            replica_domains | unique | length != expected_replica_count | int
+          loop: "{{ allocation_chunk_results | subelements('chunks_result.chunks') }}"
+          loop_control:
+            label: "{{ item.0.vdev_id }}:{{ item.1.chunk_idx }}"
+
+        # =====================================================
+        # 12. Fetch post-run NISD state (step 8 of spec)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Fetch final NISD resources."
+          set_fact:
+            final_nisd_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_resource',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={
+                    'type': 'nisd'
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store final NISD resources."
+          set_fact:
+            final_nisd_resources: >-
+              {{
+                final_nisd_result.data.resources
+                | default(final_nisd_result.resources)
+                | default([])
+              }}
+
+        - name: "{{ recipe_name }}: Validate NISD capacity safety (post-run)."
+          vars:
+            total_size: "{{ item.total_size | int }}"
+            available_size: "{{ item.available_size | int }}"
+            used_capacity: >-
+              {{
+                item.total_size | int -
+                item.available_size | int
+              }}
+          debug:
+            msg:
+              - "NISD: {{ item.id }}"
+              - "Total size: {{ total_size }}"
+              - "Available size: {{ available_size }}"
+              - "Used capacity: {{ used_capacity }}"
+          failed_when:
+            total_size | int < 0 or
+            available_size | int < 0 or
+            available_size | int > total_size | int or
+            used_capacity | int < 0 or
+            used_capacity | int > total_size | int
+          loop: "{{ final_nisd_resources }}"
+          loop_control:
+            label: "{{ item.id }}"
+
+        # =====================================================
+        # 13. Validate global space accounting (step 9 of spec)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Compute final total available capacity."
+          set_fact:
+            post_total_available: >-
+              {{
+                final_nisd_resources
+                | map(attribute='available_size')
+                | map('int')
+                | sum
+              }}
+
+        - name: "{{ recipe_name }}: Compute total requested space."
+          set_fact:
+            total_requested_bytes: >-
+              {{
+                vdev_allocations
+                | map(attribute='requested_size_bytes')
+                | map('int')
+                | sum
+              }}
+
+        - name: "{{ recipe_name }}: Validate cumulative space accounting."
+          vars:
+            consumed_space: "{{ baseline_total_available | int - post_total_available | int }}"
+          debug:
+            msg:
+              - "Baseline total available: {{ baseline_total_available }}"
+              - "Post-run total available: {{ post_total_available }}"
+              - "Consumed space: {{ consumed_space }}"
+              - "Total requested bytes: {{ total_requested_bytes }}"
+          failed_when:
+            consumed_space | int != total_requested_bytes | int
+
+        # =====================================================
+        # 14. Final result
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Print parallel allocation summary."
+          debug:
+            msg:
+              - "Concurrent allocation requests fired: {{ allocation_matrix | length }}"
+              - "Successful allocations: {{ vdev_allocations | length }}"
+              - "Unique VDEV IDs: {{ allocated_vdev_ids | unique | length }}"
+              - "Total requested bytes: {{ total_requested_bytes }}"
+              - "Total consumed bytes: {{ baseline_total_available | int - post_total_available | int }}"
+              - "Parallel allocation validation passed."
+
+      rescue:
+
+        - name: "{{ recipe_name }}: Print failure context."
+          debug:
+            msg:
+              - "Parallel VDEV allocation validation failed."
+              - "Successful allocations: {{ vdev_allocations | default([]) | length }}"
+              - "Allocation matrix size: {{ allocation_matrix | length }}"
+
+        - name: "{{ recipe_name }}: Fail recipe."
+          fail:
+            msg: "TiDB parallel allocation validation failed."
