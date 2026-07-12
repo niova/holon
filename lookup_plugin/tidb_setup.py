@@ -22,7 +22,8 @@ from datetime import datetime
 def docker_setup(cluster_params):
     """Tear down existing stack, start Docker stack, and collect logs."""
 
-    repo_path = "/home/himani/mdsvc-tidb"
+    workspace_dir = os.getenv('NIOVA_WORKSPACE')
+    repo_path = "%s/mdsvc-tidb" % workspace_dir
 
     base_dir = cluster_params['base_dir']
     app_name = cluster_params['app_type']
@@ -95,7 +96,8 @@ def docker_setup(cluster_params):
 def manual_setup(cluster_params):
     """Start TiDB manually using tiup playground and setup mdsvc schema."""
 
-    repo_path = "/home/himani/mdsvc-tidb"
+    workspace_dir = os.getenv('NIOVA_WORKSPACE')
+    repo_path = "%s/mdsvc-tidb" % workspace_dir
 
     base_dir = cluster_params['base_dir']
     app_name = cluster_params['app_type']

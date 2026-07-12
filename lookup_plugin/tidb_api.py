@@ -7,7 +7,6 @@ import requests
 import subprocess
 from datetime import datetime
 
-
 def load_payload(file_path=None, body=None):
     if file_path:
         if not os.path.exists(file_path):
@@ -23,11 +22,35 @@ def load_payload(file_path=None, body=None):
 
     return None
 
+def get_log_file(variables, log_dir=None):
+    """
+    Build the API log path using the directory:
 
-def get_log_file(log_dir):
-    os.makedirs(log_dir, exist_ok=True)
-    return os.path.join(log_dir, "mdsvc_tidb_api.log")
+        <base_dir>/<raft_uuid>/<app_name>_api_log.txt
+    """
 
+    cluster_params = variables.get("ClusterParams", {})
+
+    base_dir = cluster_params.get("base_dir")
+    raft_uuid = cluster_params.get("raft_uuid")
+    app_name = cluster_params.get("app_type", "tidb")
+
+    if log_dir:
+        resolved_log_dir = os.path.abspath(os.path.expanduser(log_dir))
+    elif base_dir and raft_uuid:
+        resolved_log_dir = os.path.join(
+            os.path.expanduser(str(base_dir)),
+            str(raft_uuid),
+        )
+    else:
+        resolved_log_dir = os.path.abspath("./logs")
+
+    os.makedirs(resolved_log_dir, exist_ok=True)
+
+    return os.path.join(
+        resolved_log_dir,
+        f"{app_name}_api_log.txt",
+    )
 
 def write_log(log_file, method, url, payload, status, response_data):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -47,18 +70,48 @@ def write_log(log_file, method, url, payload, status, response_data):
         logf.write(json.dumps(response_data, indent=2))
         logf.write("\n")
 
-
-def parse_response(response):
+def parse_response(response, log_file=None, method=None, url=None, payload=None):
     try:
         data = response.json()
-    except Exception:
-        raise AnsibleError(f"Invalid JSON response: {response.text}")
+    except ValueError:
+        data = {
+            "raw_response": response.text,
+        }
+
+        if log_file:
+            write_log(
+                log_file,
+                method or response.request.method,
+                url or response.url,
+                payload,
+                response.status_code,
+                data,
+            )
+
+        raise AnsibleError(
+            f"Invalid JSON response from {response.url}. "
+            f"Status: {response.status_code}. "
+            f"Response: {response.text}. "
+            f"Check log: {log_file}"
+        )
 
     if response.status_code not in [200, 201]:
-        raise AnsibleError(f"API failed [{response.status_code}]: {data}")
+        if log_file:
+            write_log(
+                log_file,
+                method or response.request.method,
+                url or response.url,
+                payload,
+                response.status_code,
+                data,
+            )
+
+        raise AnsibleError(
+            f"API failed [{response.status_code}]: {data}. "
+            f"Check log: {log_file}"
+        )
 
     return data
-
 
 def login(base_url, username, password, log_file, timeout):
     payload = {
@@ -68,14 +121,23 @@ def login(base_url, username, password, log_file, timeout):
 
     url = f"{base_url}/users/login"
 
-    response = requests.post(
-        url,
-        json=payload,
+    response = perform_request(
+        method="POST",
+        url=url,
+        payload=payload,
+        params=None,
         headers={"Content-Type": "application/json"},
         timeout=timeout,
+        log_file=log_file,
     )
 
-    data = parse_response(response)
+    data = parse_response(
+        response,
+        log_file=log_file,
+        method="POST",
+        url=url,
+        payload=payload,
+    )
 
     write_log(
         log_file,
@@ -93,7 +155,6 @@ def login(base_url, username, password, log_file, timeout):
 
     return token
 
-
 def make_headers(token=None, extra_headers=None):
     headers = {
         "Content-Type": "application/json",
@@ -107,45 +168,44 @@ def make_headers(token=None, extra_headers=None):
 
     return headers
 
-
-def perform_request(method, url, payload, params, headers, timeout):
-    if method == "POST":
-        return requests.post(
-            url,
-            json=payload,
+def perform_request(
+    method,
+    url,
+    payload,
+    params,
+    headers,
+    timeout,
+    log_file,
+):
+    try:
+        response = requests.request(
+            method=method,
+            url=url,
+            json=payload if method in ["POST", "PUT", "DELETE"] else None,
             params=params,
             headers=headers,
             timeout=timeout,
         )
 
-    if method == "GET":
-        return requests.get(
-            url,
-            params=params,
-            headers=headers,
-            timeout=timeout,
+        return response
+
+    except requests.exceptions.RequestException as exc:
+        write_log(
+            log_file=log_file,
+            method=method,
+            url=url,
+            payload=payload,
+            status="REQUEST_FAILED",
+            response_data={
+                "error": str(exc),
+                "exception_type": type(exc).__name__,
+            },
         )
 
-    if method == "PUT":
-        return requests.put(
-            url,
-            json=payload,
-            params=params,
-            headers=headers,
-            timeout=timeout,
+        raise AnsibleError(
+            f"{method} request to {url} failed: {exc}. "
+            f"Check log: {log_file}"
         )
-
-    if method == "DELETE":
-        return requests.delete(
-            url,
-            json=payload,
-            params=params,
-            headers=headers,
-            timeout=timeout,
-        )
-
-    raise AnsibleError(f"Unsupported method: {method}")
-
 
 def extract_fields(data):
     extracted = {}
@@ -173,7 +233,6 @@ def extract_fields(data):
 
     return extracted
 
-
 def paginated_chunks(api_params):
     all_chunks = []
     page_count = 0
@@ -190,9 +249,16 @@ def paginated_chunks(api_params):
             params,
             api_params["headers"],
             api_params["timeout"],
+            api_params["log_file"],
         )
 
-        data = parse_response(response)
+        data = parse_response(
+            response,
+            log_file=api_params["log_file"],
+            method=api_params["method"],
+            url=api_params["url"],
+            payload=api_params["payload"],
+        )
 
         write_log(
             api_params["log_file"],
@@ -213,7 +279,9 @@ def paginated_chunks(api_params):
 
         if next_start is None:
             raise AnsibleError(
-                "Pagination error: has_more=true but next_start_chunk_idx missing"
+                "Pagination error: has_more=true but "
+                "next_start_chunk_idx missing. "
+                f"Check log: {api_params['log_file']}"
             )
 
         params["start_chunk_idx"] = next_start
@@ -230,7 +298,6 @@ def paginated_chunks(api_params):
 
     result.update(extract_fields(data))
     return result
-
 
 def run_schema(repo_path, log_file, mysql_env):
     schema_script = os.path.join(repo_path, "scripts", "run_schema.sh")
@@ -271,7 +338,6 @@ def run_schema(repo_path, log_file, mysql_env):
         "log_file": log_file,
     }
 
-
 class LookupModule(LookupBase):
 
     def run(self, terms, variables=None, **kwargs):
@@ -280,7 +346,7 @@ class LookupModule(LookupBase):
 
         if len(terms) < 1:
             raise AnsibleError(
-                "Usage: lookup('mdsvc_tidb_api', ACTION, ...)"
+                "Usage: lookup('tidb_api', ACTION, ...)"
             )
 
         action = terms[0]
@@ -290,12 +356,11 @@ class LookupModule(LookupBase):
             os.getenv("MDSVC_API_URL", "http://localhost:8081"),
         )
 
-        log_dir = kwargs.get(
-            "log_dir",
-            variables.get("log_dir", "./logs"),
+        log_dir = kwargs.get("log_dir")
+        log_file = get_log_file(
+            variables=variables,
+            log_dir=log_dir,
         )
-
-        log_file = get_log_file(log_dir)
 
         timeout = kwargs.get("timeout", 10)
 
@@ -315,14 +380,42 @@ class LookupModule(LookupBase):
 
         token = kwargs.get("token")
 
+        workspace_dir = os.getenv("NIOVA_WORKSPACE")
+
+        if workspace_dir:
+            default_repo_path = os.path.join(
+                workspace_dir,
+                "mdsvc-tidb",
+            )
+        else:
+            default_repo_path = os.path.expanduser(
+                "~/mdsvc-tidb"
+            )
+
         if action == "create_schema":
-            repo_path = kwargs.get("repo_path", "/home/himani/mdsvc-tidb")
+            repo_path = kwargs.get(
+                "repo_path",
+                default_repo_path,
+            )
+
+            if not os.path.isdir(repo_path):
+                raise AnsibleError(
+                    f"mdsvc-tidb repository directory not found: {repo_path}"
+                )
 
             mysql_env = {
-                "MDSVC_MYSQL_HOST": str(kwargs.get("mysql_host", "127.0.0.1")),
-                "MDSVC_MYSQL_PORT": str(kwargs.get("mysql_port", "4000")),
-                "MDSVC_MYSQL_USER": str(kwargs.get("mysql_user", "root")),
-                "MDSVC_MYSQL_PASSWORD": str(kwargs.get("mysql_password", "")),
+                "MDSVC_MYSQL_HOST": str(
+                    kwargs.get("mysql_host", "127.0.0.1")
+                ),
+                "MDSVC_MYSQL_PORT": str(
+                    kwargs.get("mysql_port", "4000")
+                ),
+                "MDSVC_MYSQL_USER": str(
+                    kwargs.get("mysql_user", "root")
+                ),
+                "MDSVC_MYSQL_PASSWORD": str(
+                    kwargs.get("mysql_password", "")
+                ),
             }
 
             return [run_schema(repo_path, log_file, mysql_env)]
@@ -404,9 +497,16 @@ class LookupModule(LookupBase):
             api_params["params"],
             api_params["headers"],
             api_params["timeout"],
+            api_params["log_file"],
         )
 
-        data = parse_response(response)
+        data = parse_response(
+            response,
+            log_file=log_file,
+            method=method,
+            url=api_params["url"],
+            payload=payload,
+        )
 
         write_log(
             log_file,

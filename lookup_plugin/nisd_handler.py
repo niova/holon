@@ -595,14 +595,17 @@ def start_niova_block_test(cluster_params, input_values):
     if not os.path.exists(gossip_nodes_path):
         gossip_nodes_path = os.path.join(raft_dir, "gossipNodes")
 
+    workspace_dir = os.getenv('NIOVA_WORKSPACE')
+    gossip_path = "%s/mdsvc-tidb/configs/gossipNodes" % workspace_dir
+
     # Authentication environment variables
     env = os.environ.copy()
-    # os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
-    # os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
-    # os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
-    # os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
-    os.environ['NIOVA_BLOCK_AUTH_ENABLED']="false" 
-    os.environ['NIOVA_GOSSIP_PATH']="/home/runner/work/niova-block/niova-block/mdsvc-tidb/configs/gossipNodes" 
+    os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
+    os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
+    os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
+    os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
+    os.environ['NIOVA_BLOCK_AUTH_ENABLED']="true" 
+    os.environ['NIOVA_GOSSIP_PATH'] = gossip_path
     os.environ['NIOVA_GOSSIP_KEY']="dummy" 
     os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']="256" 
     os.environ['NIOVA_BLOCK_PROXY_TAG']="mdsvc-tidb" 

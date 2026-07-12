@@ -1,15 +1,12 @@
-- name: "tidb_setup"
+- name: "tidb_setup.yml"
   hosts: localhost
   connection: local
 
   vars:
     recipe_name: "tidb_setup"
-    log_dir: "{{ dir_path | default('./logs') }}"
     api_base_url: "http://localhost:8081"
-
-    infra_payload: "./examples/create_infra.json"
-    vdev_payload: "./examples/create_vdev.json"
-
+    infra_payload: "./examples/create_sample_infra.json"
+    vdev_payload: "./examples/create_sample_vdev.json"
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
 
   tasks:
@@ -55,8 +52,7 @@
                   'login',
                   base_url=api_base_url,
                   username='admin',
-                  password='admin',
-                  log_dir=log_dir
+                  password='admin'
                 )
               }}
 
@@ -77,8 +73,7 @@
                   'create_infra',
                   base_url=api_base_url,
                   token=login_result.access_token,
-                  file=infra_payload,
-                  log_dir=log_dir
+                  file=infra_payload
                 )
               }}
 
@@ -146,8 +141,7 @@
                   'create_vdev',
                   base_url=api_base_url,
                   token=login_result.access_token,
-                  file=vdev_payload,
-                  log_dir=log_dir
+                  file=vdev_payload
                 )
               }}
 
