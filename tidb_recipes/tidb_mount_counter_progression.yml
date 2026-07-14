@@ -118,13 +118,12 @@
 
         - name: "{{ recipe_name }}: Start NISD."
           vars:
-            input_param: {
-              'nisd_device_path': '{{ nisd_dev_path.msg[0] }}',
-              'nisd_uuid': '{{ nisd_uuid }}',
-              'peer_port': '13000',
-              'client_port': '13001',
-              'enable_auth': 1,
-            }
+            input_param:
+              nisd_device_path: "{{ nisd_dev_path.msg[0] }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "13000"
+              client_port: "13001"
+              enable_auth: 1
           debug:
             msg:
               - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
@@ -158,7 +157,7 @@
           debug:
             msg: "Created VDEV UUID: {{ vdev_uuid }}"
 
-        - name: "{{ recipe_name }}: Wait before starting niova-block-test."
+        - name: "{{ recipe_name }}: Wait before starting niova-ublk."
           pause:
             seconds: 25
 
@@ -166,31 +165,41 @@
         # 8. Start niova-block-test
         # ----------------------------------------
 
-        - name: "{{ recipe_name }}: Start niova-block-test process."
+        - name: "{{ recipe_name }}: Start ublk device"
           vars:
             input_param: {
-                 'enable_auth': 1,
-                 'cp_mode': 1,
-                 'auth_username': 'admin',
-                 'auth_secret': 'admin',
-                 'nisd_uuid_to_write' : 'unix:{{ nisd_uuid }}',
-                 'vdev' : '{{ vdev_id }}',
-                 'client_uuid': '{{ client_id }}',
-                 'rd_op_ratio': '0',
-                 'num_ops': '50',
-                 'random_seed_pt': '123',
-                 'request_size_in_bytes': '1',
-                 'queue_depth' : '0',
-                 'integrity_check': False,
-                 'sequential_writes': False,
-                 'blocking_process': False
-            }    
-          set_fact:
-            nblock_wr: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
-
-        - name: "{{ recipe_name }}: Debug niova-block-test result."
+              'enable_auth': 1,
+              'cp_mode': 1,
+              'user_name': 'admin',
+              'user_secret': 'admin',
+              'nisd_uuid': '{{ nisd_uuid }}',
+              'vdev_uuid': '{{ vdev_id }}'
+            }
           debug:
-            msg: "{{ nblock_wr }}"
+            msg:
+              - "{{ lookup('nisd_handler', 'run_ublk_device', input_param) }}"
+          register: ublk_uuid
+
+        - name: "{{ recipe_name }}: Debug niova-ublk result."
+          debug:
+            msg: "{{ ublk_uuid }}"
+
+        - name: "{{ recipe_name }}: Get infra."
+          set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=infra_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Debug infra response."
+          debug:
+            var: infra_result
 
         - name: "{{ recipe_name }}: Validate niova-block-test return code."
           debug:

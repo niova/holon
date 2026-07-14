@@ -1,0 +1,54 @@
+- name: "tidb_setup"
+  hosts: localhost
+  connection: local
+  vars:
+    recipe_name: "tidb_setup"
+    api_base_url: "http://localhost:8081"
+    infra_payload: "/home/himani/mdsvc-tidb/examples/e2e.json"
+    vdev_payload: "/home/himani/mdsvc-tidb/examples/create_vdev_100gb_1replica.json"
+
+  tasks:
+    - block:
+
+        # Check for the app_type
+        - name: "{{ recipe_name }}: Check if the app_type is 'tidb'."
+          vars:
+            app_type: "{{ app_type }}"
+          debug:
+            msg: "app_type is: {{ app_type }}"
+          failed_when:
+            (app_type != "tidb")
+
+        # -----------------------------
+        # 1. Create Infra
+        # -----------------------------
+
+        - name: Create infra
+          set_fact:
+            infra_result: "{{ lookup('tidb_api',
+                'POST',
+                '/infra',
+                file=infra_payload,
+                base_url=api_base_url) }}"
+
+        - name: Debug infra response
+          debug:
+            var: infra_result
+
+        - name: Fetch all nisds.
+          set_fact:
+            nisd_info: >-
+              {{
+                lookup('tidb_api', 'GET', '/resource',
+                  params={
+                    'type': nisd
+                  }
+                )
+              }}
+            
+        - name: "{{ recipe_name }}: DEBUG."
+          debug:
+            msg: "{{ nisd_info }}"
+
+        - name: Create VDEVs sequentially.
+          

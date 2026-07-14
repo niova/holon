@@ -155,10 +155,11 @@ def replace_last_path_segment(path, old_segment, new_segment):
         return path
 
 # start a ublk device of size 8GB
-def run_niova_ublk(cluster_params, cntl_uuid):
+def run_niova_ublk(cluster_params, input_values):
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']
     binary_dir = os.getenv('NIOVA_BIN_PATH')
+    raft_dir = os.path.join(base_dir, raft_uuid)
     
     #format and run the niova-block-ctl
     bin_path = os.path.join(binary_dir, NIOVA_BIN_DIR, "niova-ublk")
@@ -166,9 +167,17 @@ def run_niova_ublk(cluster_params, cntl_uuid):
     app_name = cluster_params['app_type']
     base_path = "%s/%s" % (base_dir, raft_uuid)
 
-    # generate ublk uuid
-    genericcmdobj = GenericCmds()
-    ublk_uuid = genericcmdobj.generate_uuid()
+    cp_mode = input_values['cp_mode']
+    enable_auth = input_values['enable_auth']
+    nisd_uuid = input_values['nisd_uuid']
+    vdev_uuid = input_values['vdev_uuid']
+    
+    # generate ublk uuid if not cp_mode
+    if cp_mode == 0:
+        genericcmdobj = GenericCmds()
+        ublk_uuid = genericcmdobj.generate_uuid()
+    else:
+        ublk_uuid = vdev_uuid
 
     # Prepare path for log file.
     log_file = "%s/%s/ublk_%s_log.txt" % (base_dir, raft_uuid, ublk_uuid)
@@ -181,34 +190,96 @@ def run_niova_ublk(cluster_params, cntl_uuid):
 
     niova_lib_path = os.path.normpath(f'{binary_dir}/lib')
     default_lib_path = "/usr/local/lib"
-    ld_library_path = f"{niova_lib_path}:{default_lib_path}:{os.environ.get('LD_LIBRARY_PATH', '')}"
+    ld_library_path = f"{os.environ.get('LD_LIBRARY_PATH', '')}"
     os.environ["LD_LIBRARY_PATH"] = ld_library_path
     logger.info(f"LD_LIBRARY_PATH set to: {os.environ['LD_LIBRARY_PATH']}")
 
-    command = [
-        bin_path,
-        "-s", "8589934592",
-        "-t", cntl_uuid,
-        "-v", ublk_uuid,
-        "-u", ublk_uuid,
-        "-q", "128",
-        "-b", "1048576"
-    ]
+    # Resolve gossipNodes file path
+    gossip_nodes_path = os.path.join(raft_dir, "gossipNodes.json")
+    if not os.path.exists(gossip_nodes_path):
+        gossip_nodes_path = os.path.join(raft_dir, "gossipNodes")
+
+    os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
+    os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}"
+    os.environ['NIOVA_LOCAL_CTL_SVC_DIR'] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
+
+    os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
+    os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
+    os.environ["NIOVA_LOG_LEVEL"] = "5"
+
+    if enable_auth == 1:
+        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
+        os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
+        os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
+        os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['user_name']
+        os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['user_secret']
+
+    if cp_mode == 1:
+        command = [
+            "sudo",
+            "-E",
+            bin_path,
+            "-t", "cp",
+            "-v", vdev_uuid,
+            "-q", "128",
+            "-b", "1048576",
+            "-T"
+        ]
+
+    else:
+        command = [
+            bin_path,
+            "-s", "8589934592",
+            "-t", nisd_uuid,
+            "-v", ublk_uuid,
+            "-u", ublk_uuid,
+            "-q", "128",
+            "-b", "1048576"
+        ]
     
     # Combine the environment variable and command into a single string
     full_command = " ".join(str(item) for item in command)
     logger.info(f"ublk command: {full_command}")
     try:
-        # Run the command
-        process = subprocess.Popen(full_command, stdout=fp, stderr=fp, shell=True, executable="/bin/bash",cwd=base_path)
-        logger.info("Command executed successfully.")
+        process = subprocess.Popen(
+            command,
+            stdout=fp,
+            stderr=fp,
+            cwd=base_path,
+            env=os.environ.copy()
+        )
+
+        logger.info(f"Launcher PID: {process.pid}")
+
+        time.sleep(1)
+
+        parent = psutil.Process(process.pid)
+        children = parent.children(recursive=True)
+
+        ublk_proc = None
+        for child in children:
+            cmdline = " ".join(child.cmdline())
+            if "niova-ublk" in cmdline:
+                ublk_proc = child
+                break
+
+        if ublk_proc is None:
+            raise RuntimeError(
+                f"Could not find niova-ublk child process for launcher PID {process.pid}"
+            )
+
+        pid = ublk_proc.pid
+        logger.info(f"Actual niova-ublk PID: {pid}")
+
     except Exception as e:
-        logger.error(f"An unexpected error occurred: {e}")
-    
+        logger.error(f"Failed to start niova-ublk: {e}")
+        fp.close()
+        raise
+
     recipe_conf = load_recipe_op_config(cluster_params)
 
-    pid = process.pid
     ps = psutil.Process(pid)
+    process_status = ps.status()
 
     if not "ublk_process" in recipe_conf:
         recipe_conf['ublk_process'] = {}
@@ -216,14 +287,21 @@ def run_niova_ublk(cluster_params, cntl_uuid):
     recipe_conf['ublk_process']['process_pid'] = pid
     recipe_conf['ublk_process']['process_type'] = "ublk_process"
     recipe_conf['ublk_process']['process_app_type'] = app_name
-    recipe_conf['ublk_process']['process_status'] = ps.status()
+    recipe_conf['ublk_process']['process_status'] = process_status
+
+    recipe_conf['ublk_process']['ublk_uuid'] = ublk_uuid
+    recipe_conf['ublk_process']['vdev_uuid'] = vdev_uuid
+    recipe_conf['ublk_process']['nisd_uuid'] = nisd_uuid
+    recipe_conf['ublk_process']['command'] = command
+    recipe_conf['ublk_process']['log_file'] = log_file
 
     genericcmdobj = GenericCmds()
     genericcmdobj.recipe_json_dump(recipe_conf)
 
     # Sync the log file so all the logs from run_niova_ublk gets written to log file.
-    os.fsync(fp)
-    return [ublk_uuid]
+    fp.flush()
+    os.fsync(fp.fileno())
+    return ublk_uuid
 
 # this method is similar to start_niova_block_ctl_process but the difference is it doesn't create the device internally
 def run_niova_block_ctl(cluster_params, input_value):
@@ -597,10 +675,8 @@ def start_niova_block_test(cluster_params, input_values):
 
     # Authentication environment variables
     env = os.environ.copy()
-    os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
-    os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
-    os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
-    os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
+    # os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
+    # os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
     os.environ['NIOVA_BLOCK_AUTH_ENABLED']="true" 
     os.environ['NIOVA_GOSSIP_PATH'] = gossip_path
     os.environ['NIOVA_GOSSIP_KEY']="dummy" 
@@ -725,8 +801,8 @@ class LookupModule(LookupBase):
         
         elif process_type == "run_ublk_device":
 
-            nisd_uuid = terms[1]
-            return [run_niova_ublk(cluster_params, nisd_uuid)]
+            ublk_uuid = run_niova_ublk(cluster_params, input_values)
+            return [ublk_uuid]
 
         elif process_type == "run_nisd":
             return [run_nisd_command(cluster_params, input_values)]
