@@ -1,54 +1,393 @@
-- name: "tidb_setup"
+- name: "tidb_sequential_allocation"
   hosts: localhost
   connection: local
+
   vars:
-    recipe_name: "tidb_setup"
+    recipe_name: "tidb_sequential_allocation"
+
     api_base_url: "http://localhost:8081"
-    infra_payload: "/home/himani/mdsvc-tidb/examples/e2e.json"
-    vdev_payload: "/home/himani/mdsvc-tidb/examples/create_vdev_100gb_1replica.json"
+
+    infra_payload: "./examples/e2e.json"
+    vdev_payload: "./examples/create_vdev_100gb_1replica.json"
+
+    # Maximum number of sequential allocations to attempt.
+    allocation_iterations: 10
+
+    # Used internally by the get_chunks lookup.
+    chunk_page_limit: 4
 
   tasks:
     - block:
 
-        # Check for the app_type
-        - name: "{{ recipe_name }}: Check if the app_type is 'tidb'."
-          vars:
-            app_type: "{{ app_type }}"
+        # =====================================================
+        # 0. Validate application type
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Check if app_type is tidb."
           debug:
             msg: "app_type is: {{ app_type }}"
-          failed_when:
-            (app_type != "tidb")
+          failed_when: app_type != "tidb"
 
-        # -----------------------------
-        # 1. Create Infra
-        # -----------------------------
+        # =====================================================
+        # 1. Login
+        # =====================================================
 
-        - name: Create infra
+        - name: "{{ recipe_name }}: Login to mdsvc-api."
           set_fact:
-            infra_result: "{{ lookup('tidb_api',
-                'POST',
-                '/infra',
-                file=infra_payload,
-                base_url=api_base_url) }}"
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username='admin',
+                  password='admin'
+                )
+              }}
 
-        - name: Debug infra response
+        - name: "{{ recipe_name }}: Store access token."
+          set_fact:
+            access_token: "{{ login_result.access_token }}"
+
+        - name: "{{ recipe_name }}: Validate access token."
+          debug:
+            msg: "Authentication completed successfully."
+          failed_when:
+            access_token is not defined or
+            access_token | length == 0
+
+        # =====================================================
+        # 2. Read VDEV configuration
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Read VDEV payload."
+          set_fact:
+            vdev_payload_data: "{{ lookup('file', vdev_payload) | from_json }}"
+
+        - name: "{{ recipe_name }}: Store requested VDEV configuration."
+          set_fact:
+            requested_vdev_size: >-
+              {{
+                vdev_payload_data.size_bytes
+                | default(vdev_payload_data.size)
+                | int
+              }}
+            expected_replica_count: >-
+              {{
+                vdev_payload_data.num_replicas
+                | default(vdev_payload_data.replica_count)
+                | int
+              }}
+
+        - name: "{{ recipe_name }}: Print requested configuration."
+          debug:
+            msg:
+              - "Requested VDEV size: {{ requested_vdev_size }}"
+              - "Expected replica count: {{ expected_replica_count }}"
+              - "Maximum allocation attempts: {{ allocation_iterations }}"
+
+        - name: "{{ recipe_name }}: Validate requested configuration."
+          debug:
+            msg: "VDEV configuration is valid."
+          failed_when:
+            requested_vdev_size | int <= 0 or
+            expected_replica_count | int <= 0
+
+        # =====================================================
+        # 3. Create infrastructure
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=infra_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print infrastructure response."
           debug:
             var: infra_result
 
-        - name: Fetch all nisds.
+        - name: "{{ recipe_name }}: Validate infrastructure response."
+          debug:
+            msg: "Infrastructure was created successfully."
+          failed_when:
+            not (
+              infra_result.data.success
+              | default(infra_result.success)
+              | default(false)
+              | bool
+            )
+
+        # =====================================================
+        # 4. Fetch initial NISD state
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Fetch initial NISD resources."
           set_fact:
-            nisd_info: >-
+            initial_nisd_result: >-
               {{
-                lookup('tidb_api', 'GET', '/resource',
+                lookup(
+                  'tidb_api',
+                  'get_resource',
+                  base_url=api_base_url,
+                  token=access_token,
                   params={
-                    'type': nisd
+                    'type': 'nisd'
                   }
                 )
               }}
-            
-        - name: "{{ recipe_name }}: DEBUG."
-          debug:
-            msg: "{{ nisd_info }}"
 
-        - name: Create VDEVs sequentially.
-          
+        - name: "{{ recipe_name }}: Store initial NISD resources."
+          set_fact:
+            initial_nisd_resources: >-
+              {{
+                initial_nisd_result.data.resources
+                | default(initial_nisd_result.resources)
+                | default([])
+              }}
+
+        - name: "{{ recipe_name }}: Validate NISDs are available."
+          debug:
+            msg: "Number of NISDs: {{ initial_nisd_resources | length }}"
+          failed_when:
+            initial_nisd_resources | length == 0
+
+        # =====================================================
+        # 5. Build NISD failure-domain map
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Initialize NISD metadata maps."
+          set_fact:
+            nisd_rack_map: {}
+            initial_nisd_capacity_map: {}
+
+        - name: "{{ recipe_name }}: Build NISD rack map."
+          set_fact:
+            nisd_rack_map: >-
+              {{
+                nisd_rack_map
+                | combine({
+                    item.id | string:
+                      item.fd_rack_id | default('')
+                  })
+              }}
+          loop: "{{ initial_nisd_resources }}"
+          loop_control:
+            label: "{{ item.id }}"
+
+        - name: "{{ recipe_name }}: Build initial NISD capacity map."
+          set_fact:
+            initial_nisd_capacity_map: >-
+              {{
+                initial_nisd_capacity_map
+                | combine({
+                    item.id | string: {
+                      'total_size': item.total_size | int,
+                      'available_size': item.available_size | int
+                    }
+                  })
+              }}
+          loop: "{{ initial_nisd_resources }}"
+          loop_control:
+            label: "{{ item.id }}"
+
+        # =====================================================
+        # 6. Validate initial capacity state
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Validate initial NISD capacity."
+          vars:
+            total_size: "{{ item.total_size | int }}"
+            available_size: "{{ item.available_size | int }}"
+            used_capacity: >-
+              {{
+                item.total_size | int -
+                item.available_size | int
+              }}
+          debug:
+            msg:
+              - "NISD: {{ item.id }}"
+              - "Total size: {{ total_size }}"
+              - "Available size: {{ available_size }}"
+              - "Used capacity: {{ used_capacity }}"
+          failed_when:
+            total_size | int < 0 or
+            available_size | int < 0 or
+            available_size | int > total_size | int or
+            used_capacity | int > total_size | int
+          loop: "{{ initial_nisd_resources }}"
+          loop_control:
+            label: "{{ item.id }}"
+
+        # =====================================================
+        # 7. Initialize sequential allocation state
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Initialize allocation state."
+          set_fact:
+            successful_allocations: []
+            allocation_exhausted: false
+            allocation_failure: {}
+            previous_nisd_capacity_map: "{{ initial_nisd_capacity_map }}"
+
+        # =====================================================
+        # 8. Sequentially create and validate VDEVs
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Run sequential VDEV allocations."
+          include_tasks: tidb_sequential_allocation_iteration.yml
+          loop: "{{ range(0, allocation_iterations | int) | list }}"
+          loop_control:
+            loop_var: allocation_index
+            label: "allocation={{ allocation_index + 1 }}"
+          when: not allocation_exhausted | bool
+
+        # =====================================================
+        # 9. Validate allocation metadata
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Print successful allocations."
+          debug:
+            var: successful_allocations
+
+        - name: "{{ recipe_name }}: Extract allocated VDEV UUIDs."
+          set_fact:
+            allocated_vdev_ids: >-
+              {{
+                successful_allocations
+                | map(attribute='vdev_id')
+                | list
+              }}
+
+        - name: "{{ recipe_name }}: Validate allocated VDEV UUID uniqueness."
+          debug:
+            msg:
+              - "Allocated VDEV IDs: {{ allocated_vdev_ids }}"
+              - >-
+                Successful allocations:
+                {{ successful_allocations | length }}
+          failed_when:
+            allocated_vdev_ids | unique | length
+            != allocated_vdev_ids | length
+
+        - name: "{{ recipe_name }}: Validate at least one allocation succeeded."
+          debug:
+            msg: >-
+              {{ successful_allocations | length }}
+              VDEV allocation(s) completed successfully.
+          failed_when:
+            successful_allocations | length == 0
+
+        # =====================================================
+        # 10. Fetch final NISD capacity state
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Fetch final NISD resources."
+          set_fact:
+            final_nisd_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_resource',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={
+                    'type': 'nisd'
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store final NISD resources."
+          set_fact:
+            final_nisd_resources: >-
+              {{
+                final_nisd_result.data.resources
+                | default(final_nisd_result.resources)
+                | default([])
+              }}
+
+        # =====================================================
+        # 11. Validate final capacity safety
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Validate final NISD capacity."
+          vars:
+            total_size: "{{ item.total_size | int }}"
+            available_size: "{{ item.available_size | int }}"
+            used_capacity: >-
+              {{
+                item.total_size | int -
+                item.available_size | int
+              }}
+          debug:
+            msg:
+              - "NISD: {{ item.id }}"
+              - "Total size: {{ total_size }}"
+              - "Available size: {{ available_size }}"
+              - "Used capacity: {{ used_capacity }}"
+          failed_when:
+            total_size | int < 0 or
+            available_size | int < 0 or
+            available_size | int > total_size | int or
+            used_capacity | int < 0 or
+            used_capacity | int > total_size | int
+          loop: "{{ final_nisd_resources }}"
+          loop_control:
+            label: "{{ item.id }}"
+
+        # =====================================================
+        # 12. Final result
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Print sequential allocation summary."
+          debug:
+            msg:
+              - >-
+                Requested allocation attempts:
+                {{ allocation_iterations }}
+              - >-
+                Successful allocations:
+                {{ successful_allocations | length }}
+              - >-
+                Capacity exhausted:
+                {{ allocation_exhausted }}
+              - >-
+                Requested size per VDEV:
+                {{ requested_vdev_size }}
+              - >-
+                Replica count:
+                {{ expected_replica_count }}
+              - >-
+                Total logical VDEV capacity allocated:
+                {{
+                  successful_allocations | length
+                  * requested_vdev_size | int
+                }}
+              - "Sequential allocation validation passed."
+
+      rescue:
+
+        - name: "{{ recipe_name }}: Print failure context."
+          debug:
+            msg:
+              - "Sequential VDEV allocation validation failed."
+              - >-
+                Successful allocations:
+                {{ successful_allocations | default([]) | length }}
+              - >-
+                Capacity exhausted:
+                {{ allocation_exhausted | default(false) }}
+              - >-
+                Allocation failure:
+                {{ allocation_failure | default({}) }}
+
+        - name: "{{ recipe_name }}: Fail recipe."
+          fail:
+            msg: "TiDB sequential allocation validation failed."
