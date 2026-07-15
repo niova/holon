@@ -5,8 +5,13 @@
   vars:
     recipe_name: "tidb_mount_counter_progression_validation"
     api_base_url: "http://localhost:8081"
+<<<<<<< HEAD
     infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
     vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
+=======
+    infra_payload: "./examples/create_sample_infra.json"
+    vdev_payload: "./examples/create_sample_vdev.json"
+>>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
 
   tasks:
@@ -157,6 +162,7 @@
           debug:
             msg: "Created VDEV UUID: {{ vdev_uuid }}"
 
+<<<<<<< HEAD
         - name: "{{ recipe_name }}: Get mount counter before starting ublk."
           set_fact:
             nisd_result_before: >-
@@ -176,6 +182,8 @@
           debug:
             msg: "{{ nisd_result_before }}"
 
+=======
+>>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
         - name: "{{ recipe_name }}: Wait before starting niova-ublk."
           pause:
             seconds: 25
@@ -203,7 +211,11 @@
           debug:
             msg: "{{ ublk_uuid }}"
 
+<<<<<<< HEAD
         - name: "{{ recipe_name }}: Get mount counter after starting ublk."
+=======
+        - name: "{{ recipe_name }}: Get mount counter."
+>>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
           set_fact:
             nisd_result: >-
               {{
@@ -212,14 +224,20 @@
                   'mount_vdev',
                   base_url=api_base_url,
                   token=login_result.access_token,
+<<<<<<< HEAD
                   body={
                     'vdev_id': vdev_uuid
+=======
+                  params={
+                    'vdev_id': '{{ vdev_uuid }}'
+>>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
                   }
                 )
               }}
 
         - name: "{{ recipe_name }}: Print nisd result."
           debug:
+<<<<<<< HEAD
             msg: "{{ nisd_result }}"
 
         - name: "{{ recipe_name }}: Stop mdsvc-api server and TiDB playground."
@@ -234,3 +252,6 @@
         - name: "Recipe: {{ recipe_name }} failed"
           set_fact:
             terminate_recipe: true
+=======
+            msg: "{{ nisd_result }}"
+>>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
