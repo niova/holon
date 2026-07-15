@@ -184,7 +184,7 @@
           debug:
             msg: "{{ ublk_uuid }}"
 
-        - name: "{{ recipe_name }}: Get NISD resources."
+        - name: "{{ recipe_name }}: Get mount counter."
           set_fact:
             nisd_result: >-
               {{
