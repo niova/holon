@@ -1,9 +1,9 @@
-- name: "tidb_mount_counter_progression.yml"
+- name: "tidb_mount_counter_progression_validation.yml"
   hosts: localhost
   connection: local
 
   vars:
-    recipe_name: "tidb_mount_counter_progression"
+    recipe_name: "tidb_mount_counter_progression_validation"
     api_base_url: "http://localhost:8081"
     infra_payload: "./examples/create_sample_infra.json"
     vdev_payload: "./examples/create_sample_vdev.json"
