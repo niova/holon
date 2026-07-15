@@ -218,6 +218,13 @@ def extract_fields(data):
         "nisd_uuid",
         "resource_id",
         "access_token",
+        "mount_counter",
+        "last_mounted_at",
+        "ncp_status_code",
+        "parity_blk_cnt",
+        "redundancy",
+        "status",
+        "message",
     ]
 
     if isinstance(data, dict):
@@ -434,6 +441,7 @@ class LookupModule(LookupBase):
 
             "create_vdev": ("POST", "/api/vdev"),
             "get_vdev": ("GET", "/api/vdev"),
+            "mount_vdev": ("POST", "/api/vdev/mount"),
 
             "get_chunk": ("GET", "/api/chunk"),
             "get_chunks": ("GET", "/api/chunks"),

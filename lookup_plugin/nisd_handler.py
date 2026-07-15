@@ -203,9 +203,16 @@ def run_niova_ublk(cluster_params, input_values):
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}"
     os.environ['NIOVA_LOCAL_CTL_SVC_DIR'] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
 
-    os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
-    os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
-    os.environ["NIOVA_LOG_LEVEL"] = "5"
+    workspace_dir = os.getenv('NIOVA_WORKSPACE')
+    gossip_path = "%s/mdsvc-tidb/configs/gossipNodes" % workspace_dir
+
+    # os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
+    # os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
+    os.environ['NIOVA_GOSSIP_PATH'] = gossip_path
+    os.environ['NIOVA_GOSSIP_KEY']="dummy" 
+    os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']="256" 
+    os.environ['NIOVA_BLOCK_PROXY_TAG']="mdsvc-tidb" 
+    # os.environ["NIOVA_LOG_LEVEL"] = "5"
 
     if enable_auth == 1:
         os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
@@ -673,27 +680,9 @@ def start_niova_block_test(cluster_params, input_values):
     workspace_dir = os.getenv('NIOVA_WORKSPACE')
     gossip_path = "%s/mdsvc-tidb/configs/gossipNodes" % workspace_dir
 
-    # Authentication environment variables
-    env = os.environ.copy()
-    # os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
-    # os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
-    os.environ['NIOVA_BLOCK_AUTH_ENABLED']="true" 
-    os.environ['NIOVA_GOSSIP_PATH'] = gossip_path
-    os.environ['NIOVA_GOSSIP_KEY']="dummy" 
-    os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']="256" 
-    os.environ['NIOVA_BLOCK_PROXY_TAG']="mdsvc-tidb" 
-
-    enable_authentication = input_values["enable_auth"]
-    
-    if enable_authentication == 1:
-        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
-        os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
-        os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
-        os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
-        os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
-
     #get input parameters
     cp_mode = input_values['cp_mode']
+    enable_authentication = input_values["enable_auth"]
     nisd_uuid_to_write = input_values['nisd_uuid_to_write']
     vdev = input_values['vdev']
     client_uuid = input_values['client_uuid']
@@ -705,6 +694,23 @@ def start_niova_block_test(cluster_params, input_values):
     integrity_check = input_values['integrity_check']
     sequential_writes = input_values['sequential_writes']
     blocking_process = input_values['blocking_process']
+
+    # Authentication environment variables
+    env = os.environ.copy()
+    # os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
+    # os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
+    # os.environ['NIOVA_BLOCK_AUTH_ENABLED']="true" 
+    os.environ['NIOVA_GOSSIP_PATH'] = gossip_path
+    os.environ['NIOVA_GOSSIP_KEY']="dummy" 
+    os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']="256" 
+    os.environ['NIOVA_BLOCK_PROXY_TAG']="mdsvc-tidb" 
+    
+    if enable_authentication == 1:
+        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
+        os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
+        os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
+        os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
+        os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
 
     if read_operation_ratio_percentage == '0':
         # prepare path for log file.
