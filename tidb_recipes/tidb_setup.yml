@@ -8,6 +8,7 @@
     infra_payload: "./examples/create_sample_infra.json"
     vdev_payload: "./examples/create_sample_vdev.json"
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+    client_id: "5e00ce0c-8021-11f1-911c-0fc57145aa3a"
 
   tasks:
     - block:
@@ -174,7 +175,7 @@
                  'auth_username': 'admin',
                  'auth_secret': 'admin',
                  'nisd_uuid_to_write' : 'unix:{{ nisd_uuid }}',
-                 'vdev' : '{{ vdev_id }}',
+                 'vdev' : '{{ vdev_uuid }}',
                  'client_uuid': '{{ client_id }}',
                  'rd_op_ratio': '0',
                  'num_ops': '50',
@@ -196,3 +197,22 @@
           debug:
             msg: "niova-block-test return code: {{ nblock_wr }}"
           failed_when: nblock_wr | int != 0
+
+        - name: "{{ recipe_name }}: Get NISD resources."
+          set_fact:
+            nisd_result_1: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_resource',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  params={
+                    'type': 'nisd'
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print nisd result."
+          debug:
+            msg: "{{ nisd_result_1 }}"
