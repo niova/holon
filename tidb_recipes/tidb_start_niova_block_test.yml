@@ -1,9 +1,9 @@
-- name: "tidb_setup.yml"
+- name: "tidb_start_niova_block_test.yml"
   hosts: localhost
   connection: local
 
   vars:
-    recipe_name: "tidb_setup"
+    recipe_name: "tidb_start_niova_block_test"
     api_base_url: "http://localhost:8081"
     infra_payload: "./examples/create_sample_infra.json"
     vdev_payload: "./examples/create_sample_vdev.json"

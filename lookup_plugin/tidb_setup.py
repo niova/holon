@@ -23,7 +23,7 @@ def docker_setup(cluster_params):
     """Tear down existing stack, start Docker stack, and collect logs."""
 
     workspace_dir = os.getenv('NIOVA_WORKSPACE')
-    repo_path = "%s/mdsvc-tidb" % workspace_dir
+    repo_path = "%s/niova-block/mdsvc-tidb" % workspace_dir
 
     base_dir = cluster_params['base_dir']
     app_name = cluster_params['app_type']
@@ -97,7 +97,7 @@ def manual_setup(cluster_params):
     """Start TiDB manually using tiup playground and setup mdsvc schema."""
 
     workspace_dir = os.getenv('NIOVA_WORKSPACE')
-    repo_path = "%s/mdsvc-tidb" % workspace_dir
+    repo_path = "%s/niova-block/mdsvc-tidb" % workspace_dir
 
     base_dir = cluster_params['base_dir']
     app_name = cluster_params['app_type']

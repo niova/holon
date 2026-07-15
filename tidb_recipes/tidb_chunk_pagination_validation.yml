@@ -4,8 +4,8 @@
   vars:
     recipe_name: "tidb_setup"
     api_base_url: "http://localhost:8081"
-    infra_payload: "/home/himani/mdsvc-tidb/examples/e2e.json"
-    vdev_payload: "/home/himani/mdsvc-tidb/examples/create_vdev_100gb_1replica.json"
+    infra_payload: "./examples/e2e.json"
+    vdev_payload: "./examples/create_vdev_100gb_1replica.json"
 
   tasks:
     - block:
