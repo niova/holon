@@ -146,7 +146,7 @@ def docker_setup(cluster_params):
         logf.write("\nSTARTING MDSVC-TIDB DOCKER SETUP\n")
 
         down_proc = subprocess.Popen(
-            ["sudo", "docker", "compose", "down", "-v"],
+            ["docker", "compose", "down", "-v"],
             cwd=repo_path,
             stdout=logf,
             stderr=logf,
@@ -160,7 +160,7 @@ def docker_setup(cluster_params):
         logf.write("\nDOCKER STACK CLEANED UP\n")
 
         up_proc = subprocess.Popen(
-            ["sudo", "docker", "compose", "up", "-d", "--build"],
+            ["docker", "compose", "up", "-d", "--build"],
             cwd=repo_path,
             stdout=logf,
             stderr=logf,
