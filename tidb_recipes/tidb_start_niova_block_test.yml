@@ -18,25 +18,17 @@
             msg: "app_type is: {{ app_type }}"
           failed_when: app_type != "tidb"
 
-        - name: "{{ recipe_name }}: Stop mdsvc-api server and TiDB playground."
-          set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
-
-        - name: "{{ recipe_name }}: Debug teardown status."
-          debug:
-            msg: "{{ teardown_status }}"
-
         # ----------------------------------------
         # 1. Start mdsvc-tidb Docker stack
         # ----------------------------------------
 
         - name: "{{ recipe_name }}: Start mdsvc-tidb manually."
           set_fact:
-            manual_status: "{{ lookup('tidb_setup', 'manual_setup') }}"
+            manual_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
 
         - name: "{{ recipe_name }}: Debug Docker status."
           debug:
-            var: manual_status
+            msg: "{{ docker_status }}"
 
         - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
           uri:
