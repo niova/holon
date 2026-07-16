@@ -2068,11 +2068,24 @@ class LookupModule(LookupBase):
 
         logf.write("\nMANUAL MDSVC-TIDB SETUP COMPLETED\n")
 
+    server_result = start_server({
+        "server_path":     repo_path,
+        "pid_file":        "%s/%s/mdsvc_server.pid" % (base_dir, raft_uuid),
+        "mysql_host":      "127.0.0.1",
+        "mysql_port":      "4000",
+        "mysql_user":      "root",
+        "mysql_password":  "",
+        "base_url":        cluster_params.get('api_base_url', 'http://localhost:8081'),
+        "disable_auth":    cluster_params.get('disable_auth', False),
+    })
+
     return {
-        "status": "manual_setup_done",
-        "tidb_pid": tidb_proc.pid,
-        "log_file": log_file,
-        "tidb_log_file": tidb_log_file
+        "status":          "manual_setup_done",
+        "tidb_pid":        tidb_proc.pid,
+        "server_pid":      server_result["pid"],
+        "log_file":        log_file,
+        "tidb_log_file":   tidb_log_file,
+        "server_log_file": server_result["log_file"]
     }
 
 def start_server(params):
