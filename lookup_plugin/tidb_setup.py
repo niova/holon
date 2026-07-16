@@ -108,6 +108,7 @@ def manual_setup(cluster_params):
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     tidb_log_file = "%s/%s/tidb.log" % (base_dir, raft_uuid)
+    tidb_pid_file = "%s/%s/tidb_playground.pid" % (base_dir, raft_uuid)
 
     env = os.environ.copy()
     env["MDSVC_MYSQL_HOST"] = "127.0.0.1"
@@ -135,6 +136,10 @@ def manual_setup(cluster_params):
         )
 
         logf.write("TiDB playground started in background pid=%d\n" % tidb_proc.pid)
+
+        with open(tidb_pid_file, "w") as pidf:
+            pidf.write(str(tidb_proc.pid))
+
         logf.write("Waiting for TiDB to start...\n")
 
         tidb_ready = False
@@ -263,6 +268,21 @@ def manual_setup(cluster_params):
         "server_log_file": server_result["log_file"]
     }
 
+def manual_teardown(cluster_params):
+    """Stop mdsvc-api server and TiDB playground, then remove pid files."""
+    base_dir = cluster_params['base_dir']
+    raft_uuid = cluster_params['raft_uuid']
+    pid_dir = "%s/%s" % (base_dir, raft_uuid)
+
+    server_status = stop_server({"pid_file": "%s/mdsvc_server.pid" % pid_dir})
+    tidb_status = stop_server({"pid_file": "%s/tidb_playground.pid" % pid_dir})
+
+    return {
+        "status": "manual_teardown_done",
+        "server": server_status,
+        "tidb": tidb_status,
+    }
+
 def start_server(params):
     """
     Launch `go run ./cmd/server` as a detached background process.
@@ -383,6 +403,8 @@ class LookupModule(LookupBase):
             result = docker_setup(cluster_params)
         elif action == "manual_setup":
             result = manual_setup(cluster_params)
+        elif action == "manual_teardown":
+            result = manual_teardown(cluster_params)
         else:
             raise AnsibleError("Unsupported action: %s" % action)
 
