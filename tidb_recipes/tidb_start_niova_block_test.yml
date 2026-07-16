@@ -22,7 +22,7 @@
         # 1. Start mdsvc-tidb Docker stack
         # ----------------------------------------
 
-        - name: "{{ recipe_name }}: Start mdsvc-tidb using Docker."
+        - name: "{{ recipe_name }}: Start mdsvc-tidb manually."
           set_fact:
             manual_status: "{{ lookup('tidb_setup', 'manual_setup') }}"
 
