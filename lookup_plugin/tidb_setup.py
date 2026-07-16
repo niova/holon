@@ -71,7 +71,7 @@ def docker_setup(cluster_params):
         logf.write("\nDOCKER STACK STARTED\n")
 
         logs_proc = subprocess.Popen(
-            ["sudo", "docker", "logs", "-f", container_name],
+            ["docker", "logs", "-f", container_name],
             stdout=logf,
             stderr=logf,
             start_new_session=True
