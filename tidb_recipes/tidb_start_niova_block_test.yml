@@ -36,8 +36,8 @@
             method: GET
             status_code: [200, 301, 302]
           register: api_health
-          retries: 30
-          delay: 2
+          retries: 90
+          delay: 3
           until: api_health.status in [200, 301, 302]
 
         # ----------------------------------------
