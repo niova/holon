@@ -123,10 +123,7 @@
             msg: "Infrastructure created successfully."
           failed_when:
             not (
-              infra_result.data.success
-              | default(infra_result.success)
-              | default(false)
-              | bool
+              infra_result.data.success | default(infra_result.data.success) | default(false) | bool
             )
 
         # =====================================================
