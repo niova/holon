@@ -6,6 +6,40 @@ import os
 import requests
 import subprocess
 from datetime import datetime
+from collections import defaultdict
+
+def compute_expected_allocations(nisd_resources, replica_count, vdev_size):
+    if replica_count <= 0 or vdev_size <= 0:
+        raise AnsibleError(
+            f"Invalid inputs: replica_count={replica_count}, vdev_size={vdev_size}"
+        )
+
+    rack_capacity = defaultdict(int)
+    for nisd in nisd_resources:
+        rack_id = nisd.get("fd_rack_id")
+        rack_capacity[rack_id] += int(nisd["available_size"])
+
+    domains_available = len(rack_capacity)
+
+    if domains_available < replica_count:
+        return {
+            "expected_allocations": 0,
+            "domains_available": domains_available,
+            "domains_required": replica_count,
+            "reason": "insufficient failure domains for replica_count",
+        }
+
+    chosen_capacities = sorted(rack_capacity.values(), reverse=True)[:replica_count]
+    bottleneck_capacity = min(chosen_capacities)
+    expected_allocations = bottleneck_capacity // vdev_size
+
+    return {
+        "expected_allocations": expected_allocations,
+        "domains_available": domains_available,
+        "domains_required": replica_count,
+        "bottleneck_capacity": bottleneck_capacity,
+        "chosen_rack_capacities": chosen_capacities,
+    }
 
 def load_payload(file_path=None, body=None):
     if file_path:
@@ -148,7 +182,8 @@ def login(base_url, username, password, log_file, timeout):
         data,
     )
 
-    token = data.get("access_token")
+    response_payload = data.get("payload", {})
+    token = response_payload.get("access_token")
 
     if not token:
         raise AnsibleError(f"Login succeeded but access_token missing: {data}")
@@ -223,43 +258,67 @@ def extract_fields(data):
         "ncp_status_code",
         "parity_blk_cnt",
         "redundancy",
+        "chunk_cnt",
+        "total_chunks",
         "status",
         "message",
     ]
 
-    if isinstance(data, dict):
-        for key in keys:
-            if key in data:
-                extracted[key] = data[key]
+    def collect(obj):
+        if not isinstance(obj, dict):
+            return
 
-        inner = data.get("data")
-        if isinstance(inner, dict):
-            for key in keys:
-                if key in inner:
-                    extracted[key] = inner[key]
+        for key in keys:
+            if key in obj:
+                extracted[key] = obj[key]
+
+    collect(data)
+
+    inner = data.get("data")
+    collect(inner)
+
+    payload = data.get("payload")
+    collect(payload)
+
+    if isinstance(inner, dict):
+        collect(inner.get("payload"))
 
     return extracted
 
 def paginated_chunks(api_params):
     all_chunks = []
+    pages = []
     page_count = 0
 
     params = dict(api_params.get("params") or {})
 
+    initial_start_chunk_idx = int(
+        params.get("start_chunk_idx", 0)
+    )
+
+    requested_limit = int(
+        params.get("limit", 100)
+    )
+
+    current_start_chunk_idx = initial_start_chunk_idx
+
     while True:
         page_count += 1
 
+        params["start_chunk_idx"] = current_start_chunk_idx
+        params["limit"] = requested_limit
+
         response = perform_request(
-            api_params["method"],
-            api_params["url"],
-            api_params["payload"],
-            params,
-            api_params["headers"],
-            api_params["timeout"],
-            api_params["log_file"],
+            method=api_params["method"],
+            url=api_params["url"],
+            payload=api_params["payload"],
+            params=params,
+            headers=api_params["headers"],
+            timeout=api_params["timeout"],
+            log_file=api_params["log_file"],
         )
 
-        data = parse_response(
+        response_data = parse_response(
             response,
             log_file=api_params["log_file"],
             method=api_params["method"],
@@ -273,37 +332,179 @@ def paginated_chunks(api_params):
             api_params["url"],
             api_params["payload"],
             response.status_code,
-            data,
+            response_data,
         )
 
-        chunks = data.get("chunks", [])
-        all_chunks.extend(chunks)
-
-        if not data.get("has_more", False):
-            break
-
-        next_start = data.get("next_start_chunk_idx")
-
-        if next_start is None:
+        if not isinstance(response_data, dict):
             raise AnsibleError(
-                "Pagination error: has_more=true but "
-                "next_start_chunk_idx missing. "
+                "Pagination response must be a JSON object. "
+                f"Received: {type(response_data).__name__}. "
+                f"Check log: {api_params['log_file']}"
+            )
+            
+        page_data = response_data
+
+        inner_data = response_data.get("data")
+        if isinstance(inner_data, dict):
+            page_data = inner_data
+
+        payload = page_data.get("payload")
+        if isinstance(payload, dict):
+            page_data = payload
+
+        if not isinstance(page_data, dict):
+            raise AnsibleError(
+                "Unable to locate pagination data in API response. "
+                f"Response: {response_data}. "
                 f"Check log: {api_params['log_file']}"
             )
 
-        params["start_chunk_idx"] = next_start
+        chunks = page_data.get("chunks", [])
+
+        if chunks is None:
+            chunks = []
+
+        if not isinstance(chunks, list):
+            raise AnsibleError(
+                "Pagination field 'chunks' must be a list. "
+                f"Received: {type(chunks).__name__}. "
+                f"Page data: {page_data}. "
+                f"Check log: {api_params['log_file']}"
+            )
+
+        response_start_chunk_idx = int(
+            page_data.get(
+                "start_chunk_idx",
+                current_start_chunk_idx,
+            )
+        )
+
+        response_limit = int(
+            page_data.get(
+                "limit",
+                requested_limit,
+            )
+        )
+
+        has_more = bool(
+            page_data.get("has_more", False)
+        )
+
+        next_start_chunk_idx = page_data.get(
+            "next_start_chunk_idx"
+        )
+
+        total_chunks = page_data.get("total_chunks")
+
+        vdev_id = (
+            page_data.get("vdev_id")
+            or params.get("vdev_id")
+        )
+
+        if response_start_chunk_idx != current_start_chunk_idx:
+            raise AnsibleError(
+                "Pagination continuity error: requested "
+                f"start_chunk_idx={current_start_chunk_idx}, but API "
+                f"returned start_chunk_idx={response_start_chunk_idx}. "
+                f"Check log: {api_params['log_file']}"
+            )
+
+        if response_limit <= 0:
+            raise AnsibleError(
+                "Pagination response contains an invalid limit: "
+                f"{response_limit}. "
+                f"Check log: {api_params['log_file']}"
+            )
+
+        if len(chunks) > response_limit:
+            raise AnsibleError(
+                "Pagination response exceeded the page limit: "
+                f"received {len(chunks)} chunks with limit "
+                f"{response_limit}. "
+                f"Check log: {api_params['log_file']}"
+            )
+
+        if has_more and next_start_chunk_idx is None:
+            raise AnsibleError(
+                "Pagination error: has_more=true but "
+                "next_start_chunk_idx is missing. "
+                f"Page data: {page_data}. "
+                f"Check log: {api_params['log_file']}"
+            )
+
+        if next_start_chunk_idx is not None:
+            next_start_chunk_idx = int(
+                next_start_chunk_idx
+            )
+
+        if (
+            has_more
+            and next_start_chunk_idx
+            <= current_start_chunk_idx
+        ):
+            raise AnsibleError(
+                "Pagination did not progress: "
+                f"current start_chunk_idx={current_start_chunk_idx}, "
+                f"next_start_chunk_idx={next_start_chunk_idx}. "
+                f"Check log: {api_params['log_file']}"
+            )
+
+        page_entry = {
+            "page_number": page_count,
+            "start_chunk_idx": response_start_chunk_idx,
+            "next_start_chunk_idx": next_start_chunk_idx,
+            "has_more": has_more,
+            "limit": response_limit,
+            "chunk_count": len(chunks),
+            "chunks": chunks,
+        }
+
+        pages.append(page_entry)
+        all_chunks.extend(chunks)
+
+        if not has_more:
+            final_page_data = page_data
+            break
+
+        current_start_chunk_idx = next_start_chunk_idx
+
+    expected_total_chunks = final_page_data.get(
+        "total_chunks"
+    )
+
+    if expected_total_chunks is not None:
+        expected_total_chunks = int(
+            expected_total_chunks
+        )
+
+        if len(all_chunks) != expected_total_chunks:
+            raise AnsibleError(
+                "Pagination reconstruction failed: "
+                f"fetched {len(all_chunks)} chunks, but API reported "
+                f"total_chunks={expected_total_chunks}. "
+                f"Check log: {api_params['log_file']}"
+            )
 
     result = {
         "success": True,
-        "vdev_id": data.get("vdev_id"),
+        "status_code": response.status_code,
+        "vdev_id": (
+            final_page_data.get("vdev_id")
+            or params.get("vdev_id")
+        ),
         "chunks": all_chunks,
-        "total_chunks_fetched": len(all_chunks),
-        "expected_total_chunks": data.get("total_chunks"),
+        "pages": pages,
         "pages_fetched": page_count,
+        "total_chunks_fetched": len(all_chunks),
+        "expected_total_chunks": expected_total_chunks,
+        "initial_start_chunk_idx": initial_start_chunk_idx,
+        "requested_limit": requested_limit,
+        "pagination_complete": True,
         "log_file": api_params["log_file"],
     }
 
-    result.update(extract_fields(data))
+    result.update(extract_fields(final_page_data))
+
     return result
 
 def run_schema(repo_path, log_file, mysql_env):
@@ -434,6 +635,18 @@ class LookupModule(LookupBase):
                 "access_token": token,
                 "log_file": log_file,
             }]
+
+        if action == "expected_allocations":
+            nisd_resources = kwargs.get("nisd_resources")
+            replica_count = int(kwargs.get("replica_count"))
+            vdev_size = int(kwargs.get("vdev_size"))
+
+            if not nisd_resources:
+                raise AnsibleError(
+                    "expected_allocations requires 'nisd_resources' kwarg"
+                )
+
+            return [compute_expected_allocations(nisd_resources, replica_count, vdev_size)]
 
         endpoint_map = {
             "create_infra": ("POST", "/api/infra"),

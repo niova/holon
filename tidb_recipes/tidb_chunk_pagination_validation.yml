@@ -5,8 +5,8 @@
   vars:
     recipe_name: "tidb_chunk_pagination_validation"
     api_base_url: "http://localhost:8081"
-    infra_payload: "./examples/e2e.json"
-    vdev_payload: "./examples/create_vdev_100gb_1replica.json"
+    infra_payload: "{{ playbook_dir }}/../examples/e2e.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_vdev_100gb_1replica.json"
     page_limit: 4
 
   tasks:
@@ -86,16 +86,20 @@
           set_fact:
             expected_replica_count: >-
               {{
-                vdev_payload_data.num_replicas
-                | default(vdev_payload_data.replica_count)
+                vdev_payload_data.get(
+                  'data_blk_cnt',
+                  vdev_payload_data.get('replica_count', 0)
+                )
                 | int
               }}
 
-        - name: "{{ recipe_name }}: Validate expected replica count."
-          debug:
-            msg: "Expected replicas per chunk: {{ expected_replica_count }}"
-          failed_when:
-            expected_replica_count | int <= 0
+        - name: "{{ recipe_name }}: Verify replica count."
+          assert:
+            that:
+              - expected_replica_count | int > 0
+            fail_msg: >-
+              Replica count was not found in the VDEV payload.
+              Payload: {{ vdev_payload_data }}
 
         # =====================================================
         # 4. Create infrastructure
@@ -119,12 +123,14 @@
             var: infra_result
 
         - name: "{{ recipe_name }}: Verify infrastructure creation."
-          debug:
-            msg: "Infrastructure created successfully."
-          failed_when:
-            not (
-              infra_result.data.success | default(infra_result.data.success) | default(false) | bool
-            )
+          assert:
+            that:
+              - infra_result.status_code | int in [200, 201]
+            success_msg: "Infrastructure created successfully."
+            fail_msg: >-
+              Infrastructure creation failed.
+              Status: {{ infra_result.status_code | default('missing') }}
+              Response: {{ infra_result.data | default({}) }}
 
         # =====================================================
         # 5. Create VDEV
@@ -147,19 +153,10 @@
           debug:
             var: vdev_result
 
-        - name: "{{ recipe_name }}: Store VDEV information."
+        - name: Store VDEV information
           set_fact:
-            vdev_uuid: >-
-              {{
-                vdev_result.vdev_id
-                | default(vdev_result.data.vdev_id)
-              }}
-            num_of_chunks: >-
-              {{
-                vdev_result.data.num_chunks
-                | default(vdev_result.num_chunks)
-                | int
-              }}
+            vdev_uuid: "{{ vdev_result.vdev_id }}"
+            num_of_chunks: "{{ vdev_result.chunk_cnt | int }}"
 
         - name: "{{ recipe_name }}: Print stored VDEV information."
           debug:
@@ -188,7 +185,7 @@
             pagination_complete: false
 
         # =====================================================
-        # 7. Fetch and validate every page
+        # 7. Fetch and validate chunk mappings
         #
         # The get_chunk action is used with an overridden
         # /api/chunks path so that tidb_api does not automatically
@@ -196,251 +193,72 @@
         # =====================================================
 
         - name: "{{ recipe_name }}: Fetch paginated chunk mappings."
-          vars:
-            page_result: >-
+          set_fact:
+            pagination_result: >-
               {{
                 lookup(
                   'tidb_api',
-                  'get_chunk',
-                  '/api/chunks',
+                  'get_chunks',
                   base_url=api_base_url,
                   token=access_token,
                   params={
                     'vdev_id': vdev_uuid,
-                    'start_chunk_idx': current_start_chunk_idx | int,
+                    'start_chunk_idx': 0,
                     'limit': page_limit | int
                   }
                 )
               }}
-            page_data: "{{ page_result.data }}"
-            page_chunks: "{{ page_data.chunks | default([]) }}"
+
+        - name: "{{ recipe_name }}: Store reconstructed chunks and indexes."
           set_fact:
-            pagination_pages: >-
-              {{
-                pagination_pages
-                +
-                [
-                  {
-                    'start_chunk_idx':
-                      page_data.start_chunk_idx | int,
-                    'next_start_chunk_idx':
-                      page_data.next_start_chunk_idx | default(none),
-                    'has_more':
-                      page_data.has_more | bool,
-                    'limit':
-                      page_data.limit | int,
-                    'chunks':
-                      page_chunks
-                  }
-                ]
-              }}
-            reconstructed_chunks: >-
-              {{
-                reconstructed_chunks + page_chunks
-              }}
-            current_start_chunk_idx: >-
-              {{
-                page_data.next_start_chunk_idx
-                | default(current_start_chunk_idx)
-                | int
-              }}
-            pagination_complete: >-
-              {{
-                not (page_data.has_more | bool)
-              }}
-          loop: "{{ range(0, num_of_chunks | int + 1) | list }}"
-          loop_control:
-            label: "page={{ item + 1 }}, start={{ current_start_chunk_idx }}"
-          when: not pagination_complete | bool
-
-        - name: "{{ recipe_name }}: Print pagination results."
-          debug:
-            msg:
-              - "Pages fetched: {{ pagination_pages | length }}"
-              - "Chunks fetched: {{ reconstructed_chunks | length }}"
-              - "Pagination complete: {{ pagination_complete }}"
-
-        # =====================================================
-        # 8. Validate common response fields
-        # =====================================================
-
-        - name: "{{ recipe_name }}: Validate pagination completed."
-          debug:
-            msg: "Pagination traversal reached the final page."
-          failed_when: not pagination_complete | bool
-
-        - name: "{{ recipe_name }}: Validate page response metadata."
-          vars:
-            page: "{{ item }}"
-          debug:
-            msg:
-              - "Start chunk: {{ page.start_chunk_idx }}"
-              - "Limit: {{ page.limit }}"
-              - "Returned chunks: {{ page.chunks | length }}"
-              - "Has more: {{ page.has_more }}"
-          failed_when:
-            page.limit | int != page_limit | int or
-            page.chunks | length > page_limit | int or
-            page.start_chunk_idx | int < 0
-          loop: "{{ pagination_pages }}"
-          loop_control:
-            label: "start_chunk_idx={{ item.start_chunk_idx }}"
-
-        # =====================================================
-        # 9. Validate next-page traversal
-        # =====================================================
-
-        - name: "{{ recipe_name }}: Build expected page transitions."
-          set_fact:
-            page_transitions: >-
-              {{
-                pagination_pages[:-1]
-                | zip(pagination_pages[1:])
-                | list
-              }}
-
-        - name: "{{ recipe_name }}: Verify next page traversal."
-          vars:
-            current_page: "{{ item.0 }}"
-            next_page: "{{ item.1 }}"
-          debug:
-            msg:
-              - "Current next index: {{ current_page.next_start_chunk_idx }}"
-              - "Next page start: {{ next_page.start_chunk_idx }}"
-          failed_when:
-            not current_page.has_more | bool or
-            current_page.next_start_chunk_idx is none or
-            current_page.next_start_chunk_idx | int
-              != next_page.start_chunk_idx | int
-          loop: "{{ page_transitions }}"
-          loop_control:
-            label: >-
-              {{
-                item.0.start_chunk_idx
-              }} -> {{
-                item.1.start_chunk_idx
-              }}
-
-        - name: "{{ recipe_name }}: Validate final page metadata."
-          vars:
-            final_page: "{{ pagination_pages | last }}"
-          debug:
-            msg:
-              - "Final page start: {{ final_page.start_chunk_idx }}"
-              - "Final page has_more: {{ final_page.has_more }}"
-          failed_when: final_page.has_more | bool
-
-        # =====================================================
-        # 10. Reconstruct full chunk dataset
-        # =====================================================
-
-        - name: "{{ recipe_name }}: Extract reconstructed chunk indexes."
-          set_fact:
+            reconstructed_chunks: "{{ pagination_result.chunks | default([]) }}"
             reconstructed_chunk_indexes: >-
               {{
-                reconstructed_chunks
+                pagination_result.chunks
+                | default([])
                 | map(attribute='chunk_idx')
                 | map('int')
                 | list
               }}
+            expected_chunk_indexes: "{{ range(0, num_of_chunks | int) | list }}"
 
-        - name: "{{ recipe_name }}: Extract unique chunk indexes."
-          set_fact:
-            unique_chunk_indexes: >-
-              {{
-                reconstructed_chunk_indexes
-                | unique
-                | list
-              }}
+        - name: "{{ recipe_name }}: Validate pagination reconstruction."
+          assert:
+            that:
+              - pagination_result.success | bool
+              - pagination_result.pagination_complete | bool
+              - pagination_result.pages_fetched | int > 0
+              - pagination_result.total_chunks_fetched | int == num_of_chunks | int
+              - reconstructed_chunks | length == num_of_chunks | int
+              - reconstructed_chunk_indexes | unique | length == num_of_chunks | int
+              - reconstructed_chunk_indexes == expected_chunk_indexes
+              - >-
+                pagination_result.expected_total_chunks is none
+                or
+                pagination_result.expected_total_chunks | int == num_of_chunks | int
+            success_msg: >-
+              Pagination validated: {{ pagination_result.pages_fetched }} pages,
+              {{ reconstructed_chunks | length }} chunks.
+            fail_msg: "Pagination validation failed: {{ pagination_result }}"
 
-        - name: "{{ recipe_name }}: Build expected chunk index list."
-          set_fact:
-            expected_chunk_indexes: >-
-              {{
-                range(0, num_of_chunks | int)
-                | list
-              }}
-
-        - name: "{{ recipe_name }}: Print reconstructed chunk indexes."
-          debug:
-            msg:
-              - "Returned indexes: {{ reconstructed_chunk_indexes }}"
-              - "Expected indexes: {{ expected_chunk_indexes }}"
-
-        - name: "{{ recipe_name }}: Validate total returned chunk count."
-          debug:
-            msg: >-
-              Reconstructed {{
-                reconstructed_chunks | length
-              }} chunks.
-          failed_when:
-            reconstructed_chunks | length != num_of_chunks | int
-
-        - name: "{{ recipe_name }}: Validate unique chunk count."
-          debug:
-            msg: >-
-              Reconstructed {{
-                unique_chunk_indexes | length
-              }} unique chunks.
-          failed_when:
-            unique_chunk_indexes | length != num_of_chunks | int
-
-        - name: "{{ recipe_name }}: Validate chunk continuity and ordering."
-          debug:
-            msg: "Chunk indexes are continuous and strictly ordered."
-          failed_when:
-            reconstructed_chunk_indexes != expected_chunk_indexes
-
-        # =====================================================
-        # 11. Validate chunk-to-NISD mapping
-        # =====================================================
-
-        - name: "{{ recipe_name }}: Validate replica count per chunk."
+        - name: "{{ recipe_name }}: Validate chunk replica mappings."
           vars:
             nisd_ids: "{{ item.nisd_ids | default([]) }}"
-          debug:
-            msg:
-              - "Chunk index: {{ item.chunk_idx }}"
-              - "NISD IDs: {{ nisd_ids }}"
-              - "Replica count: {{ nisd_ids | length }}"
-          failed_when:
-            nisd_ids | length != expected_replica_count | int
-          loop: "{{ reconstructed_chunks }}"
-          loop_control:
-            label: "chunk_idx={{ item.chunk_idx }}"
-
-        - name: "{{ recipe_name }}: Validate unique NISD IDs per chunk."
-          vars:
-            nisd_ids: "{{ item.nisd_ids | default([]) }}"
-          debug:
-            msg: >-
-              Chunk {{ item.chunk_idx }} has unique replica targets.
-          failed_when:
-            nisd_ids | unique | length != nisd_ids | length
-          loop: "{{ reconstructed_chunks }}"
-          loop_control:
-            label: "chunk_idx={{ item.chunk_idx }}"
-
-        - name: "{{ recipe_name }}: Validate NISD UUID values."
-          vars:
-            nisd_ids: "{{ item.nisd_ids | default([]) }}"
-            invalid_nisd_ids: >-
-              {{
-                nisd_ids
-                | select('equalto', '')
-                | list
-              }}
-          debug:
-            msg: "Chunk {{ item.chunk_idx }} NISD IDs are populated."
-          failed_when:
-            nisd_ids | length == 0 or
-            invalid_nisd_ids | length > 0
+          assert:
+            that:
+              - nisd_ids | length == expected_replica_count | int
+              - nisd_ids | unique | length == nisd_ids | length
+              - nisd_ids | reject('equalto', '') | list | length == nisd_ids | length
+            fail_msg: >-
+              Invalid mapping for chunk {{ item.chunk_idx }}:
+              nisd_ids={{ nisd_ids }},
+              expected_replicas={{ expected_replica_count }}
           loop: "{{ reconstructed_chunks }}"
           loop_control:
             label: "chunk_idx={{ item.chunk_idx }}"
 
         # =====================================================
-        # 12. Invalid parameter validation
+        # 8. Invalid parameter validation
         # =====================================================
 
         - name: "{{ recipe_name }}: Test invalid pagination parameters."
@@ -451,10 +269,7 @@
               Authorization: "Bearer {{ access_token }}"
               Content-Type: "application/json"
             params: "{{ item.params }}"
-            status_code:
-              - 400
-              - 404
-              - 422
+            status_code: [400, 404, 422]
             return_content: true
           register: invalid_parameter_results
           failed_when: false
@@ -490,20 +305,33 @@
           loop_control:
             label: "{{ item.name }}"
 
-        - name: "{{ recipe_name }}: Verify invalid requests were rejected."
+        - name: "{{ recipe_name }}: Print invalid pagination results."
           debug:
             msg:
-              - "Case: {{ item.item.name }}"
-              - "HTTP status: {{ item.status }}"
-              - "Response: {{ item.content | default('') }}"
-          failed_when:
-            item.status | int not in [400, 404, 422]
+              - "case={{ item.get('item', {}).get('name', 'unknown') }}"
+              - "failed={{ item.get('failed', false) }}"
+              - "status={{ item.get('status', 'missing') }}"
+              - "msg={{ item.get('msg', '') }}"
+              - "content={{ item.get('content', '') }}"
+              - "url={{ item.get('url', '') }}"
+          loop: "{{ invalid_parameter_results.results }}"
+          loop_control:
+            label: "{{ item.get('item', {}).get('name', 'unknown') }}"
+
+        - name: "{{ recipe_name }}: Validate invalid parameter responses."
+          assert:
+            that:
+              - item.status is defined
+              - item.status | int in [400, 404, 422]
+            fail_msg: >-
+              Invalid request '{{ item.item.name }}' returned
+              HTTP {{ item.status }}: {{ item.content | default('') }}
           loop: "{{ invalid_parameter_results.results }}"
           loop_control:
             label: "{{ item.item.name }}"
 
         # =====================================================
-        # 13. Final recipe result
+        # 9. Final recipe result
         # =====================================================
 
         - name: "{{ recipe_name }}: Pagination validation completed."
@@ -512,7 +340,7 @@
               - "VDEV UUID: {{ vdev_uuid }}"
               - "Expected chunks: {{ num_of_chunks }}"
               - "Reconstructed chunks: {{ reconstructed_chunks | length }}"
-              - "Pages fetched: {{ pagination_pages | length }}"
+              - "Pages fetched: {{ pagination_result.pages_fetched }}"
               - "Page limit: {{ page_limit }}"
               - "Replica count: {{ expected_replica_count }}"
               - "Chunk pagination validation passed."

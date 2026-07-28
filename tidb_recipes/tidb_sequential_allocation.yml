@@ -93,6 +93,19 @@
             requested_vdev_size | int <= 0 or
             expected_replica_count | int <= 0
 
+        - name: "{{ recipe_name }}: Read infra payload."
+          set_fact:
+            infra_payload_data: "{{ lookup('file', infra_payload) | from_json }}"
+
+        - name: "{{ recipe_name }}: Compute expected NISD count from infra payload."
+          set_fact:
+            expected_nisd_count: >-
+              {{
+                infra_payload_data
+                | json_query('pdus[].racks[].hypervisors[].devices[].partitions[].nisd.id')
+                | length
+              }}
+
         # =====================================================
         # 3. Create infrastructure
         # =====================================================
@@ -158,6 +171,14 @@
             msg: "Number of NISDs: {{ initial_nisd_resources | length }}"
           failed_when:
             initial_nisd_resources | length == 0
+
+        - name: "{{ recipe_name }}: Validate NISD count matches infra configuration."
+          debug:
+            msg:
+              - "Expected NISDs: {{ expected_nisd_count }}"
+              - "Actual NISDs: {{ initial_nisd_resources | length }}"
+          failed_when:
+            initial_nisd_resources | length != expected_nisd_count | int
 
         # =====================================================
         # 5. Build NISD failure-domain map
@@ -226,6 +247,32 @@
           loop_control:
             label: "{{ item.id }}"
 
+        - name: "{{ recipe_name }}: Compute expected allocation count."
+          set_fact:
+            expected_allocation_result: >-
+              {{
+                lookup(
+                  'tidb_api', 'expected_allocations',
+                  nisd_resources=initial_nisd_resources,
+                  replica_count=expected_replica_count,
+                  vdev_size=requested_vdev_size
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print expected allocation computation."
+          debug:
+            var: expected_allocation_result
+
+        - name: "{{ recipe_name }}: Clamp expected allocations to the configured iteration limit."
+          set_fact:
+            expected_allocation_count_clamped: >-
+              {{
+                [
+                  expected_allocation_result.expected_allocations | int,
+                  allocation_iterations | int
+                ] | min
+              }}
+
         # =====================================================
         # 7. Initialize sequential allocation state
         # =====================================================
@@ -248,6 +295,55 @@
             loop_var: allocation_index
             label: "allocation={{ allocation_index + 1 }}"
           when: not allocation_exhausted | bool
+
+        - name: "{{ recipe_name }}: Fetch chunk mappings for all successful allocations."
+          set_fact:
+            allocation_chunk_results: >-
+              {{
+                allocation_chunk_results | default([]) + [{
+                  'vdev_id': item.vdev_id,
+                  'num_chunks': item.num_chunks,
+                  'chunks_result': lookup(
+                    'tidb_api', 'get_chunks',
+                    base_url=api_base_url,
+                    token=access_token,
+                    params={'vdev_id': item.vdev_id, 'limit': chunk_page_limit}
+                  )
+                }]
+              }}
+          loop: "{{ successful_allocations }}"
+          loop_control:
+            label: "{{ item.vdev_id }}"
+
+        - name: "{{ recipe_name }}: Validate chunk mapping integrity per VDEV."
+          debug:
+            msg:
+              - "VDEV: {{ item.vdev_id }}"
+              - "Expected chunks: {{ item.num_chunks }}"
+              - "Fetched chunks: {{ item.chunks_result.chunks | length }}"
+          failed_when:
+            item.chunks_result.chunks | length != item.num_chunks | int
+          loop: "{{ allocation_chunk_results }}"
+          loop_control:
+            label: "{{ item.vdev_id }}"
+
+        - name: "{{ recipe_name }}: Validate replica count, duplicate targets, and anti-affinity per chunk."
+          vars:
+            chunk: "{{ item.1 }}"
+            replica_domains: "{{ chunk.nisd_ids | map('extract', nisd_rack_map) | list }}"
+          debug:
+            msg:
+              - "VDEV: {{ item.0.vdev_id }}"
+              - "Chunk: {{ chunk.chunk_idx }}"
+              - "Replica NISDs: {{ chunk.nisd_ids }}"
+              - "Replica failure domains: {{ replica_domains }}"
+          failed_when:
+            chunk.nisd_ids | length != expected_replica_count | int or
+            chunk.nisd_ids | unique | length != chunk.nisd_ids | length or
+            replica_domains | unique | length != expected_replica_count | int
+          loop: "{{ allocation_chunk_results | subelements('chunks_result.chunks') }}"
+          loop_control:
+            label: "{{ item.0.vdev_id }}:{{ item.1.chunk_idx }}"
 
         # =====================================================
         # 9. Validate allocation metadata
@@ -277,13 +373,13 @@
             allocated_vdev_ids | unique | length
             != allocated_vdev_ids | length
 
-        - name: "{{ recipe_name }}: Validate at least one allocation succeeded."
+        - name: "{{ recipe_name }}: Validate expected allocation count reached."
           debug:
-            msg: >-
-              {{ successful_allocations | length }}
-              VDEV allocation(s) completed successfully.
+            msg:
+              - "Expected allocations: {{ expected_allocation_count_clamped }}"
+              - "Actual allocations: {{ successful_allocations | length }}"
           failed_when:
-            successful_allocations | length == 0
+            successful_allocations | length != expected_allocation_count_clamped | int
 
         # =====================================================
         # 10. Fetch final NISD capacity state
