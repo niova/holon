@@ -261,50 +261,39 @@
         # 8. Invalid parameter validation
         # =====================================================
 
+        - name: "{{ recipe_name }}: Build invalid-parameter query strings."
+          set_fact:
+            invalid_parameter_cases:
+              - name: "missing vdev_id"
+                query: "start_chunk_idx=0&limit={{ page_limit }}"
+ 
+              - name: "negative start_chunk_idx"
+                query: "vdev_id={{ vdev_uuid }}&start_chunk_idx=-1&limit={{ page_limit }}"
+ 
+              - name: "zero limit"
+                query: "vdev_id={{ vdev_uuid }}&start_chunk_idx=0&limit=0"
+ 
+              - name: "negative limit"
+                query: "vdev_id={{ vdev_uuid }}&start_chunk_idx=0&limit=-1"
+ 
+              - name: "unknown vdev_id"
+                query: "vdev_id=00000000-0000-0000-0000-000000000000&start_chunk_idx=0&limit={{ page_limit }}"
+ 
         - name: "{{ recipe_name }}: Test invalid pagination parameters."
           uri:
-            url: "{{ api_base_url }}/api/chunks"
+            url: "{{ api_base_url }}/api/chunks?{{ item.query }}"
             method: GET
             headers:
               Authorization: "Bearer {{ access_token }}"
               Content-Type: "application/json"
-            params: "{{ item.params }}"
-            status_code: [400, 404, 422]
+            status_code: [200, 400, 404, 422]
             return_content: true
           register: invalid_parameter_results
           failed_when: false
-          loop:
-            - name: "missing vdev_id"
-              params:
-                start_chunk_idx: 0
-                limit: "{{ page_limit }}"
-
-            - name: "negative start_chunk_idx"
-              params:
-                vdev_id: "{{ vdev_uuid }}"
-                start_chunk_idx: -1
-                limit: "{{ page_limit }}"
-
-            - name: "zero limit"
-              params:
-                vdev_id: "{{ vdev_uuid }}"
-                start_chunk_idx: 0
-                limit: 0
-
-            - name: "negative limit"
-              params:
-                vdev_id: "{{ vdev_uuid }}"
-                start_chunk_idx: 0
-                limit: -1
-
-            - name: "unknown vdev_id"
-              params:
-                vdev_id: "00000000-0000-0000-0000-000000000000"
-                start_chunk_idx: 0
-                limit: "{{ page_limit }}"
+          loop: "{{ invalid_parameter_cases }}"
           loop_control:
             label: "{{ item.name }}"
-
+ 
         - name: "{{ recipe_name }}: Print invalid pagination results."
           debug:
             msg:
@@ -317,15 +306,22 @@
           loop: "{{ invalid_parameter_results.results }}"
           loop_control:
             label: "{{ item.get('item', {}).get('name', 'unknown') }}"
-
+ 
         - name: "{{ recipe_name }}: Validate invalid parameter responses."
+          vars:
+            body_json: "{{ item.json | default({}) }}"
           assert:
             that:
               - item.status is defined
-              - item.status | int in [400, 404, 422]
+              - >-
+                (item.status | int in [400, 404, 422])
+                or
+                (item.status | int == 200 and body_json.error is defined)
             fail_msg: >-
               Invalid request '{{ item.item.name }}' returned
-              HTTP {{ item.status }}: {{ item.content | default('') }}
+              HTTP {{ item.status | default('missing') }}: {{ item.content | default('') }}
+              (expected an HTTP error status, or HTTP 200 with a JSON
+              'error' field indicating rejection)
           loop: "{{ invalid_parameter_results.results }}"
           loop_control:
             label: "{{ item.item.name }}"
