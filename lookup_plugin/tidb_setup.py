@@ -146,7 +146,7 @@ def docker_setup(cluster_params):
         logf.write("\nSTARTING MDSVC-TIDB DOCKER SETUP\n")
 
         down_proc = subprocess.Popen(
-            ["docker", "compose", "down", "-v"],
+            ["sudo", "docker", "compose", "down", "-v"],
             cwd=repo_path,
             stdout=logf,
             stderr=logf,
@@ -160,7 +160,7 @@ def docker_setup(cluster_params):
         logf.write("\nDOCKER STACK CLEANED UP\n")
 
         up_proc = subprocess.Popen(
-            ["docker", "compose", "up", "-d", "--build"],
+            ["sudo", "docker", "compose", "up", "-d", "--build"],
             cwd=repo_path,
             stdout=logf,
             stderr=logf,
@@ -1942,41 +1942,28 @@ class LookupModule(LookupBase):
 
     with open(log_file, "a") as logf:
         logf.write("\nSTARTING MANUAL MDSVC-TIDB SETUP\n")
-
-        tidb_proc = subprocess.Popen(
-            [
-                os.path.expanduser("~/.tiup/bin/tiup"),
-                "playground",
-                "v8.5.0",
-                "--db", "1",
-                "--kv", "1",
-                "--pd", "1",
-                "--tiflash", "0",
-                "--monitor", "false"
-            ],
-            stdout=open(tidb_log_file, "a"),
-            stderr=subprocess.STDOUT,
-            start_new_session=True
+        logf.write(
+            "Assuming TiDB/MySQL is already running at %s:%s "
+            "(manual mode does not start TiDB itself; see README)\n"
+            % (mysql_host, mysql_port)
         )
-
-        logf.write("TiDB playground started in background pid=%d\n" % tidb_proc.pid)
-
-        with open(tidb_pid_file, "w") as pidf:
-            pidf.write(str(tidb_proc.pid))
-
-        logf.write("Waiting for TiDB to start...\n")
+        logf.write("Verifying TiDB is reachable...\n")
 
         tidb_ready = False
 
         for i in range(1, 31):
+            mysql_cmd = [
+                "mysql",
+                "-h", mysql_host,
+                "-P", mysql_port,
+                "-u", mysql_user,
+            ]
+            if mysql_password:
+                mysql_cmd.append("-p%s" % mysql_password)
+            mysql_cmd += ["-e", "SHOW DATABASES;"]
+
             check_proc = subprocess.Popen(
-                [
-                    "mysql",
-                    "-h", "127.0.0.1",
-                    "-P", "4000",
-                    "-u", "root",
-                    "-e", "SHOW DATABASES;"
-                ],
+                mysql_cmd,
                 stdout=logf,
                 stderr=logf
             )
@@ -1984,127 +1971,74 @@ class LookupModule(LookupBase):
             check_rc = check_proc.wait()
 
             if check_rc == 0:
-                logf.write("TiDB is up!\n")
+                logf.write("TiDB is reachable!\n")
                 tidb_ready = True
                 break
 
-            logf.write("Still waiting... (%d)\n" % i)
+            logf.write("Still waiting for TiDB... (%d)\n" % i)
             time.sleep(10)
 
         if not tidb_ready:
             raise AnsibleError(
-                "TiDB did not start within timeout. Check log: %s" % tidb_log_file
+                "Could not reach TiDB/MySQL at %s:%s within timeout. "
+                "Manual mode requires an already-running TiDB deployment "
+                "(see README). Check log: %s"
+                % (mysql_host, mysql_port, log_file)
             )
 
-        logf.write("\nRunning final TiDB database check\n")
+        logf.write("\nMANUAL MDSVC-TIDB PRE-CHECK COMPLETED\n")
 
-        final_check = subprocess.Popen(
-            [
-                "mysql",
-                "-h", "127.0.0.1",
-                "-P", "4000",
-                "-u", "root",
-                "-e", "SHOW DATABASES;"
-            ],
-            stdout=logf,
-            stderr=logf
-        )
-
-        final_rc = final_check.wait()
-
-        if final_rc != 0:
-            raise AnsibleError(
-                "Final TiDB SHOW DATABASES check failed. Check log: %s" % log_file
-            )
-
-        schema_script = "%s/scripts/run_schema.sh" % repo_path
-
-        chmod_proc = subprocess.Popen(
-            ["chmod", "+x", schema_script],
-            stdout=logf,
-            stderr=logf
-        )
-
-        chmod_rc = chmod_proc.wait()
-
-        if chmod_rc != 0:
-            raise AnsibleError(
-                "chmod failed for schema script. Check log: %s" % log_file
-            )
-
-        schema_success = False
-
-        for i in range(1, 6):
-            logf.write("\nSchema attempt %d\n" % i)
-
-            schema_proc = subprocess.Popen(
-                [schema_script],
-                cwd=repo_path,
-                stdout=logf,
-                stderr=logf,
-                env=env
-            )
-
-            schema_rc = schema_proc.wait()
-
-            if schema_rc == 0:
-                logf.write("Schema setup succeeded\n")
-                schema_success = True
-                break
-
-            logf.write("Schema setup failed, retrying...\n")
-            time.sleep(15)
-
-        if not schema_success:
-            logf.write("Schema setup failed permanently\n")
-
-            try:
-                with open(tidb_log_file, "r") as tidbf:
-                    logf.write("\n==== tidb.log ====\n")
-                    logf.write(tidbf.read())
-                    logf.write("\n==== end tidb.log ====\n")
-            except Exception as e:
-                logf.write("Unable to read tidb log: %s\n" % str(e))
-
-            raise AnsibleError(
-                "Schema setup failed permanently. Check log: %s" % log_file
-            )
-
-        logf.write("\nMANUAL MDSVC-TIDB SETUP COMPLETED\n")
+    base_url = cluster_params.get('api_base_url', 'http://localhost:8081')
+    server_timeout = int(cluster_params.get('server_timeout', 120))
 
     server_result = start_server({
-        "server_path":     repo_path,
-        "pid_file":        "%s/%s/mdsvc_server.pid" % (base_dir, raft_uuid),
-        "mysql_host":      "127.0.0.1",
-        "mysql_port":      "4000",
-        "mysql_user":      "root",
-        "mysql_password":  "",
-        "base_url":        cluster_params.get('api_base_url', 'http://localhost:8081'),
-        "disable_auth":    cluster_params.get('disable_auth', False),
+        "server_path":            repo_path,
+        "pid_file":               "%s/%s/mdsvc_server.pid" % (base_dir, raft_uuid),
+        "mysql_host":             mysql_host,
+        "mysql_port":             mysql_port,
+        "mysql_user":             mysql_user,
+        "mysql_password":         mysql_password,
+        "base_url":               base_url,
+        "disable_auth":           cluster_params.get('disable_auth', False),
+        "jwt_secret":             cluster_params.get('jwt_secret'),
+        "tenant_admin_username":  cluster_params.get('tenant_admin_username'),
+        "tenant_admin_password":  cluster_params.get('tenant_admin_password'),
+        "admin_default_username": cluster_params.get('admin_default_username'),
+        "admin_default_password": cluster_params.get('admin_default_password'),
+    })
+
+    # The server auto-provisions its schema and default admin user on startup
+    # (per README), so we just wait for it to answer rather than running any
+    # schema script.
+    wait_for_server({
+        "base_url": base_url,
+        "server_timeout": server_timeout,
+        "log_file": log_file,
     })
 
     return {
         "status":          "manual_setup_done",
-        "tidb_pid":        tidb_proc.pid,
         "server_pid":      server_result["pid"],
         "log_file":        log_file,
-        "tidb_log_file":   tidb_log_file,
-        "server_log_file": server_result["log_file"]
+        "server_log_file": server_result["log_file"],
+        "base_url":        base_url,
     }
 
 def manual_teardown(cluster_params):
-    """Stop mdsvc-api server and TiDB playground, then remove pid files."""
+    """Stop the mdsvc-api server and remove its pid file.
+
+    TiDB itself is not touched — manual mode never started it, so it's not
+    this plugin's responsibility to stop it either.
+    """
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']
     pid_dir = "%s/%s" % (base_dir, raft_uuid)
 
     server_status = stop_server({"pid_file": "%s/mdsvc_server.pid" % pid_dir})
-    tidb_status = stop_server({"pid_file": "%s/tidb_playground.pid" % pid_dir})
 
     return {
         "status": "manual_teardown_done",
         "server": server_status,
-        "tidb": tidb_status,
     }
 
 def start_server(params):
@@ -2128,8 +2062,22 @@ def start_server(params):
         "MDSVC_API_URL":        str(params["base_url"]),
     })
 
-    if params["disable_auth"]:
+    if params.get("disable_auth"):
+        # Dev/test only — bypasses auth entirely, treats all requests as
+        # dev_admin (role=admin), and JWT_SECRET is not required in this mode.
         env["DISABLE_AUTH"] = "true"
+
+    # Optional auth-related overrides documented in .env_example
+    if params.get("jwt_secret"):
+        env["JWT_SECRET"] = str(params["jwt_secret"])
+    if params.get("tenant_admin_username"):
+        env["TENANT_ADMIN_USERNAME"] = str(params["tenant_admin_username"])
+    if params.get("tenant_admin_password"):
+        env["TENANT_ADMIN_PASSWORD"] = str(params["tenant_admin_password"])
+    if params.get("admin_default_username"):
+        env["ADMIN_DEFAULT_USERNAME"] = str(params["admin_default_username"])
+    if params.get("admin_default_password"):
+        env["ADMIN_DEFAULT_PASSWORD"] = str(params["admin_default_password"])
 
     proc = subprocess.Popen(
         ["go", "run", "./cmd/server"],
@@ -2180,12 +2128,15 @@ def wait_for_server(params):
     """
     Poll base_url until we get an HTTP status < 500, then return.
     Raises AnsibleError if the server does not become ready within
-    server_timeout seconds.
+    server_timeout seconds. On timeout, captures docker logs (if a
+    container_name is present) for operator context.
     """
     base_url = params["base_url"]
     timeout  = params["server_timeout"]
     log_file = _get_log_file(params)
     last_err = None
+
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     for _ in range(timeout):
         try:
