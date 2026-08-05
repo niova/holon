@@ -25,25 +25,22 @@
         # 1. Start mdsvc-tidb
         # =====================================================
 
-        - name: "{{ recipe_name }}: Start mdsvc-tidb Docker stack."
+        - name: "{{ recipe_name }}: Start mdsvc-tidb stack."
           set_fact:
-            docker_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'manual_setup') }}"
 
-        - name: "{{ recipe_name }}: Print Docker setup result."
+        - name: "{{ recipe_name }}: Print setup result."
           debug:
-            var: docker_status
+            var: setup_status
 
-        - name: "{{ recipe_name }}: Wait for mdsvc-api."
+        - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
           uri:
             url: "{{ api_base_url }}/swagger/"
             method: GET
-            status_code:
-              - 200
-              - 301
-              - 302
+            status_code: [200, 301, 302]
           register: api_health
-          retries: 30
-          delay: 2
+          retries: 90
+          delay: 3
           until: api_health.status in [200, 301, 302]
 
         # =====================================================
