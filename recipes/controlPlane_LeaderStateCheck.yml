@@ -1,0 +1,113 @@
+- name: "controlPlane_operation_all.yml"
+  hosts: localhost
+  connection: local
+  vars:
+    recipe_name: "controlPlane_operation_all"
+    parent: None
+
+  tasks:
+  - block:
+
+    # check for the app_type
+     - name: "{{ recipe_name }}: Check if the app_type is 'controlplane'."
+       vars:
+         app_type: "{{ app_type }}"
+       debug:
+         msg: "app_type is: {{ app_type }}"
+       failed_when:
+         (app_type != "controlplane")
+
+     - name: "{{ recipe_name }}: Start pmdb and proxy servers."
+       include_role:
+          name: common
+          tasks_from: pmdb_cluster_init.yml
+       vars:
+         number_of_clients: 2
+         number_of_PMDBServers: 4
+
+     - name: "{{ recipe_name }}: Get the leader and follower uuids."
+       include_role:
+         name: common
+         tasks_from: get_follower_stats
+
+     - pause: seconds=60
+
+     - name: "{{ recipe_name }}: Starting controlplane_client to get membership details."
+       vars:
+         input_param: {
+                'Operation': 'membership',
+                'OutfileName': 'membership_output'
+                 }
+         ncpclires: "{{ lookup('controlplane', 'ncpc', input_param, wantlist=True) }}"
+       debug:
+         msg: "get membership details of running servers."
+       with_items:
+          - "{{ ncpclires }}"
+       register: membership
+       no_log: true
+
+     - name: "{{ recipe_name }}: Verify leader state is 1."
+       vars:
+         rdval: "{{ membership['results'][0]['item']['membership'][LeaderUUID['/0/leader-uuid']]['Tags']['State'] }}"
+       debug:
+         msg: "Verifying parameter after read operation"
+       failed_when: >
+         (rdval != "1")
+
+     - name: "{{ recipe_name }}: Kill the Leader."
+       debug:
+         msg: "{{lookup('niova_raftprocess', 'kill', LeaderUUID['/0/leader-uuid'], wantlist=True)}}"
+       no_log: True
+
+     - name: "{{ recipe_name }}: Wait until leader election happens."
+       include_role:
+         name: common
+         tasks_from: wait_until_leader_election
+
+     - name: "{{ recipe_name }}: Get the updated list of running peers"
+       include_role:
+         name: common
+         tasks_from: get_server_uuid_info
+
+     - name: "{{ recipe_name }}: Get the leader and follower uuids."
+       include_role:
+         name: common
+         tasks_from: get_follower_stats
+
+     - name: "{{ recipe_name }}: Get leaderUUID."
+       vars:
+         newLeader: "{{ LeaderUUID['/0/leader-uuid'] }}"
+       debug:
+         msg: "Get the leaderUUID"
+       with_items:
+         - "{{ newLeader }}"
+       register: newLeaderUUID
+
+     - pause: seconds=60
+
+     - name: "{{ recipe_name }}: Starting controlplane_client to get membership details."
+       vars:
+         input_param: {
+           'Operation': 'membership',
+           'OutfileName': 'membership_output'
+           }
+         ncpclires: "{{ lookup('controlplane', 'ncpc', input_param, wantlist=True) }}"
+       debug:
+         msg: "get membership details of running servers."
+       with_items:
+         - "{{ ncpclires }}"
+       register: membershipres
+       no_log: true
+
+     - name: "{{ recipe_name }}: Verify leader state is 1 second time"
+       vars:
+         rdval: "{{ membershipres['results'][0]['item']['membership'][newLeaderUUID['results'][0]['item']]['Tags']['State'] }}"
+       debug:
+         msg: "Verifying parameter after read operation"
+       failed_when: >
+           (rdval != "1")
+
+    rescue:
+     - name: "Recipe: {{ recipe_name }} failed"
+       set_fact:
+         terminate_recipe: true
