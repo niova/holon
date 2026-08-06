@@ -1,0 +1,10 @@
+---
+
+     - name: "{{ recipe_name }}: Compare write and read output with all the keys passed."
+       vars:
+         readall: "{{ Read_Key }}"
+       debug:
+         msg: "compare read and write output with all the keys passed"
+       failed_when: item.value['Value'] != readall[item.key]
+       with_dict: "{{ Write_Key }}"
+
