@@ -1,0 +1,140 @@
+- name: "lease_rebuild_on_peer_reboot"
+  hosts: localhost
+  connection: local
+  vars:
+     recipe_name: "lease_rebuild_on_peer_reboot"
+     no_of_leases: 1000
+     parent: None
+  vars_files:
+    - ../leaseStateValue.yml
+
+  tasks:
+  - block:
+    # check for the app_type
+    - name: "{{ recipe_name }}: Check if the app_type is 'lease'"
+      vars:
+         app_type: "{{ app_type }}"
+      debug:
+         msg: "app_type is: {{ app_type }}"
+      failed_when:
+         (app_type != "lease")
+
+    - name: "{{ recipe_name }}: Get the non-running peers list to select first peer to start"
+      include_role:
+        name: common
+        tasks_from: get_server_uuid_info
+
+    - name: "Start 5 peers in the cluster"
+      include_role:
+        name: common
+        tasks_from: start_server
+      vars:
+        ServerUUID: "{{ NonRunningServers[item] }}"
+      loop: "{{ range(0, NonRunningServers | length) | list }}"
+
+    - name: "{{ recipe_name }}: Get the running peers list."
+      include_role:
+        name: common
+        tasks_from: get_server_uuid_info
+
+    - name: "{{ recipe_name }}: Wait until leader election happens."
+      vars:
+         stage: "wait_leader_election"
+      debug:
+        msg: 
+          - "Waiting for leader election"
+          - "{{ lookup('niova_ctlrequest', 'lookup', NRunningPeers[item], '/raft_root_entry/0/leader-uuid')| dict2items | map(attribute='value') | list | first }}"
+      until: lookup('niova_ctlrequest', 'lookup', NRunningPeers[item], '/raft_root_entry/0/leader-uuid')| dict2items | map(attribute='value') | list | first != "null"
+      retries: 10
+      delay: 1
+      loop: "{{ range(0, NRunningPeers | length) | list }}"
+
+    - name: "{{ recipe_name }}: Get cluster information"
+      include_role:
+        name: common
+        tasks_from: get_follower_stats
+
+    - name: Bulk GET lease
+      command: >
+        python3 /home/runner/work/niovad/niovad/build_dir/holon/lease_recipes/get_lease.py
+        --raft {{ ClusterParams.raft_uuid }}
+        --total {{ no_of_leases }}
+        --output {{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}
+      register: bulk_get_result
+
+    - name: "{{ recipe_name }}: Verify get lease status"
+      debug:
+        msg: "Check outfile status: {{ bulk_get_result.stdout }}"
+
+    - name: "{{ recipe_name }}: Kill the Peer 1 i.e. any 1 follower."
+      debug:
+        msg: "{{ lookup('niova_raftprocess', 'kill', FollowerUUIDs[0]) }}"
+
+    - name: "{{ recipe_name }}: Reboot Peer 1."
+      debug:
+        msg: "{{ lookup('niova_raftprocess', 'start', FollowerUUIDs[0]) }}"
+
+    - name: "Wait for Peer 1 to bootup completely"
+      debug:
+        msg: "Wait till bootup completes for Peer {{ FollowerUUIDs[0] }}."
+      vars:
+        stage: "restart_peer1"
+      until: (lookup('niova_ctlrequest', 'lookup', FollowerUUIDs[0], '/raft_root_entry')| dict2items | map(attribute='value') | list | first != "null") and (lookup('niova_ctlrequest', 'lookup', FollowerUUIDs[0], '/raft_root_entry/0/state')| dict2items | map(attribute='value') | list | first != "booting")
+      retries: 60
+      delay: 1
+
+    - name: "{{ recipe_name }}: Get the latest list of running peer UUIDs"
+      include_role:
+        name: common
+        tasks_from: get_server_uuid_info
+
+    - name: "{{ recipe_name }}: Disable message receive on all peers for leader overthrow"
+      vars:
+         stage: "stage1_rcv_false"
+         cmd: "net_recv_enabled@false"
+         where: "/ctl_svc_nodes/net_recv_enabled@true"
+      debug:
+        msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', NRunningPeers, cmd, where) }}"
+      no_log: true
+
+    - name: "{{ recipe_name }}: Lets sleep for sometime before checking the values"
+      wait_for:
+        timeout: 5
+
+    - name: "{{ recipe_name }}: Selected leader-to-be"
+      set_fact:
+        Peer1: "{{ FollowerUUIDs[0] }}"
+
+    - debug:
+        msg: "Leader to be: {{ Peer1 }}"
+
+    - name: "{{ recipe_name }}: Enable receive on all peers from the leader-to-be."
+      vars:
+         stage: "stage2_set_leader"
+         cmd: "net_recv_enabled@true"
+         where: "/ctl_svc_nodes/uuid@{{ Peer1 }}"
+      debug:
+        msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', NRunningPeers, cmd, where) }}"
+      no_log: true
+
+    - pause: seconds=3
+
+    - name: "{{ recipe_name }}: Enable message receive on peer which is leader-to-be"
+      vars:
+         stage: "stage3_rcv_true"
+         cmd: "net_recv_enabled@true"
+         where: "/ctl_svc_nodes/net_recv_enabled@false"
+      debug:
+       msg: "{{ lookup('niova_ctlrequest', 'apply_cmd', Peer1, cmd, where) }}"
+      no_log: true
+
+    - name: "{{ recipe_name }}: Verify new leader is elected successfully"
+      vars:
+         stage: "get_all_for_new_leader"
+      debug:
+        msg:
+         - "Waiting for new leader election"
+      until: lookup('niova_ctlrequest', 'lookup', NRunningPeers[item], '/raft_root_entry/0/leader-uuid') | dict2items | map(attribute='value') | list | first == Peer1
+      retries: 10
+      delay: 2
+      loop: "{{ range(0, NRunningPeers | length) | list }}"
