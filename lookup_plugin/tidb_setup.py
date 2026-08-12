@@ -1,11 +1,28 @@
 """
 Ansible Lookup Plugin: tidb_setup
 =====================================
+<<<<<<< HEAD
 Manages the lifecycle of an mdsvc-tidb test environment using Docker,
 manual/pre-existing TiDB, or TiUP Playground.
 
 Backends
 --------
+=======
+Manages the lifecycle of an mdsvc-tidb cluster — Docker-based, manual
+(pre-existing TiDB), and tiup-cluster-deploy-based deployments.
+
+  - `docker compose up -d --build` brings up TiDB + mdsvc-api in one container,
+    exposing the API on http://localhost:8081 and TiDB MySQL protocol on 127.0.0.1:4000.
+  - Manual mode assumes the operator already has a TiDB/MySQL deployment running
+    (see https://docs.pingcap.com/tidb/stable/quick-start-with-tidb/); this plugin
+    only verifies reachability, it does not start TiDB itself.
+  - The mdsvc-api server auto-provisions the control-plane schema, the default
+    tenant's schema, and a default admin user on startup — no manual schema/bootstrap
+    script is needed.
+  - DISABLE_AUTH=true bypasses auth entirely (dev/test only). JWT_SECRET,
+    TENANT_ADMIN_USERNAME/PASSWORD, and ADMIN_DEFAULT_USERNAME/PASSWORD are
+    forwarded through when supplied.
+>>>>>>> 0a8d6d2 (Switch to docker setup.)
 
 Docker:
   - `docker compose up -d --build` starts TiDB + mdsvc-api.
