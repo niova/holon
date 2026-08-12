@@ -354,9 +354,11 @@ def cluster_deploy_setup(cluster_params):
       - identity_file: SSH private key path (recommended over password auth,
                         which tiup's -p mode handles unreliably across the
                         multiple parallel SSH sessions a multi-node deploy opens)
-      - ignore_config_check: bool, passes --ignore-config-check (needed when
-                        multiple TiKV instances share one host with no
-                        location labels set, e.g. local single-machine testing)
+      - ignore_config_check: bool, passes --no-labels (skips the check that
+                        flags multiple TiKV instances sharing one host with
+                        no location labels set, e.g. local single-machine
+                        testing) and --ignore-config-check (skips binary
+                        config validation)
     """
     base_dir = cluster_params['base_dir']
     app_name = cluster_params['app_type']
@@ -381,7 +383,7 @@ def cluster_deploy_setup(cluster_params):
         else:
             deploy_args += ["-p"]
         if ignore_config_check:
-            deploy_args += ["--ignore-config-check"]
+            deploy_args += ["--no-labels", "--ignore-config-check"]
 
         _run_tiup_cluster(cluster_params, deploy_args, logf)
         logf.write("Cluster deployed. Starting it...\n")

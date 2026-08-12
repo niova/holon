@@ -42,7 +42,7 @@
       tidb_version: "{{ tidb_version | default('v8.5.0') }}"
       tidb_topo_file: "{{ tidb_topo_file | default('') }}"
       tidb_deploy_user: "{{ tidb_deploy_user | default(lookup('env', 'USER')) }}"
-      tidb_identity_file: "{{ tidb_identity_file | default('~/.ssh/id_ed25519') }}"
+      tidb_identity_file: "{{ tidb_identity_file | default(lookup('env', 'HOME') + '/.ssh/id_ed25519') }}"
     failed_when: >
       ((srv_port | int) >= 65536) or
       ((client_port | int) >= 65536) or
