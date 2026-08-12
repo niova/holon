@@ -38,6 +38,11 @@
       blocktest_input_file_path: "{{ blocktest_file_path | default(false) | bool }}"
       nthreads:  "{{ nthreads | default(2) | int }}"
       s3Support: "{{ s3Support | default(false) | bool }}"
+      tidb_cluster_name: "{{ tidb_cluster_name | default('mdsvc-test') }}"
+      tidb_version: "{{ tidb_version | default('v8.5.0') }}"
+      tidb_topo_file: "{{ tidb_topo_file | default('') }}"
+      tidb_deploy_user: "{{ tidb_deploy_user | default(lookup('env', 'USER')) }}"
+      tidb_identity_file: "{{ tidb_identity_file | default('~/.ssh/id_ed25519') }}"
     failed_when: >
       ((srv_port | int) >= 65536) or
       ((client_port | int) >= 65536) or
@@ -86,6 +91,11 @@
            niovaBlockTest_input_file_path: "{{ blocktest_input_file_path }}"
            nthreads:  "{{ nthreads }}"
            s3Support: "{{ s3Support }}"
+           cluster_name: "{{ tidb_cluster_name }}"
+           tidb_version: "{{ tidb_version }}"
+           topo_file: "{{ tidb_topo_file }}"
+           deploy_user: "{{ tidb_deploy_user }}"
+           identity_file: "{{ tidb_identity_file }}"
 
   - name: "Prepare server configs"
     set_fact: ClusterInfo="{{lookup('niova_raftconfig', 'server')}}"
