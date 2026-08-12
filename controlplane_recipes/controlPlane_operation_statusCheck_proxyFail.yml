@@ -196,7 +196,7 @@
             readall: "{{ readres_afterStartingProxy['results'][0]['item']['output_data'][0]['Response']['ResultMap']}}"
           debug:
             msg: "compare read and write output with all the keys passed"
-          failed_when: (item['Request']['Value'] | b64decode) != (readall[item['Request']['Key']] | b64decode)
+          failed_when: ((item['Request']['Value'] | b64decode) != (readall[item['Request']['Key']] | b64decode)) | bool
           loop: "{{ writeres_afterStartingProxy['results'][0]['item']['output_data'] }}"
 
       rescue:
