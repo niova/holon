@@ -1,10 +1,9 @@
 """
-Ansible Lookup Plugin: mdsvc_cluster
+Ansible Lookup Plugin: tidb_setup
 =====================================
 Manages the lifecycle of an mdsvc-tidb cluster — Docker-based, manual
-(pre-existing TiDB), and now tiup-cluster-deploy-based deployments.
+(pre-existing TiDB), and tiup-cluster-deploy-based deployments.
 
-This matches the mdsvc-tidb README:
   - `docker compose up -d --build` brings up TiDB + mdsvc-api in one container,
     exposing the API on http://localhost:8081 and TiDB MySQL protocol on 127.0.0.1:4000.
   - Manual mode assumes the operator already has a TiDB/MySQL deployment running
