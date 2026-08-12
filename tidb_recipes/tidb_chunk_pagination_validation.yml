@@ -34,13 +34,10 @@
 
         - name: "{{ recipe_name }}: Mark TiDB backend setup attempted."
           set_fact:
-<<<<<<< HEAD
             tidb_setup_attempted: true
 
         - name: "{{ recipe_name }}: Start configured TiDB backend."
           set_fact:
-=======
->>>>>>> 0a8d6d2 (Switch to docker setup.)
             setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
 
         - name: "{{ recipe_name }}: Print setup result."
