@@ -27,7 +27,7 @@
 
         - name: "{{ recipe_name }}: Start mdsvc-tidb stack."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'cluster_deploy_setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
 
         - name: "{{ recipe_name }}: Print setup result."
           debug:
@@ -343,11 +343,3 @@
         - name: "{{ recipe_name }}: Recipe failed."
           fail:
             msg: "TiDB chunk pagination validation failed."
-
-        - name: "{{ recipe_name }}: Stop TiDB cluster."
-          set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'cluster_deploy_teardown') }}"
-
-        - name: "{{ recipe_name }}: Print teardown result."
-          debug:
-            var: teardown_status
