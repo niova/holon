@@ -1,0 +1,8 @@
+---
+
+   - name: "{{ recipe_name }}: Generate New Client UUID"
+     shell: "/usr/bin/uuid"
+     register: client_uuid
+
+   - debug:
+       msg: "{{ client_uuid.stdout }}"
