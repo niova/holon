@@ -40,9 +40,12 @@
       set_fact:
         holon_log_path: "{{ lookup('env', 'HOLON_LOG_PATH') }}"
 
-    - name: "{{ recipe_name }}: Validate HOLON_LOG_PATH is set"
-      fail:
-        msg: "HOLON_LOG_PATH is not set. Cannot clean .device files."
+    # HOLON_LOG_PATH is optional. When it is unset the cleanup of .device
+    # files and downloaded-object dirs is skipped, the rest of post_run
+    # (killing processes, unmounting, etc.) still runs.
+    - name: "{{ recipe_name }}: Warn if HOLON_LOG_PATH is not set"
+      debug:
+        msg: "HOLON_LOG_PATH is not set. Skipping cleanup of .device files and downloaded-object directories."
       when: holon_log_path | length == 0
 
     - name: Find device file
@@ -52,13 +55,14 @@
         file_type: file
         recurse: yes # To search in all subdirectories
       register: found_file
+      when: holon_log_path | length > 0
 
     - name: Delete device file if it exists
       file:
         path: "{{ item.path }}"
         state: absent
-      loop: "{{ found_file.files }}"
-      when: found_file.matched > 0
+      loop: "{{ found_file.files | default([]) }}"
+      when: (found_file.matched | default(0)) > 0
 
     - name: "{{ recipe_name }}: Get the GC Service process pid and status."
       set_fact:
@@ -137,13 +141,14 @@
         file_type: directory
         recurse: yes # To search in all subdirectories
       register: found_dirs
+      when: holon_log_path | length > 0
 
     - name: Delete dbi-dbo directories if found
       file:
         path: "{{ item.path }}"
         state: absent
-      loop: "{{ found_dirs.files }}"
-      when: found_dirs.matched > 0
+      loop: "{{ found_dirs.files | default([]) }}"
+      when: (found_dirs.matched | default(0)) > 0
 
     - pause:
         seconds: 2
@@ -155,13 +160,14 @@
         file_type: file
         recurse: yes # To search in all subdirectories
       register: found_file
+      when: holon_log_path | length > 0
 
     - name: Delete s3DV_nisd.device file if it exists
       file:
         path: "{{ item.path }}"
         state: absent
-      loop: "{{ found_file.files }}"
-      when: found_file.matched > 0
+      loop: "{{ found_file.files | default([]) }}"
+      when: (found_file.matched | default(0)) > 0
 
     - name: "{{ recipe_name }}: Get NIOVA_BIN_PATH from environment"
       set_fact:
