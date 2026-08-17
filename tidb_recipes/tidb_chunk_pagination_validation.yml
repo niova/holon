@@ -27,11 +27,11 @@
 
         - name: "{{ recipe_name }}: Start mdsvc-tidb stack."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'manual_setup') }}"
 
         - name: "{{ recipe_name }}: Print setup result."
           debug:
-            var: setup_status
+            msg: setup_status
 
         - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
           uri:
@@ -338,8 +338,24 @@
               - "Replica count: {{ expected_replica_count }}"
               - "Chunk pagination validation passed."
 
+        - name: "{{ recipe_name }}: Stop mdsvc-tidb stack."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
+
+        - name: "{{ recipe_name }}: Print teardown result."
+          debug:
+            msg: teardown_status
+
       rescue:
 
         - name: "{{ recipe_name }}: Recipe failed."
           fail:
             msg: "TiDB chunk pagination validation failed."
+
+        - name: "{{ recipe_name }}: Stop mdsvc-tidb stack."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
+
+        - name: "{{ recipe_name }}: Print teardown result."
+          debug:
+            msg: teardown_status
