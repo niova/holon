@@ -1,0 +1,328 @@
+- name: "tidb_check_quorum.yml"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "tidb_check_quorum"
+    api_base_url: "http://localhost:8081"
+    infra_payload: "{{ playbook_dir }}/../examples/e2e.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_vdev_100gb_1replica.json"
+    pd_client_url: "http://127.0.0.1:2379"
+    store_addr_to_node_id: "{{ store_addr_to_node_id | default({}) }}"
+
+  tasks:
+    - block:
+
+        # =====================================================
+        # 0. Validate application type
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Check if app_type is tidb."
+          debug:
+            msg: "app_type is: {{ app_type }}"
+          failed_when: app_type != "tidb"
+
+        # =====================================================
+        # 1. Deploy/start the multi-node TiKV cluster + mdsvc-tidb
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Start tiup-cluster-deploy TiKV cluster and mdsvc-tidb."
+          set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'cluster_deploy_setup') }}"
+
+        - name: "{{ recipe_name }}: Print setup result."
+          debug:
+            var: setup_status
+
+        - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
+          uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+          register: api_health
+          retries: 90
+          delay: 3
+          until: api_health.status in [200, 301, 302]
+
+        # =====================================================
+        # 2. Login
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Login to mdsvc-api."
+          set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username='admin',
+                  password='admin'
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store access token."
+          set_fact:
+            access_token: "{{ login_result.access_token }}"
+
+        - name: "{{ recipe_name }}: Verify access token."
+          debug:
+            msg: "Login completed successfully."
+          failed_when:
+            access_token is not defined or
+            access_token | length == 0
+
+        # =====================================================
+        # 3. Create infrastructure (needed before any create_vdev call)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=infra_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print infrastructure response."
+          debug:
+            var: infra_result
+
+        - name: "{{ recipe_name }}: Verify infrastructure creation."
+          assert:
+            that:
+              - infra_result.status_code | int in [200, 201]
+            success_msg: "Infrastructure created successfully."
+            fail_msg: >-
+              Infrastructure creation failed.
+              Status: {{ infra_result.status_code | default('missing') }}
+              Response: {{ infra_result.data | default({}) }}
+
+        # =====================================================
+        # 4. Identify the current leader so we kill followers, not it
+        # =====================================================
+
+        - name: "{{ recipe_name }}: List current TiKV stores from PD."
+          set_fact:
+            tikv_stores_result: "{{ lookup('tidb_setup', 'list_tikv_stores') }}"
+
+        - name: "{{ recipe_name }}: Verify at least 3 TiKV stores are up."
+          assert:
+            that:
+              - (tikv_stores_result.stores | length) >= 3
+            fail_msg: >-
+              tidb_check_quorum requires >= 3 TiKV stores up-front; found
+              {{ tikv_stores_result.stores | length }}.
+
+        - name: "{{ recipe_name }}: Identify the current leader store."
+          set_fact:
+            leader_store: "{{ (tikv_stores_result.stores | sort(attribute='leader_count', reverse=true)) | first }}"
+
+        - name: "{{ recipe_name }}: Identify follower stores."
+          set_fact:
+            follower_stores: "{{ tikv_stores_result.stores | rejectattr('id', 'equalto', leader_store.id) | list }}"
+
+        - name: "{{ recipe_name }}: Pick a follower to kill."
+          set_fact:
+            follower_1: "{{ follower_stores | random }}"
+
+        - name: "{{ recipe_name }}: Pick second follower (distinct from the first)."
+          set_fact:
+            follower_2: "{{ (follower_stores | rejectattr('id', 'equalto', follower_1.id) | list) | random }}"
+
+        - name: "{{ recipe_name }}: Resolve tiup node_ids for the chosen followers."
+          set_fact:
+            follower_1_node_id: "{{ store_addr_to_node_id.get(follower_1.address, follower_1.address) }}"
+            follower_2_node_id: "{{ store_addr_to_node_id.get(follower_2.address, follower_2.address) }}"
+
+        - name: "{{ recipe_name }}: Print chosen leader / followers."
+          debug:
+            msg:
+              - "Leader store:  id={{ leader_store.id }} addr={{ leader_store.address }}"
+              - "Follower #1:   id={{ follower_1.id }} addr={{ follower_1.address }} node_id={{ follower_1_node_id }}"
+              - "Follower #2:   id={{ follower_2.id }} addr={{ follower_2.address }} node_id={{ follower_2_node_id }}"
+
+        # =====================================================
+        # 5. Kill follower #1 (2/3 left -- still a majority)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Hard-kill follower #1."
+          set_fact:
+            ClusterParams: "{{ ClusterParams | combine({'node_id': follower_1_node_id}) }}"
+
+        - name: "{{ recipe_name }}: Run node_kill on follower #1."
+          set_fact:
+            kill_follower_1_result: "{{ lookup('tidb_setup', 'node_kill') }}"
+
+        - name: "{{ recipe_name }}: Print kill result for follower #1."
+          debug:
+            var: kill_follower_1_result
+
+        # =====================================================
+        # 6. create_vdev with majority (2/3) up -- expect success
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Create VDEV with majority quorum."
+          set_fact:
+            vdev_majority_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_vdev',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=vdev_payload
+                )
+              }}
+          register: vdev_majority_task
+
+        - name: "{{ recipe_name }}: Verify create_vdev succeeded with majority quorum."
+          assert:
+            that:
+              - not vdev_majority_task.failed
+              - vdev_majority_result.status_code | int in [200, 201]
+            success_msg: "create_vdev succeeded with majority (2/3) quorum, as expected."
+            fail_msg: >-
+              create_vdev unexpectedly failed while a majority (2/3) of TiKV
+              nodes were up. Result: {{ vdev_majority_result | default({}) }}
+
+        # =====================================================
+        # 7. Kill follower #2 (only the leader remains -- no quorum)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Hard-kill follower #2."
+          set_fact:
+            ClusterParams: "{{ ClusterParams | combine({'node_id': follower_2_node_id}) }}"
+
+        - name: "{{ recipe_name }}: Run node_kill on follower #2."
+          set_fact:
+            kill_follower_2_result: "{{ lookup('tidb_setup', 'node_kill') }}"
+
+        - name: "{{ recipe_name }}: Print kill result for follower #2."
+          debug:
+            var: kill_follower_2_result
+
+        # =====================================================
+        # 8. create_vdev (write) and get_vdev (read) with no quorum -- expect failure
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Create VDEV with no quorum (leader only)."
+          set_fact:
+            vdev_no_quorum_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_vdev',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=vdev_payload,
+                  timeout=15
+                )
+              }}
+          register: vdev_no_quorum_task
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Verify create_vdev failed or timed out with no quorum."
+          assert:
+            that:
+              - vdev_no_quorum_task.failed
+            success_msg: "create_vdev correctly failed/timed out with no quorum."
+            fail_msg: >-
+              create_vdev unexpectedly SUCCEEDED with no quorum (only the
+              leader up) -- quorum enforcement is broken.
+
+        - name: "{{ recipe_name }}: Read VDEVs with no quorum."
+          set_fact:
+            get_vdev_no_quorum_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_vdev',
+                  base_url=api_base_url,
+                  token=access_token,
+                  timeout=15
+                )
+              }}
+          register: get_vdev_no_quorum_task
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Report whether the read also failed with no quorum."
+          debug:
+            msg: >-
+              get_vdev {{ 'failed as expected' if get_vdev_no_quorum_task.failed
+              else 'unexpectedly succeeded' }} with no quorum.
+
+        # =====================================================
+        # 9. Restart follower #1 (2/3 up again -- majority restored)
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Restart follower #1."
+          set_fact:
+            ClusterParams: "{{ ClusterParams | combine({'node_id': follower_1_node_id}) }}"
+
+        - name: "{{ recipe_name }}: Run node_start on follower #1."
+          set_fact:
+            restart_follower_1_result: "{{ lookup('tidb_setup', 'node_start') }}"
+
+        - name: "{{ recipe_name }}: Print restart result for follower #1."
+          debug:
+            var: restart_follower_1_result
+
+        - name: "{{ recipe_name }}: Wait for the restarted follower to rejoin."
+          pause:
+            seconds: 10
+
+        # =====================================================
+        # 10. create_vdev with majority restored -- expect success
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Create VDEV with quorum restored."
+          set_fact:
+            vdev_recovered_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_vdev',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=vdev_payload
+                )
+              }}
+          register: vdev_recovered_task
+
+        - name: "{{ recipe_name }}: Verify create_vdev succeeded again after quorum recovery."
+          assert:
+            that:
+              - not vdev_recovered_task.failed
+              - vdev_recovered_result.status_code | int in [200, 201]
+            success_msg: "create_vdev succeeded again -- cluster recovered as soon as quorum came back."
+            fail_msg: >-
+              create_vdev still failing after quorum recovery -- cluster did
+              not recover as expected. Result: {{ vdev_recovered_result | default({}) }}
+
+        # =====================================================
+        # 11. Final recipe result
+        # =====================================================
+
+        - name: "{{ recipe_name }}: checkquorum validation completed."
+          debug:
+            msg:
+              - "1. Killed follower #1 ({{ follower_1_node_id }}) -- majority held."
+              - "2. create_vdev with majority: SUCCESS"
+              - "3. Killed follower #2 ({{ follower_2_node_id }}) -- only leader left."
+              - "4. create_vdev with no quorum: FAILED as expected"
+              - "   get_vdev with no quorum: {{ 'FAILED as expected' if get_vdev_no_quorum_task.failed else 'unexpectedly succeeded' }}"
+              - "5. Restarted follower #1 -- majority restored."
+              - "6. create_vdev after recovery: SUCCESS"
+              - "Quorum validation passed."
+
+      rescue:
+
+        - name: "{{ recipe_name }}: Recipe failed."
+          fail:
+            msg: "TiDB check_quorum validation failed."
