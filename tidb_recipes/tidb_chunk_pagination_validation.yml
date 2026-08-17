@@ -38,7 +38,7 @@
 
         - name: "{{ recipe_name }}: Start configured TiDB backend."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'manual_setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
 
         - name: "{{ recipe_name }}: Print setup result."
           debug:
