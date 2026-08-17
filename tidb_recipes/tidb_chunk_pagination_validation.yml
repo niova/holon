@@ -38,7 +38,7 @@
 
         - name: "{{ recipe_name }}: Start configured TiDB backend."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'manual_setup') }}"
 
         - name: "{{ recipe_name }}: Print setup result."
           debug:
@@ -352,6 +352,14 @@
               - "Page limit: {{ page_limit }}"
               - "Replica count: {{ expected_replica_count }}"
               - "Chunk pagination validation passed."
+
+        - name: "{{ recipe_name }}: Stop mdsvc-tidb stack."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
+
+        - name: "{{ recipe_name }}: Print teardown result."
+          debug:
+            msg: teardown_status
 
       rescue:
 
