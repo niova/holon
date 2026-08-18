@@ -1,32 +1,31 @@
-    
-    - name: "{{ recipe_name }}: Get nisd 'tasks' list"
-      vars:
-        stage: "wait-fault-inject"
-        tasks_keys:
-          - "/tasks"
-        process_type: "nisd"
-        lookout_uuid: "{{ LookoutUUID }}"
-      set_fact:
-        getFaultInject: "{{ lookup('niova_ctlrequest', 'lookup', NisdUUID, tasks_keys, 'nisd', lookout_uuid) }}"
-      no_log: false
+- name: "{{ recipe_name }}: Get nisd 'tasks' list"
+  vars:
+    stage: "wait-fault-inject"
+    tasks_keys:
+      - "/tasks"
+    process_type: "nisd"
+    lookout_uuid: "{{ LookoutUUID }}"
+  set_fact:
+    getFaultInject: "{{ lookup('niova_ctlrequest', 'lookup', NisdUUID, tasks_keys, 'nisd', lookout_uuid) }}"
+  no_log: false
 
-    - name: "{{ recipe_name }}: Gather vblk-read wait-fault-inject value."
-      set_fact:
-        VblkReadFaultInjectList: >-
-          {{
-            getFaultInject['//tasks']
-            | selectattr('type', 'equalto', 'vblk-read')
-            | map(attribute='wait.fault-inject')
-            | map('string')
-            | list
-          }}
-      no_log: false
+- name: "{{ recipe_name }}: Gather vblk-read wait-fault-inject value."
+  set_fact:
+    VblkReadFaultInjectList: >-
+      {{
+        getFaultInject['//tasks']
+        | selectattr('type', 'equalto', 'vblk-read')
+        | map(attribute='wait.fault-inject')
+        | map('string')
+        | list
+      }}
+  no_log: false
 
-    - name: "{{ recipe_name }}: Verify vblk-read wait-fault-inject."
-      debug:
-        msg:
-          - "vblk-read fault-inject values: {{ VblkReadFaultInjectList }}"
-      failed_when: >
-        VblkReadFaultInjectList | length == 0 or
-        (VblkReadFaultInjectList | difference(['3']) | length > 0)
-      no_log: false
+- name: "{{ recipe_name }}: Verify vblk-read wait-fault-inject."
+  debug:
+    msg:
+      - "vblk-read fault-inject values: {{ VblkReadFaultInjectList }}"
+  failed_when: >
+    VblkReadFaultInjectList | length == 0 or
+    (VblkReadFaultInjectList | difference(['3']) | length > 0)
+  no_log: false
