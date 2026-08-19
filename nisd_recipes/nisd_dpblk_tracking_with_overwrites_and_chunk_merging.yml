@@ -3,7 +3,7 @@
   hosts: localhost
   connection: local
   vars:
-    recipe_name: "nisd_dpblk_tracking_with_overwrites"
+    recipe_name: "nisd_dpblk_tracking_with_overwrites_and_chunk_merging"
     parent: "nisd_initialization_and_startup"
     nisd_root_keys:
               - "/nisd_root_entry/0/uuid"
@@ -346,10 +346,10 @@
        debug:
          msg: "Read results: {{ rd_failure }}"
 
-     - name: "{{ recipe_name }}: Verify if all readsfailed."
+     - name: "{{ recipe_name }}: Verify if all reads failed."
        debug:
-         msg: "One or more niova-block-test reads failed: {{ rd_results }}"
-       failed_when: (rd_failure | reject('equalto', '0') | list | length) != 0
+         msg: "One or more niova-block-test reads failed: {{ rd_failure }}"
+       failed_when: (rd_failure | reject('equalto', '0') | list | length) == '0'
 
      #9 - Issue a Read of the Vblks using $CLIENT_UUID_NEW
      - name: "{{ recipe_name }}: Issue a Read of the Vblks using CLIENT_UUID_NEW."

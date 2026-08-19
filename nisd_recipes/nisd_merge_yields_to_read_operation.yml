@@ -159,18 +159,16 @@
          msg: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
        loop: "{{ range(0, get_nisd | length) | list }}"
 
-    # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
-
-    #  - name: "{{ recipe_name}}: Wait until 'conns' gets updated"
-    #    vars:
-    #      stage: "wait_for_conns"
-    #      lookout_uuid: "{{ get_lookout[0] }}"
-    #    debug:
-    #      msg: "Waiting for 'conns' to get updated"
-    #    until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/conns/0/num-pending', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == 3
-    #    retries: 60
-    #    delay: 1
-    #    loop: "{{ range(0, get_nisd | length) | list }}"
+     - name: "{{ recipe_name}}: Wait until 'conns' gets updated"
+       vars:
+         stage: "wait_for_conns"
+         lookout_uuid: "{{ get_lookout[0] }}"
+       debug:
+         msg: "Waiting for 'conns' to get updated"
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/conns/0/num-pending', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == 3
+       retries: 60
+       delay: 1
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Reset ChunkInfo list after read."
        set_fact:
@@ -199,18 +197,16 @@
          (chunk_info_after_read['vblks-read'] != 0)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
-    # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
-
-    #  - name: "Verify wait-fault-injection task."
-    #    include_role:
-    #      name: common
-    #      tasks_from: verify_nisd_task_wait_fault_injection
-    #    vars:
-    #      NisdUUID: "{{ nisd_uuid }}"
-    #      LookoutUUID: "{{ get_lookout[0] }}"
-    #    loop: "{{ get_nisd }}"
-    #    loop_control:
-    #      loop_var: nisd_uuid
+     - name: "Verify vblk-read wait-fault-injection task."
+       include_role:
+         name: common
+         tasks_from: verify_nisd_task_wait_fault_injection
+       vars:
+         NisdUUID: "{{ nisd_uuid }}"
+         LookoutUUID: "{{ get_lookout[0] }}"
+       loop: "{{ get_nisd }}"
+       loop_control:
+         loop_var: nisd_uuid
 
      #4 - Pause Compaction on the Chunk
      - name: "{{ recipe_name }}: Pause Compaction on the Chunk."
@@ -373,18 +369,16 @@
          (aftrForceCompct['merge-info']['full-cnt'] != 1)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
-    # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
-
-    #  - name: "Verify wait-merge-preempted task."
-    #    include_role:
-    #      name: common
-    #      tasks_from: verify_nisd_task_wait_merge_preempted
-    #    vars:
-    #      NisdUUID: "{{ nisd_uuid }}"
-    #      LookoutUUID: "{{ get_lookout[0] }}"
-    #    loop: "{{ get_nisd }}"
-    #    loop_control:
-    #      loop_var: nisd_uuid
+     - name: "Verify wait-merge-preempted task."
+       include_role:
+        name: common
+        tasks_from: verify_nisd_task_wait_merge_preempted
+       vars:
+        NisdUUID: "{{ nisd_uuid }}"
+        LookoutUUID: "{{ get_lookout[0] }}"
+       loop: "{{ get_nisd }}"
+       loop_control:
+        loop_var: nisd_uuid
 
      #7 - Enqueue Reads from the Client Used in Step #5
      - name: "{{ recipe_name }}: Enqueue Reads from the Client Used in Step #5"

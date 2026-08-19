@@ -1,28 +1,31 @@
+- name: "{{ recipe_name }}: Get nisd 'tasks' list"
+  vars:
+    stage: "get-nisd-tasks-list"
+    tasks_keys:
+      - "/tasks"
+    process_type: "nisd"
+    lookout_uuid: "{{ LookoutUUID }}"
+  set_fact:
+    getTaskList: "{{ lookup('niova_ctlrequest', 'lookup', NisdUUID, tasks_keys, 'nisd', lookout_uuid) }}"
+  no_log: false
 
-    - name: "{{ recipe_name }}: Get nisd 'tasks' list"
-      vars:
-        stage: "wait-fault-inject"
-        tasks_keys:
-          - "/tasks"
-        process_type: "nisd"
-        lookout_uuid: "{{ LookoutUUID }}"
-      set_fact:
-        getMergePreempted: "{{ lookup('niova_ctlrequest', 'lookup', NisdUUID, tasks_keys, 'nisd', lookout_uuid) }}"
-      no_log: false
+- name: "{{ recipe_name }}: Gather chunk-merge-full wait-merge-preempted value."
+  set_fact:
+    MergePreemptedList: >-
+      {{
+        getTaskList['//tasks']
+        | selectattr('type', 'equalto', 'chunk-merge-full')
+        | map(attribute='wait.merge-preempted')
+        | map('string')
+        | list
+      }}
+  no_log: false
 
-    - name: "{{ recipe_name }}: Gather wait-merge-preempted value."
-      set_fact:
-        MergePreemptedList: >-
-          {{
-            (MergePreemptedList | default([]))
-            + [item['wait']['merge-preempted'] | string]
-          }}
-      loop: "{{ getMergePreempted['//tasks'] }}"
-      no_log: false
-
-    - name: "{{ recipe_name }}: Verify 'wait-merge-preempted'."
-      debug:
-        msg: "Verify 'wait-merge-preempted."
-      failed_when: item != "1"
-      loop: "{{ MergePreemptedList }}"
-      no_log: false
+- name: "{{ recipe_name }}: Verify chunk-merge-full wait-merge-preempted."
+  debug:
+    msg:
+      - "chunk-merge-full merge-preempted values: {{ MergePreemptedList }}"
+  failed_when: >
+    MergePreemptedList | length == 0 or
+    (MergePreemptedList | difference(['1']) | length > 0)
+  no_log: false
