@@ -159,18 +159,16 @@
          msg: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
        loop: "{{ range(0, get_nisd | length) | list }}"
 
-    # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
-
-    #  - name: "{{ recipe_name}}: Wait until 'conns' gets updated"
-    #    vars:
-    #      stage: "wait_for_conns"
-    #      lookout_uuid: "{{ get_lookout[0] }}"
-    #    debug:
-    #      msg: "Waiting for 'conns' to get updated"
-    #    until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/conns/0/num-pending', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == 3
-    #    retries: 60
-    #    delay: 1
-    #    loop: "{{ range(0, get_nisd | length) | list }}"
+     - name: "{{ recipe_name}}: Wait until 'conns' gets updated"
+       vars:
+         stage: "wait_for_conns"
+         lookout_uuid: "{{ get_lookout[0] }}"
+       debug:
+         msg: "Waiting for 'conns' to get updated"
+       until: lookup('niova_ctlrequest', 'lookup', get_nisd[item], '/conns/0/num-pending', 'nisd', lookout_uuid) | dict2items | map(attribute='value') | list | first == 3
+       retries: 60
+       delay: 1
+       loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "{{ recipe_name }}: Reset ChunkInfo list after read."
        set_fact:
@@ -199,7 +197,7 @@
          (chunk_info_after_read['vblks-read'] != 0)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
-     - name: "Verify wait-fault-injection task."
+     - name: "Verify vblk-read wait-fault-injection task."
        include_role:
          name: common
          tasks_from: verify_nisd_task_wait_fault_injection
