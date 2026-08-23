@@ -21,17 +21,32 @@
             msg: "app_type is: {{ app_type }}"
           failed_when: app_type != "tidb"
 
+        - name: "{{ recipe_name }}: Initialize recipe state."
+          set_fact:
+            tidb_setup_attempted: false
+            tidb_setup_complete: false
+            pagination_recipe_failed: false
+            pagination_recipe_failure: {}
+
         # =====================================================
-        # 1. Start mdsvc-tidb
+        # 1. Start configured TiDB backend
         # =====================================================
 
-        - name: "{{ recipe_name }}: Start mdsvc-tidb stack."
+        - name: "{{ recipe_name }}: Mark TiDB backend setup attempted."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+            tidb_setup_attempted: true
+
+        - name: "{{ recipe_name }}: Start configured TiDB backend."
+          set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'setup') }}"
 
         - name: "{{ recipe_name }}: Print setup result."
           debug:
-            msg: setup_status
+            var: setup_status
+
+        - name: "{{ recipe_name }}: Mark TiDB backend setup complete."
+          set_fact:
+            tidb_setup_complete: true
 
         - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
           uri:
@@ -338,24 +353,51 @@
               - "Replica count: {{ expected_replica_count }}"
               - "Chunk pagination validation passed."
 
-        - name: "{{ recipe_name }}: Stop mdsvc-tidb stack."
-          set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
-
-        - name: "{{ recipe_name }}: Print teardown result."
-          debug:
-            msg: teardown_status
-
       rescue:
 
-        - name: "{{ recipe_name }}: Recipe failed."
-          fail:
-            msg: "TiDB chunk pagination validation failed."
+        - name: "{{ recipe_name }}: Print failure context."
+          debug:
+            msg:
+              - "TiDB chunk pagination validation failed."
+              - "Backend: {{ tidb_backend | default('docker') }}"
+              - "VDEV UUID: {{ vdev_uuid | default('not-created') }}"
+              - "Expected chunks: {{ num_of_chunks | default('unknown') }}"
+              - >-
+                Failure: {{
+                  ansible_failed_result.msg
+                  | default(ansible_failed_result)
+                }}
 
-        - name: "{{ recipe_name }}: Stop mdsvc-tidb stack."
+        - name: "{{ recipe_name }}: Mark recipe failed."
           set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+            pagination_recipe_failed: true
+            pagination_recipe_failure: "{{ ansible_failed_result }}"
+
+      always:
+
+        # =====================================================
+        # 10. Always clean up whichever TiDB backend was started
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Tear down configured TiDB backend."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'teardown') }}"
+          when:
+            tidb_setup_attempted | default(false) | bool
+          ignore_errors: true
 
         - name: "{{ recipe_name }}: Print teardown result."
           debug:
-            msg: teardown_status
+            var: teardown_status
+          when:
+            teardown_status is defined
+
+        - name: "{{ recipe_name }}: Fail recipe after cleanup if validation failed."
+          fail:
+            msg: >-
+              TiDB chunk pagination validation failed: {{
+                pagination_recipe_failure.msg
+                | default('See previous task output for failure context.')
+              }}
+          when:
+            pagination_recipe_failed | default(false) | bool

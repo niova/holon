@@ -5,8 +5,8 @@
   vars:
     recipe_name: "tidb_start_niova_block_test"
     api_base_url: "http://localhost:8081"
-    infra_payload: "./examples/create_sample_infra.json"
-    vdev_payload: "./examples/create_sample_vdev.json"
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
     client_id: "5e00ce0c-8021-11f1-911c-0fc57145aa3a"
 

@@ -6,113 +6,139 @@
     - ./cmdline_vars.yml
 
   tasks:
-  - name: "Print ansible version"
-    debug:
-      msg: "Ansible version is  {{ ansible_version.full }}"
+    - name: "Print ansible version"
+      debug:
+        msg: "Ansible version is {{ ansible_version.full }}"
 
-  - name: "Get Raft UUID"
-    shell: "/usr/bin/uuid"
-    register: cluster_uuid
+    - name: "Get Raft UUID"
+      shell: "/usr/bin/uuid"
+      register: cluster_uuid
 
-  - name: "Initalize error handling"
-    set_fact:
-      terminate_recipe: false
+    - name: "Initialize error handling"
+      set_fact:
+        terminate_recipe: false
 
-  - name: "Default Values"
-    set_fact:
-      dir_path: "{{ dir_path | default('/tmp/holon_recipes_run') }}"
-      backend_type: "{{ backend_type | default('raft')}}"
-      srv_port: "{{ srv_port | default(6000) }}"
-      npeers: "{{ npeers | default(5) }}"
-      nclients: "{{ nclients | default(10) }}"
-      client_port: "{{ client_port | default(13000) }}"
-      disable_post_run: "{{ disable_post_run | default(false) | bool }}"
-      coalesced_wr: "{{ coalesced_wr | default(0) | string }}"
-      sync: "{{ sync | default(0) | string }}"
-      num_clients: "{{ num_clients | default(10) }}"
-      ClientIndex: 0
-      app_type: "{{ app_type | default('pumicedb') }}"
-      prometheus_support: "{{ prometheus | default(0) }}"
-      nlookouts: "{{ nlookouts | default(5) | int }}"
-      nnisds: "{{ nnisds | default(50) | int }}"
-      blocktest_input_file_path: "{{ blocktest_file_path | default(false) | bool }}"
-      nthreads:  "{{ nthreads | default(2) | int }}"
-      s3Support: "{{ s3Support | default(false) | bool }}"
-      tidb_cluster_name: "{{ tidb_cluster_name | default('mdsvc-test') }}"
-      tidb_version: "{{ tidb_version | default('v8.5.0') }}"
-      tidb_topo_file: "{{ tidb_topo_file | default('') }}"
-      tidb_deploy_user: "{{ tidb_deploy_user | default(lookup('env', 'USER')) }}"
-      tidb_identity_file: "{{ tidb_identity_file | default(lookup('env', 'HOME') + '/.ssh/id_ed25519') }}"
-    failed_when: >
-      ((srv_port | int) >= 65536) or
-      ((client_port | int) >= 65536) or
-      ((backend_type != "raft") and (backend_type != "pumicedb"))
+    - name: "Default Values"
+      set_fact:
+        dir_path: "{{ dir_path | default('/tmp/holon_recipes_run') }}"
+        backend_type: "{{ backend_type | default('raft') }}"
+        srv_port: "{{ srv_port | default(6000) }}"
+        npeers: "{{ npeers | default(5) }}"
+        nclients: "{{ nclients | default(10) }}"
+        client_port: "{{ client_port | default(13000) }}"
+        disable_post_run: "{{ disable_post_run | default(false) | bool }}"
+        coalesced_wr: "{{ coalesced_wr | default(0) | string }}"
+        sync: "{{ sync | default(0) | string }}"
+        num_clients: "{{ num_clients | default(10) }}"
+        ClientIndex: 0
+        app_type: "{{ app_type | default('pumicedb') }}"
+        prometheus_support: "{{ prometheus | default(0) }}"
+        nlookouts: "{{ nlookouts | default(5) | int }}"
+        nnisds: "{{ nnisds | default(50) | int }}"
+        blocktest_input_file_path: "{{ blocktest_file_path | default(false) | bool }}"
+        nthreads: "{{ nthreads | default(2) | int }}"
+        s3Support: "{{ s3Support | default(false) | bool }}"
 
-  - name: "Print the special feature parameters."
-    debug:
-      msg:
-       - "The app running is: {{ app_type }}"
-       - "Coalesced enabled: {{ coalesced_wr }}"
-       - "Sync enabled: {{ sync }}"
+        # TiDB backend selection:
+        #   docker  -> docker compose provides TiDB + mdsvc-api
+        #   cluster -> TiUP provides PD/TiKV/TiDB and mdsvc-api runs as a process
+        tidb_backend: "{{ tidb_backend | default('docker') }}"
+        tidb_cluster_name: "{{ tidb_cluster_name | default('mdsvc-test') }}"
+        tidb_version: "{{ tidb_version | default('v8.5.0') }}"
+        tidb_topo_file: "{{ tidb_topo_file | default('') }}"
+        tidb_deploy_user: "{{ tidb_deploy_user | default(lookup('env', 'USER')) }}"
+        tidb_identity_file: "{{ tidb_identity_file | default(lookup('env', 'HOME') + '/.ssh/id_ed25519') }}"
+        tidb_quorum_expected_stores: "{{ tidb_quorum_expected_stores | default(3) | int }}"
+        tidb_quorum_expected_replicas: "{{ tidb_quorum_expected_replicas | default(3) | int }}"
+        tidb_quorum_ready_timeout: "{{ tidb_quorum_ready_timeout | default(240) | int }}"
+      failed_when: >
+        ((srv_port | int) >= 65536) or
+        ((client_port | int) >= 65536) or
+        ((backend_type != "raft") and (backend_type != "pumicedb"))
 
-  - name: "Check if ports are already in use"
-    vars:
-      config_params:
-        startup_check: "port_check"
-        srv_port: "{{ srv_port }}"
-        client_port: "{{ client_port }}"
-    debug:
-       msg: "{{ lookup('holon_startup', config_params) }}"
+    - name: "Validate TiDB backend selection"
+      debug:
+        msg:
+          - "TiDB backend: {{ tidb_backend }}"
+          - "TiDB cluster name: {{ tidb_cluster_name }}"
+          - "TiDB topology: {{ tidb_topo_file if tidb_backend == 'cluster' else 'not required for docker backend' }}"
+      failed_when: >
+        app_type == 'tidb' and
+        (
+          tidb_backend not in ['docker', 'cluster'] or
+          (
+            tidb_backend == 'cluster' and
+            (tidb_topo_file | string | length == 0)
+          )
+        )
 
-  #- name: "Install python modules if not installed previously"
-  #  vars:
-  #    config_params:
-  #      startup_check: "python_module_install"
-  #  debug:
-  #    msg: "{{ lookup('holon_startup', config_params,) }}"
+    - name: "Print the special feature parameters."
+      debug:
+        msg:
+          - "The app running is: {{ app_type }}"
+          - "Coalesced enabled: {{ coalesced_wr }}"
+          - "Sync enabled: {{ sync }}"
+          - "TiDB backend: {{ tidb_backend if app_type == 'tidb' else 'n/a' }}"
 
-  - name: "Prepare parameter to pass across recipes"
-    set_fact:
-       ClusterParams:
-           base_dir: "{{ dir_path }}"
-           raft_uuid: "{{ cluster_uuid.stdout}}"
-           ctype: "{{ backend_type }}"
-           npeers: "{{ npeers }}"
-           nclients: "{{ nclients }}"
-           client_port: "{{ client_port }}"
-           srv_port: "{{ srv_port }}"
-           app_type: "{{ app_type }}"
-           coal_wr: "{{ coalesced_wr }}"
-           sync_mode: "{{ sync }}"
-           file_counter: 0
-           prometheus_support: "{{ prometheus_support }}"
-           nlookouts: "{{ nlookouts | default(5) }}"
-           nnisds: "{{ nnisds | default(5) }}"
-           niovaBlockTest_input_file_path: "{{ blocktest_input_file_path }}"
-           nthreads:  "{{ nthreads }}"
-           s3Support: "{{ s3Support }}"
-           cluster_name: "{{ tidb_cluster_name }}"
-           tidb_version: "{{ tidb_version }}"
-           topo_file: "{{ tidb_topo_file }}"
-           deploy_user: "{{ tidb_deploy_user }}"
-           identity_file: "{{ tidb_identity_file }}"
+    - name: "Check if ports are already in use"
+      vars:
+        config_params:
+          startup_check: "port_check"
+          srv_port: "{{ srv_port }}"
+          client_port: "{{ client_port }}"
+      debug:
+        msg: "{{ lookup('holon_startup', config_params) }}"
 
-  - name: "Prepare server configs"
-    set_fact: ClusterInfo="{{lookup('niova_raftconfig', 'server')}}"
+    - name: "Prepare parameter to pass across recipes"
+      set_fact:
+        ClusterParams:
+          base_dir: "{{ dir_path }}"
+          raft_uuid: "{{ cluster_uuid.stdout }}"
+          ctype: "{{ backend_type }}"
+          npeers: "{{ npeers }}"
+          nclients: "{{ nclients }}"
+          client_port: "{{ client_port }}"
+          srv_port: "{{ srv_port }}"
+          app_type: "{{ app_type }}"
+          coal_wr: "{{ coalesced_wr }}"
+          sync_mode: "{{ sync }}"
+          file_counter: 0
+          prometheus_support: "{{ prometheus_support }}"
+          nlookouts: "{{ nlookouts | default(5) }}"
+          nnisds: "{{ nnisds | default(5) }}"
+          niovaBlockTest_input_file_path: "{{ blocktest_input_file_path }}"
+          nthreads: "{{ nthreads }}"
+          s3Support: "{{ s3Support }}"
 
-  - name: "Show the values"
-    debug:
-      msg:
-        - "Directory path: {{ dir_path }}"
-        - "Port is {{ srv_port }}"
-        - "Nservers is: {{ npeers }}"
-        - "client port is {{ client_port }}"
-        - "Raft UUID is {{ cluster_uuid.stdout }}"
-        - "Recipe: {{ recipe }}"
-        - "Raft params: {{ ClusterParams }}"
-        - "Disable post run : {{ disable_post_run }}"
-        - "Number of thread count: {{ nthreads }}"
-        - "s3Support: {{ s3Support }}"
+          # Backend-aware TiDB parameters consumed by tidb_setup.py.
+          tidb_backend: "{{ tidb_backend }}"
+          cluster_name: "{{ tidb_cluster_name }}"
+          tidb_version: "{{ tidb_version }}"
+          topo_file: "{{ tidb_topo_file }}"
+          deploy_user: "{{ tidb_deploy_user }}"
+          identity_file: "{{ tidb_identity_file }}"
+          quorum_expected_stores: "{{ tidb_quorum_expected_stores }}"
+          quorum_expected_replicas: "{{ tidb_quorum_expected_replicas }}"
+          quorum_ready_timeout: "{{ tidb_quorum_ready_timeout }}"
+          api_base_url: "{{ lookup('env', 'MDSVC_API_URL') | default('http://localhost:8081', true) }}"
+
+    - name: "Prepare server configs"
+      set_fact:
+        ClusterInfo: "{{ lookup('niova_raftconfig', 'server') }}"
+
+    - name: "Show the values"
+      debug:
+        msg:
+          - "Directory path: {{ dir_path }}"
+          - "Port is {{ srv_port }}"
+          - "Nservers is: {{ npeers }}"
+          - "client port is {{ client_port }}"
+          - "Raft UUID is {{ cluster_uuid.stdout }}"
+          - "Recipe: {{ recipe }}"
+          - "Raft params: {{ ClusterParams }}"
+          - "Disable post run: {{ disable_post_run }}"
+          - "Number of thread count: {{ nthreads }}"
+          - "s3Support: {{ s3Support }}"
 
 - import_playbook: "{{ app_type }}_recipes/{{ recipe }}"
   vars:
