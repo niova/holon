@@ -1,28 +1,11 @@
 """
 Ansible Lookup Plugin: tidb_setup
 =====================================
-<<<<<<< HEAD
 Manages the lifecycle of an mdsvc-tidb test environment using Docker,
 manual/pre-existing TiDB, or TiUP Playground.
 
 Backends
 --------
-=======
-Manages the lifecycle of an mdsvc-tidb cluster — Docker-based, manual
-(pre-existing TiDB), and tiup-cluster-deploy-based deployments.
-
-  - `docker compose up -d --build` brings up TiDB + mdsvc-api in one container,
-    exposing the API on http://localhost:8081 and TiDB MySQL protocol on 127.0.0.1:4000.
-  - Manual mode assumes the operator already has a TiDB/MySQL deployment running
-    (see https://docs.pingcap.com/tidb/stable/quick-start-with-tidb/); this plugin
-    only verifies reachability, it does not start TiDB itself.
-  - The mdsvc-api server auto-provisions the control-plane schema, the default
-    tenant's schema, and a default admin user on startup — no manual schema/bootstrap
-    script is needed.
-  - DISABLE_AUTH=true bypasses auth entirely (dev/test only). JWT_SECRET,
-    TENANT_ADMIN_USERNAME/PASSWORD, and ADMIN_DEFAULT_USERNAME/PASSWORD are
-    forwarded through when supplied.
->>>>>>> 0a8d6d2 (Switch to docker setup.)
 
 Docker:
   - `docker compose up -d --build` starts TiDB + mdsvc-api.
@@ -2102,11 +2085,9 @@ def cluster_deploy_setup(cluster_params):
       - identity_file: SSH private key path (recommended over password auth,
                         which tiup's -p mode handles unreliably across the
                         multiple parallel SSH sessions a multi-node deploy opens)
-      - ignore_config_check: bool, passes --no-labels (skips the check that
-                        flags multiple TiKV instances sharing one host with
-                        no location labels set, e.g. local single-machine
-                        testing) and --ignore-config-check (skips binary
-                        config validation)
+      - ignore_config_check: bool, passes --ignore-config-check (needed when
+                        multiple TiKV instances share one host with no
+                        location labels set, e.g. local single-machine testing)
     """
     base_dir = cluster_params['base_dir']
     app_name = cluster_params['app_type']
@@ -2131,7 +2112,7 @@ def cluster_deploy_setup(cluster_params):
         else:
             deploy_args += ["-p"]
         if ignore_config_check:
-            deploy_args += ["--no-labels", "--ignore-config-check"]
+            deploy_args += ["--ignore-config-check"]
 
         _run_tiup_cluster(cluster_params, deploy_args, logf)
         logf.write("Cluster deployed. Starting it...\n")

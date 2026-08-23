@@ -402,6 +402,7 @@
 
         - name: "{{ recipe_name }}: Fail recipe after cleanup if validation failed."
           fail:
+<<<<<<< HEAD
             msg: >-
               TiDB chunk pagination validation failed: {{
                 pagination_recipe_failure.msg
@@ -409,3 +410,14 @@
               }}
           when:
             pagination_recipe_failed | default(false) | bool
+=======
+            msg: "TiDB chunk pagination validation failed."
+
+        - name: "{{ recipe_name }}: Stop mdsvc-tidb stack."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+
+        - name: "{{ recipe_name }}: Print teardown result."
+          debug:
+            msg: teardown_status
+>>>>>>> 4b9d19b (Add teardown support for docker.)
