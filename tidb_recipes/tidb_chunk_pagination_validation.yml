@@ -33,12 +33,19 @@
         # =====================================================
 
         - name: "{{ recipe_name }}: Mark TiDB backend setup attempted."
+<<<<<<< HEAD
+          set_fact:
+            tidb_setup_attempted: true
+
+        - name: "{{ recipe_name }}: Start configured TiDB backend."
+=======
+>>>>>>> 627cd21 (Update tidb_check_quorum.yml and add topo/mdsvc-test-topo.yaml.)
           set_fact:
             tidb_setup_attempted: true
 
         - name: "{{ recipe_name }}: Start configured TiDB backend."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'setup') }}"
 
         - name: "{{ recipe_name }}: Print setup result."
           debug:
@@ -353,14 +360,6 @@
               - "Replica count: {{ expected_replica_count }}"
               - "Chunk pagination validation passed."
 
-        - name: "{{ recipe_name }}: Stop mdsvc-tidb stack."
-          set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
-
-        - name: "{{ recipe_name }}: Print teardown result."
-          debug:
-            msg: teardown_status
-
       rescue:
 
         - name: "{{ recipe_name }}: Print failure context."
@@ -375,6 +374,7 @@
                   ansible_failed_result.msg
                   | default(ansible_failed_result)
                 }}
+<<<<<<< HEAD
 
         - name: "{{ recipe_name }}: Mark recipe failed."
           set_fact:
@@ -412,12 +412,44 @@
             pagination_recipe_failed | default(false) | bool
 =======
             msg: "TiDB chunk pagination validation failed."
+=======
+>>>>>>> 627cd21 (Update tidb_check_quorum.yml and add topo/mdsvc-test-topo.yaml.)
 
-        - name: "{{ recipe_name }}: Stop mdsvc-tidb stack."
+        - name: "{{ recipe_name }}: Mark recipe failed."
           set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+            pagination_recipe_failed: true
+            pagination_recipe_failure: "{{ ansible_failed_result }}"
+
+      always:
+
+        # =====================================================
+        # 10. Always clean up whichever TiDB backend was started
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Tear down configured TiDB backend."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'teardown') }}"
+          when:
+            tidb_setup_attempted | default(false) | bool
+          ignore_errors: true
 
         - name: "{{ recipe_name }}: Print teardown result."
           debug:
+<<<<<<< HEAD
             msg: teardown_status
 >>>>>>> 4b9d19b (Add teardown support for docker.)
+=======
+            var: teardown_status
+          when:
+            teardown_status is defined
+
+        - name: "{{ recipe_name }}: Fail recipe after cleanup if validation failed."
+          fail:
+            msg: >-
+              TiDB chunk pagination validation failed: {{
+                pagination_recipe_failure.msg
+                | default('See previous task output for failure context.')
+              }}
+          when:
+            pagination_recipe_failed | default(false) | bool
+>>>>>>> 627cd21 (Update tidb_check_quorum.yml and add topo/mdsvc-test-topo.yaml.)

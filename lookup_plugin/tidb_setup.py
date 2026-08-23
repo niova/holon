@@ -113,11 +113,17 @@ def docker_logs(params):
 
 def _tidb_backend(cluster_params):
     backend = str(cluster_params.get("tidb_backend", "docker")).strip().lower()
+<<<<<<< HEAD
 
     if backend not in ("docker", "playground"):
         raise AnsibleError(
             "Unsupported tidb_backend=%r; expected 'docker' or 'playground'"
             % backend
+=======
+    if backend not in ("docker", "cluster"):
+        raise AnsibleError(
+            "Unsupported tidb_backend=%r; expected 'docker' or 'cluster'" % backend
+>>>>>>> 627cd21 (Update tidb_check_quorum.yml and add topo/mdsvc-test-topo.yaml.)
         )
     return backend
 
@@ -2048,13 +2054,11 @@ def manual_teardown(cluster_params):
 def _tiup_bin(cluster_params):
     return cluster_params.get('tiup_bin', os.path.expanduser("~/.tiup/bin/tiup"))
 
-
 def _cluster_name(cluster_params):
     name = cluster_params.get('cluster_name')
     if not name:
         raise AnsibleError("cluster_params['cluster_name'] is required for tiup cluster actions")
     return name
-
 
 def _run_tiup_cluster(cluster_params, args, logf, timeout=None):
     """Run `tiup cluster <args>`, streaming output to logf. Raises AnsibleError on failure."""
@@ -2068,8 +2072,83 @@ def _run_tiup_cluster(cluster_params, args, logf, timeout=None):
         )
     return rc
 
+def _wait_for_pd_ready(cluster_params, logf):
+    """Wait until PD is answering HTTP requests."""
+    pd_url = _get_pd_client_url(cluster_params)
+    timeout = int(cluster_params.get("pd_ready_timeout", 60))
+    deadline = time.time() + timeout
+    last_err = None
+
+    while time.time() < deadline:
+        try:
+            resp = requests.get("%s/pd/api/v1/health" % pd_url, timeout=5)
+            if resp.ok:
+                logf.write("PD is ready at %s\n" % pd_url)
+                logf.flush()
+                return
+            last_err = "HTTP %s" % resp.status_code
+        except Exception as exc:
+            last_err = str(exc)
+        time.sleep(2)
+
+    raise AnsibleError(
+        "PD did not become ready within %ss at %s. Last error: %s"
+        % (timeout, pd_url, last_err)
+    )
+
+def _wait_for_tikv_quorum_ready(cluster_params, logf):
+    """Wait for all TiKV stores and full Region replication before TiDB starts."""
+    pd_url = _get_pd_client_url(cluster_params)
+    expected_stores = int(cluster_params.get("quorum_expected_stores", 3))
+    expected_replicas = int(cluster_params.get("quorum_expected_replicas", 3))
+    timeout = int(cluster_params.get("quorum_ready_timeout", 240))
+    deadline = time.time() + timeout
+    last_summary = "not checked"
+
+    while time.time() < deadline:
+        try:
+            stores = _pd_get_stores(pd_url)
+            up_stores = [s for s in stores if s.get("state_name") == "Up"]
+
+            resp = requests.get("%s/pd/api/v1/regions" % pd_url, timeout=10)
+            resp.raise_for_status()
+            regions = resp.json().get("regions", [])
+            under_replicated = [
+                region for region in regions
+                if len(region.get("peers", [])) < expected_replicas
+            ]
+
+            last_summary = (
+                "stores_up=%d/%d regions=%d under_replicated=%d"
+                % (len(up_stores), expected_stores, len(regions), len(under_replicated))
+            )
+            logf.write("TiKV quorum readiness: %s\n" % last_summary)
+            logf.flush()
+
+            if (
+                len(up_stores) == expected_stores
+                and len(regions) > 0
+                and not under_replicated
+            ):
+                logf.write(
+                    "TiKV quorum ready: %d stores Up; every Region has at least %d peers.\n"
+                    % (expected_stores, expected_replicas)
+                )
+                logf.flush()
+                return
+        except Exception as exc:
+            last_summary = "readiness query failed: %s" % str(exc)
+            logf.write(last_summary + "\n")
+            logf.flush()
+        time.sleep(3)
+
+    raise AnsibleError(
+        "TiKV quorum did not become ready within %ss: %s"
+        % (timeout, last_summary)
+    )
 
 def cluster_deploy_setup(cluster_params):
+<<<<<<< HEAD
     """
     Deploy and start a multi-node TiKV/PD/TiDB cluster via `tiup cluster
     deploy` + `tiup cluster start`, using a topo.yaml the caller provides,
@@ -2089,6 +2168,9 @@ def cluster_deploy_setup(cluster_params):
                         multiple TiKV instances share one host with no
                         location labels set, e.g. local single-machine testing)
     """
+=======
+    """Deploy TiUP cluster, wait for 3-replica TiKV readiness, then start mdsvc-api."""
+>>>>>>> 627cd21 (Update tidb_check_quorum.yml and add topo/mdsvc-test-topo.yaml.)
     base_dir = cluster_params['base_dir']
     app_name = cluster_params['app_type']
     raft_uuid = cluster_params['raft_uuid']
@@ -2098,14 +2180,20 @@ def cluster_deploy_setup(cluster_params):
 
     name = _cluster_name(cluster_params)
     version = cluster_params.get('tidb_version', 'v8.5.0')
-    topo_file = cluster_params['topo_file']
+    topo_file = cluster_params.get('topo_file')
+    if not topo_file:
+        raise AnsibleError("cluster_params['topo_file'] is required for cluster backend")
+
     deploy_user = cluster_params.get('deploy_user', os.getenv('USER'))
     identity_file = cluster_params.get('identity_file')
     ignore_config_check = cluster_params.get('ignore_config_check', True)
+    deployed = False
 
-    with open(log_file, "a") as logf:
-        logf.write("\nSTARTING TIUP CLUSTER DEPLOY SETUP (%s, %s)\n" % (name, version))
+    try:
+        with open(log_file, "a") as logf:
+            logf.write("\nSTARTING TIUP CLUSTER DEPLOY SETUP (%s, %s)\n" % (name, version))
 
+<<<<<<< HEAD
         deploy_args = ["deploy", name, version, topo_file, "--user", deploy_user, "-y"]
         if identity_file:
             deploy_args += ["-i", identity_file]
@@ -2113,75 +2201,114 @@ def cluster_deploy_setup(cluster_params):
             deploy_args += ["-p"]
         if ignore_config_check:
             deploy_args += ["--ignore-config-check"]
+=======
+            deploy_args = ["deploy", name, version, topo_file, "--user", deploy_user, "-y"]
+            if identity_file:
+                deploy_args += ["-i", identity_file]
+            else:
+                deploy_args += ["-p"]
+            if ignore_config_check:
+                deploy_args += ["--no-labels", "--ignore-config-check"]
+>>>>>>> 627cd21 (Update tidb_check_quorum.yml and add topo/mdsvc-test-topo.yaml.)
 
-        _run_tiup_cluster(cluster_params, deploy_args, logf)
-        logf.write("Cluster deployed. Starting it...\n")
+            _run_tiup_cluster(cluster_params, deploy_args, logf)
+            deployed = True
 
-        _run_tiup_cluster(cluster_params, ["start", name], logf)
-        logf.write("Cluster started.\n")
+            logf.write("Cluster deployed. Starting PD...\n")
+            logf.flush()
+            _run_tiup_cluster(cluster_params, ["start", name, "-R", "pd"], logf)
+            _wait_for_pd_ready(cluster_params, logf)
 
-    mysql_host = cluster_params.get('mysql_host', '127.0.0.1')
-    mysql_port = str(cluster_params.get('mysql_port', '4000'))
-    mysql_user = cluster_params.get('mysql_user', 'root')
-    mysql_password = cluster_params.get('mysql_password', '')
-    server_timeout = int(cluster_params.get('server_timeout', 120))
+            logf.write("Starting TiKV stores...\n")
+            logf.flush()
+            _run_tiup_cluster(cluster_params, ["start", name, "-R", "tikv"], logf)
+            _wait_for_tikv_quorum_ready(cluster_params, logf)
 
-    with open(log_file, "a") as logf:
-        logf.write("Waiting for TiDB at %s:%s to accept connections...\n" % (mysql_host, mysql_port))
-        tidb_ready = False
-        for i in range(1, 31):
-            mysql_cmd = ["mysql", "-h", mysql_host, "-P", mysql_port, "-u", mysql_user]
-            if mysql_password:
-                mysql_cmd.append("-p%s" % mysql_password)
-            mysql_cmd += ["-e", "SHOW DATABASES;"]
-            check_rc = subprocess.Popen(mysql_cmd, stdout=logf, stderr=logf).wait()
-            if check_rc == 0:
-                tidb_ready = True
-                logf.write("TiDB is up!\n")
-                break
-            logf.write("Still waiting... (%d)\n" % i)
-            time.sleep(10)
+            logf.write("Starting TiDB after TiKV quorum is ready...\n")
+            logf.flush()
+            _run_tiup_cluster(cluster_params, ["start", name, "-R", "tidb"], logf)
 
-        if not tidb_ready:
-            raise AnsibleError(
-                "TiDB did not become reachable after cluster start. Check log: %s" % log_file
-            )
+        mysql_host = cluster_params.get('mysql_host', '127.0.0.1')
+        mysql_port = str(cluster_params.get('mysql_port', '4000'))
+        mysql_user = cluster_params.get('mysql_user', 'root')
+        mysql_password = cluster_params.get('mysql_password', '')
 
-    workspace_dir = os.getenv('NIOVA_WORKSPACE')
-    repo_path = "%s/mdsvc-tidb" % workspace_dir
-    base_url = cluster_params.get('api_base_url', 'http://localhost:8081')
+        with open(log_file, "a") as logf:
+            logf.write("Waiting for TiDB at %s:%s to accept connections...\n" % (mysql_host, mysql_port))
+            tidb_ready = False
+            for i in range(1, 31):
+                mysql_cmd = ["mysql", "-h", mysql_host, "-P", mysql_port, "-u", mysql_user]
+                if mysql_password:
+                    mysql_cmd.append("-p%s" % mysql_password)
+                mysql_cmd += ["-e", "SHOW DATABASES;"]
+                check_rc = subprocess.Popen(mysql_cmd, stdout=logf, stderr=logf).wait()
+                if check_rc == 0:
+                    tidb_ready = True
+                    logf.write("TiDB is up!\n")
+                    break
+                logf.write("Still waiting... (%d)\n" % i)
+                time.sleep(10)
 
-    server_result = start_server({
-        "server_path":            repo_path,
-        "pid_file":               "%s/%s/mdsvc_server.pid" % (base_dir, raft_uuid),
-        "mysql_host":             mysql_host,
-        "mysql_port":             mysql_port,
-        "mysql_user":             mysql_user,
-        "mysql_password":         mysql_password,
-        "base_url":               base_url,
-        "disable_auth":           cluster_params.get('disable_auth', False),
-        "jwt_secret":             cluster_params.get('jwt_secret'),
-        "tenant_admin_username":  cluster_params.get('tenant_admin_username'),
-        "tenant_admin_password":  cluster_params.get('tenant_admin_password'),
-        "admin_default_username": cluster_params.get('admin_default_username'),
-        "admin_default_password": cluster_params.get('admin_default_password'),
-    })
+            if not tidb_ready:
+                raise AnsibleError(
+                    "TiDB did not become reachable after cluster start. Check log: %s" % log_file
+                )
 
-    wait_for_server({
-        "base_url": base_url,
-        "server_timeout": server_timeout,
-        "log_file": log_file,
-    })
+        workspace_dir = os.getenv('NIOVA_WORKSPACE')
+        repo_path = "%s/mdsvc-tidb" % workspace_dir
+        base_url = cluster_params.get('api_base_url', 'http://localhost:8081')
+        server_timeout = int(cluster_params.get('server_timeout', 120))
 
-    return {
-        "status":          "cluster_deploy_setup_done",
-        "cluster_name":    name,
-        "server_pid":      server_result["pid"],
-        "log_file":        log_file,
-        "server_log_file": server_result["log_file"],
-        "base_url":        base_url,
-    }
+        server_result = start_server({
+            "server_path":            repo_path,
+            "pid_file":               "%s/%s/mdsvc_server.pid" % (base_dir, raft_uuid),
+            "mysql_host":             mysql_host,
+            "mysql_port":             mysql_port,
+            "mysql_user":             mysql_user,
+            "mysql_password":         mysql_password,
+            "base_url":               base_url,
+            "disable_auth":           cluster_params.get('disable_auth', False),
+            "jwt_secret":             cluster_params.get('jwt_secret'),
+            "tenant_admin_username":  cluster_params.get('tenant_admin_username'),
+            "tenant_admin_password":  cluster_params.get('tenant_admin_password'),
+            "admin_default_username": cluster_params.get('admin_default_username'),
+            "admin_default_password": cluster_params.get('admin_default_password'),
+        })
 
+        wait_for_server({
+            "base_url": base_url,
+            "server_timeout": server_timeout,
+            "log_file": log_file,
+        })
+
+        return {
+            "status":          "cluster_deploy_setup_done",
+            "cluster_name":    name,
+            "server_pid":      server_result["pid"],
+            "log_file":        log_file,
+            "server_log_file": server_result["log_file"],
+            "base_url":        base_url,
+        }
+
+    except Exception:
+        # If deploy succeeded but a later startup/readiness/API step failed,
+        # remove the partially-created TiUP cluster so the next recipe can retry.
+        if deployed:
+            try:
+                stop_server({"pid_file": "%s/%s/mdsvc_server.pid" % (base_dir, raft_uuid)})
+            except Exception:
+                pass
+            try:
+                with open(log_file, "a") as logf:
+                    logf.write("Setup failed; destroying partial TiUP cluster.\n")
+                    try:
+                        _run_tiup_cluster(cluster_params, ["stop", name], logf)
+                    except Exception:
+                        pass
+                    _run_tiup_cluster(cluster_params, ["destroy", name, "-y"], logf)
+            except Exception:
+                pass
+        raise
 
 def cluster_deploy_teardown(cluster_params):
     """
@@ -2211,7 +2338,6 @@ def cluster_deploy_teardown(cluster_params):
         "destroyed": bool(cluster_params.get('destroy')),
     }
 
-
 def _require_node_id(cluster_params):
     node_id = cluster_params.get('node_id')
     if not node_id:
@@ -2220,7 +2346,6 @@ def _require_node_id(cluster_params):
             "matching the ID column from `tiup cluster display <name>`)"
         )
     return node_id
-
 
 def node_stop(cluster_params):
     """Gracefully stop one node: `tiup cluster stop <name> -N <node_id>`."""
@@ -2231,7 +2356,6 @@ def node_stop(cluster_params):
         _run_tiup_cluster(cluster_params, ["stop", name, "-N", node_id], logf)
     return {"status": "node_stopped", "cluster_name": name, "node_id": node_id}
 
-
 def node_start(cluster_params):
     """Resume/start one previously-stopped node: `tiup cluster start <name> -N <node_id>`."""
     name = _cluster_name(cluster_params)
@@ -2241,7 +2365,6 @@ def node_start(cluster_params):
         _run_tiup_cluster(cluster_params, ["start", name, "-N", node_id], logf)
     return {"status": "node_started", "cluster_name": name, "node_id": node_id}
 
-
 def node_restart(cluster_params):
     """Stop then start one node in a single call: `tiup cluster restart <name> -N <node_id>`."""
     name = _cluster_name(cluster_params)
@@ -2250,7 +2373,6 @@ def node_restart(cluster_params):
     with open(log_file, "a") as logf:
         _run_tiup_cluster(cluster_params, ["restart", name, "-N", node_id], logf)
     return {"status": "node_restarted", "cluster_name": name, "node_id": node_id}
-
 
 def node_kill(cluster_params):
     """
@@ -2275,7 +2397,6 @@ def node_kill(cluster_params):
         )
     return {"status": "node_killed", "cluster_name": name, "node_id": node_id, "process_name": process_name}
 
-
 # =========================================================
 # NEW: PD-backed leader lookup (works against playground or cluster deploy —
 # PD's HTTP API is the same either way)
@@ -2283,7 +2404,6 @@ def node_kill(cluster_params):
 
 def _get_pd_client_url(cluster_params):
     return cluster_params.get('pd_client_url', 'http://127.0.0.1:2379')
-
 
 def _pd_get_stores(pd_url):
     """GET /pd/api/v1/stores -> list of {id, address, leader_count, state_name}."""
@@ -2299,9 +2419,9 @@ def _pd_get_stores(pd_url):
             "address": store.get("address"),
             "state_name": store.get("state_name"),
             "leader_count": status.get("leader_count", 0),
+            "region_count": status.get("region_count", 0),
         })
     return stores
-
 
 def get_region_leader_store(pd_url, region_id):
     """GET /pd/api/v1/region/id/<region_id> -> leader store id for that Region."""
@@ -2311,7 +2431,6 @@ def get_region_leader_store(pd_url, region_id):
     leader = data.get("leader", {})
     return leader.get("store_id")
 
-
 def get_busiest_leader_store(pd_url):
     """Fall back to whichever store currently holds the most Region leaders overall."""
     stores = _pd_get_stores(pd_url)
@@ -2319,11 +2438,9 @@ def get_busiest_leader_store(pd_url):
         raise AnsibleError("PD returned no stores; is the cluster up?")
     return max(stores, key=lambda s: s["leader_count"])["id"]
 
-
 def list_tikv_stores(cluster_params):
     """Convenience action: dump PD's current view of all TiKV stores."""
     return {"stores": _pd_get_stores(_get_pd_client_url(cluster_params))}
-
 
 def kill_leader(cluster_params):
     """
@@ -2355,7 +2472,6 @@ def kill_leader(cluster_params):
     result["store_id"] = store_id
     result["store_address"] = store_addr
     return result
-
 
 # =========================================================
 # Shared server start/stop + health check (mdsvc-api process itself)
@@ -2486,6 +2602,34 @@ def wait_for_server(params):
         except Exception:
             return ["docker-compose"]
 
+<<<<<<< HEAD
+=======
+# =========================================================
+# Generic backend-aware setup / teardown
+# =========================================================
+
+def setup(cluster_params):
+    backend = _tidb_backend(cluster_params)
+    if backend == "docker":
+        return docker_setup(cluster_params)
+    return cluster_deploy_setup(cluster_params)
+
+def teardown(cluster_params):
+    backend = _tidb_backend(cluster_params)
+    if backend == "docker":
+        return docker_teardown(cluster_params)
+
+    # Recipes historically called docker_teardown after every test. For the
+    # TiUP backend, destroy by default so the same cluster name can be reused
+    # by the next recipe in the list.
+    params = dict(cluster_params)
+    params.setdefault("destroy", True)
+    return cluster_deploy_teardown(params)
+
+# =========================================================
+# Lookup Entry Point
+# =========================================================
+>>>>>>> 627cd21 (Update tidb_check_quorum.yml and add topo/mdsvc-test-topo.yaml.)
 
     def docker_up(self, repo_path):
         cmd = self._get_docker_compose_cmd()
@@ -2501,8 +2645,41 @@ def wait_for_server(params):
             raise AnsibleError(f"Docker up failed: {e}")
 
 
+<<<<<<< HEAD
     def docker_down(self, repo_path):
         cmd = self._get_docker_compose_cmd()
+=======
+        if action == "setup":
+            result = setup(cluster_params)
+        elif action == "teardown":
+            result = teardown(cluster_params)
+        elif action == "docker_setup":
+            result = docker_setup(cluster_params)
+        elif action == "docker_teardown":
+            result = docker_teardown(cluster_params)
+        elif action == "manual_setup":
+            result = manual_setup(cluster_params)
+        elif action == "manual_teardown":
+            result = manual_teardown(cluster_params)
+        elif action == "cluster_deploy_setup":
+            result = cluster_deploy_setup(cluster_params)
+        elif action == "cluster_deploy_teardown":
+            result = cluster_deploy_teardown(cluster_params)
+        elif action == "node_stop":
+            result = node_stop(cluster_params)
+        elif action == "node_start":
+            result = node_start(cluster_params)
+        elif action == "node_restart":
+            result = node_restart(cluster_params)
+        elif action == "node_kill":
+            result = node_kill(cluster_params)
+        elif action == "kill_leader":
+            result = kill_leader(cluster_params)
+        elif action == "list_tikv_stores":
+            result = list_tikv_stores(cluster_params)
+        else:
+            raise AnsibleError("Unsupported action: %s" % action)
+>>>>>>> 627cd21 (Update tidb_check_quorum.yml and add topo/mdsvc-test-topo.yaml.)
 
         try:
             subprocess.check_call(cmd + ["down", "-v"], cwd=repo_path)
