@@ -405,7 +405,7 @@ def start_nisd_process(cluster_params, input_values, nisdPath):
 
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"{short_sock_dir}/{nisd_uuid}"
     os.environ["NIOVA_BLOCK_TCP_PEER_PORT"] = str(uport)
-    # os.environ["NIOVA_LOG_LEVEL"] = "5"
+    os.environ["NIOVA_LOG_LEVEL"] = "5"
 
     process_popen = subprocess.Popen([bin_path, '-u', nisd_uuid, '-d', nisdPath],
                                       stdout = fp, stderr = fp)
@@ -598,6 +598,7 @@ def start_niova_block_test(cluster_params, input_values):
     env = os.environ.copy()
     os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
     os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
+    os.environ["NIOVA_LOG_LEVEL"] = "5"
 
     enable_authentication = input_values["enable_auth"]
     

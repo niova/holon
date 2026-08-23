@@ -183,8 +183,6 @@
          loop_var: nisd_idx
 
      # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
-     # (aftrRdNisdChunk['/0/num-pending'] != 3) or
-     # (aftrRdNisdChunk['/0/vblks-pending'] != 96)
 
      - name: "{{ recipe_name }}: Verify tasks and nisd_chunk."
        vars:
@@ -194,7 +192,9 @@
          msg: "Verify nisd values after read."
        no_log: false
        failed_when: >
-         (chunk_info_after_read['vblks-read'] != 0)
+         (chunk_info_after_read['vblks-read'] != 0) or
+         (chunk_info_after_read['num-pending'] != 3) or
+         (chunk_info_after_read['vblks-pending'] != 96)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      - name: "Verify vblk-read wait-fault-injection task."
@@ -348,11 +348,6 @@
        loop: "{{ range(0, get_nisd | length) | list }}"
        loop_control:
          loop_var: nisd_idx
-
-     # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
-     # (aftrForceCompct['num-data-pblks'] != ((no_of_ops | int) * 2))
-     # (aftrForceCompct['merge-info']['full-status'] != "merging")
-     # (aftrForceCompct['num-reserved-meta-pblks'] != 2)
 
      - name: "{{ recipe_name }}: Verify after unpause compaction."
        vars:
