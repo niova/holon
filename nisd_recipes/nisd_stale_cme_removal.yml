@@ -273,10 +273,6 @@
        loop_control:
          loop_var: nisd_idx
 
-    # NOTE: These checks in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
-    #  (aftrWrRd['num-cme'] != ((no_of_ops | int) + 1)) or
-    #  (aftrWrRd['ref-cnt'] != ((no_of_ops | int) + 2))
-
      #4a - Ensure that the write and read have occurred and compaction has NOT occurred.
      - name: "{{ recipe_name }}: Ensure that the write and read have occurred and compaction has NOT occurred."
        vars:
@@ -291,7 +287,9 @@
          (aftrWrRd['num-reserved-meta-pblks'] != 2) or
          (aftrWrRd['metablock-seqno'] != (no_of_ops | int)) or
          (aftrWrRd['merge-info']['full-cnt'] != 0) or
-         (aftrWrRd['merge-info']['full-status'] != "paused")
+         (aftrWrRd['merge-info']['full-status'] != "paused") or
+         (aftrWrRd['num-cme'] != ((no_of_ops | int) + 1)) or
+         (aftrWrRd['ref-cnt'] != ((no_of_ops | int) + 2))
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      #5 - Unpause Compaction
@@ -318,10 +316,6 @@
        loop_control:
          loop_var: nisd_idx
 
-    # These checks in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
-    #  (aftrResume['num-cme'] != ((no_of_ops | int) + 1))
-    #  (aftrResume['ref-cnt'] != ((no_of_ops | int) + 2))
-
      - name: "{{ recipe_name }}: Verify after unpause compaction."
        vars:
          stage: "verifyAftrResume"
@@ -333,7 +327,9 @@
          (aftrResume['num-reserved-meta-pblks'] != 2) or
          (aftrResume['metablock-seqno'] != (no_of_ops | int)) or
          (aftrResume['merge-info']['full-status'] != "idle") or
-         (aftrResume['merge-info']['full-cnt'] != 0)
+         (aftrResume['merge-info']['full-cnt'] != 0) or
+         (aftrResume['num-cme'] != ((no_of_ops | int) + 1)) or
+         (aftrResume['ref-cnt'] != ((no_of_ops | int) + 2))
        loop: "{{ range(0, get_nisd | length) | list }}"
 
      #6 - Force Compaction
@@ -360,12 +356,6 @@
        loop_control:
          loop_var: nisd_idx
 
-    # NOTE: These checks in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
-    # (aftrForceCompct['num-cme'] != (no_of_ops | int)) or
-    # (aftrForceCompct['ref-cnt'] != ((no_of_ops | int) + 1))
-    #          (aftrForceCompct['num-meta-pblks'] != 1) or
-    #     (aftrForceCompct['num-reserved-meta-pblks'] != 1) or
-
      - name: "{{ recipe_name }}: Verify after unpause compaction."
        vars:
          stage: "aftrForceCompaction"
@@ -376,7 +366,11 @@
        failed_when: >
          (aftrForceCompct['metablock-seqno'] != (no_of_ops | int)) or
          (aftrForceCompct['merge-info']['full-status'] != "idle") or
-         (aftrForceCompct['merge-info']['full-cnt'] != 1)
+         (aftrForceCompct['merge-info']['full-cnt'] != 1) or
+         (aftrForceCompct['num-cme'] != (no_of_ops | int)) or
+         (aftrForceCompct['ref-cnt'] != ((no_of_ops | int) + 1)) or
+         (aftrForceCompct['num-meta-pblks'] != 1) or
+         (aftrForceCompct['num-reserved-meta-pblks'] != 1)
        loop: "{{ range(0, get_nisd | length) | list }}"
 
     rescue:

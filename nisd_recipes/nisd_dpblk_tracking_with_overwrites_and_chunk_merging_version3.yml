@@ -222,6 +222,8 @@
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
        failed_when: >
+         (getChunkInfo['ref-cnt'] != 1) or
+         (getNiovaBlockTest['/0/vblks-written'] | int != 1000) or
          (getChunkInfo['merge-info']['full-status'] != "idle") or
          (getChunkInfo['metablock-seqno'] != 999) or
          (getChunkInfo['num-meta-pblks'] != 1) or
@@ -359,17 +361,17 @@
 
     # NOTE: This check in the below task has been bypassed for testing in CI. Should be restored once the issue is resolved.
 
-    #  - name: "{{ recipe_name }}: Verify num-data-pblks is equal to the original value captured in Step #4."
-    #    vars:
-    #      old_value: "{{ origNumDataPblk[item].entry['num-data-pblks'] }}"
-    #      stage: "verify_numDataPblk"
-    #      verifyNumDataPblks: "{{ ChunkInfo[item].chunk_index }}"
-    #    debug:
-    #      msg: "Verify num-data-pblks is equal to the original value: {{ verifyNumDataPblks }}"
-    #    no_log: false
-    #    loop: "{{ range(0, get_nisd | length) | list }}"
-    #    failed_when: >
-    #      (verifyNumDataPblks['num-data-pblks'] != (old_value | int))
+     - name: "{{ recipe_name }}: Verify num-data-pblks is equal to the original value captured in Step #4."
+       vars:
+         old_value: "{{ origNumDataPblk[item].entry['num-data-pblks'] }}"
+         stage: "verify_numDataPblk"
+         verifyNumDataPblks: "{{ ChunkInfo[item].chunk_index }}"
+       debug:
+         msg: "Verify num-data-pblks is equal to the original value: {{ verifyNumDataPblks }}"
+       no_log: false
+       loop: "{{ range(0, get_nisd | length) | list }}"
+       failed_when: >
+         (verifyNumDataPblks['num-data-pblks'] != (old_value | int))
 
      #7e - Re-Read the Vblks Using varying Queue Depths.
      - name: "{{ recipe_name }}: Perform Read to the NISD."
@@ -413,6 +415,7 @@
        no_log: false
        loop: "{{ range(0, get_nisd | length) | list }}"
        failed_when: >
+         (reVerifyRootEntry['/0/num-pblks-used'] != ((old_num_block_used | int) + (get_dpblk | int) + 1))
          (reVerifyRootEntry['/0/num-reserved-pblks-used'] != ((old_num_reserved_block_used | int) + 1))
 
     rescue:
