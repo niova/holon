@@ -352,10 +352,10 @@
           fail:
             msg: "TiDB chunk pagination validation failed."
 
-        # - name: "{{ recipe_name }}: Stop mdsvc-tidb stack."
-        #   set_fact:
-        #     teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
+        - name: "{{ recipe_name }}: Stop mdsvc-tidb stack."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
 
-        # - name: "{{ recipe_name }}: Print teardown result."
-        #   debug:
-        #     msg: teardown_status
+        - name: "{{ recipe_name }}: Print teardown result."
+          debug:
+            msg: teardown_status

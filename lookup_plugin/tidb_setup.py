@@ -177,6 +177,43 @@ def docker_setup(cluster_params):
         "base_url": base_url,
     }
 
+def docker_teardown(cluster_params):
+    """Stop and remove the mdsvc-tidb Docker stack and its volumes."""
+
+    workspace_dir = os.getenv('NIOVA_WORKSPACE')
+    repo_path = "%s/mdsvc-tidb" % workspace_dir
+
+    base_dir = cluster_params['base_dir']
+    app_name = cluster_params['app_type']
+    raft_uuid = cluster_params['raft_uuid']
+
+    log_file = "%s/%s/%s_docker_log.txt" % (base_dir, raft_uuid, app_name)
+    os.makedirs(os.path.dirname(log_file), exist_ok=True)
+
+    with open(log_file, "a") as logf:
+        logf.write("\nSTARTING MDSVC-TIDB DOCKER TEARDOWN\n")
+
+        down_proc = subprocess.Popen(
+            ["sudo", "docker", "compose", "down", "-v"],
+            cwd=repo_path,
+            stdout=logf,
+            stderr=logf
+        )
+
+        down_rc = down_proc.wait()
+
+        if down_rc != 0:
+            raise AnsibleError(
+                "docker compose down failed. Check log: %s" % log_file
+            )
+
+        logf.write("\nDOCKER STACK STOPPED AND REMOVED\n")
+
+    return {
+        "status": "docker_teardown_done",
+        "log_file": log_file,
+    }
+
 # =========================================================
 # Manual Setup Helpers (pre-existing external TiDB/MySQL deployment)
 # =========================================================
@@ -769,6 +806,8 @@ class LookupModule(LookupBase):
 
         if action == "docker_setup":
             result = docker_setup(cluster_params)
+        elif action == "docker_teardown":
+            result = docker_teardown(cluster_params)
         elif action == "manual_setup":
             result = manual_setup(cluster_params)
         elif action == "manual_teardown":
