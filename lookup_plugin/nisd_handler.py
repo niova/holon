@@ -833,6 +833,7 @@ def start_niova_block_test(cluster_params, input_values):
     # Authentication environment variables
     env = os.environ.copy()
     if app_name == "tidb":
+<<<<<<< HEAD
         workspace_dir = os.getenv("NIOVA_WORKSPACE")
         gossip_path = f"{workspace_dir}/mdsvc-tidb/configs/gossipNodes"
 
@@ -842,6 +843,14 @@ def start_niova_block_test(cluster_params, input_values):
         os.environ["NIOVA_BLOCK_PROXY_TAG"] = "mdsvc-tidb"
         os.environ["NIOVA_LOG_LEVEL"] = "5"
         os.environ["NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID"] = "85d85e86-212d-47f5-b97b-4222d378b7b3"
+=======
+        workspace_dir = os.getenv('NIOVA_WORKSPACE')
+        gossip_path = "%s/mdsvc-tidb/configs/gossipNodes" % workspace_dir
+        os.environ['NIOVA_GOSSIP_PATH'] = gossip_path
+        os.environ['NIOVA_GOSSIP_KEY']="dummy" 
+        os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']="256" 
+        os.environ['NIOVA_BLOCK_PROXY_TAG']="mdsvc-tidb"
+>>>>>>> 83f35a6 (Update lookup_plugin/nisd_handler.py)
     else:
         # Resolve gossipNodes file path
         gossip_nodes_path = os.path.join(raft_dir, "gossipNodes.json")
@@ -852,6 +861,10 @@ def start_niova_block_test(cluster_params, input_values):
         os.environ['NIOVA_BLOCK_AUTH_ENABLED']="true" 
         os.environ["NIOVA_LOG_LEVEL"] = "5"
         
+<<<<<<< HEAD
+=======
+
+>>>>>>> 83f35a6 (Update lookup_plugin/nisd_handler.py)
     if enable_authentication == 1:
         os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
         os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
