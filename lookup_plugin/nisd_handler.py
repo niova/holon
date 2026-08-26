@@ -669,16 +669,9 @@ def start_niova_block_test(cluster_params, input_values):
 
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']
+    app_name = cluster_params['app_type']
 
     raft_dir = os.path.join(base_dir, raft_uuid)
-
-    # Resolve gossipNodes file path
-    gossip_nodes_path = os.path.join(raft_dir, "gossipNodes.json")
-    if not os.path.exists(gossip_nodes_path):
-        gossip_nodes_path = os.path.join(raft_dir, "gossipNodes")
-
-    # workspace_dir = os.getenv('NIOVA_WORKSPACE')
-    # gossip_path = "%s/mdsvc-tidb/configs/gossipNodes" % workspace_dir
 
     #get input parameters
     cp_mode = input_values['cp_mode']
@@ -697,15 +690,24 @@ def start_niova_block_test(cluster_params, input_values):
 
     # Authentication environment variables
     env = os.environ.copy()
-    os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
-    os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
-    os.environ['NIOVA_BLOCK_AUTH_ENABLED']="true" 
-    # os.environ['NIOVA_GOSSIP_PATH'] = gossip_path
-    # os.environ['NIOVA_GOSSIP_KEY']="dummy" 
-    # os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']="256" 
-    # os.environ['NIOVA_BLOCK_PROXY_TAG']="mdsvc-tidb" 
-    os.environ["NIOVA_LOG_LEVEL"] = "5"
-    
+    if app_name == "tidb":
+        workspace_dir = os.getenv('NIOVA_WORKSPACE')
+        gossip_path = "%s/mdsvc-tidb/configs/gossipNodes" % workspace_dir
+        os.environ['NIOVA_GOSSIP_PATH'] = gossip_path
+        os.environ['NIOVA_GOSSIP_KEY']="dummy" 
+        os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']="256" 
+        os.environ['NIOVA_BLOCK_PROXY_TAG']="mdsvc-tidb"
+    else:
+        # Resolve gossipNodes file path
+        gossip_nodes_path = os.path.join(raft_dir, "gossipNodes.json")
+        if not os.path.exists(gossip_nodes_path):
+            gossip_nodes_path = os.path.join(raft_dir, "gossipNodes")   
+        os.environ["NIOVA_GOSSIP_KEY"] = raft_uuid
+        os.environ["NIOVA_GOSSIP_PATH"] = gossip_nodes_path
+        os.environ['NIOVA_BLOCK_AUTH_ENABLED']="true" 
+        os.environ["NIOVA_LOG_LEVEL"] = "5"
+        
+
     if enable_authentication == 1:
         os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
         os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
