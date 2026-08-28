@@ -6,12 +6,17 @@
     recipe_name: "tidb_mount_counter_progression_validation"
     api_base_url: "http://localhost:8081"
 <<<<<<< HEAD
+<<<<<<< HEAD
     infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
     vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
 =======
     infra_payload: "./examples/create_sample_infra.json"
     vdev_payload: "./examples/create_sample_vdev.json"
 >>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
+=======
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
+>>>>>>> 406b372 (Update tidb_mount_counter_progression_validation.yml)
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
 
   tasks:
@@ -225,18 +230,24 @@
                   base_url=api_base_url,
                   token=login_result.access_token,
 <<<<<<< HEAD
+<<<<<<< HEAD
                   body={
                     'vdev_id': vdev_uuid
 =======
                   params={
                     'vdev_id': '{{ vdev_uuid }}'
 >>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
+=======
+                  body={
+                    'vdev_id': vdev_uuid
+>>>>>>> 406b372 (Update tidb_mount_counter_progression_validation.yml)
                   }
                 )
               }}
 
         - name: "{{ recipe_name }}: Print nisd result."
           debug:
+<<<<<<< HEAD
 <<<<<<< HEAD
             msg: "{{ nisd_result }}"
 
@@ -255,3 +266,11 @@
 =======
             msg: "{{ nisd_result }}"
 >>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
+=======
+            msg: "{{ nisd_result }}"
+
+      rescue:
+        - name: "Recipe: {{ recipe_name }} failed"
+          set_fact:
+            terminate_recipe: true
+>>>>>>> 406b372 (Update tidb_mount_counter_progression_validation.yml)

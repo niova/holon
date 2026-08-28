@@ -8,12 +8,17 @@
     api_base_url: "http://localhost:8081"
 
 <<<<<<< HEAD
+<<<<<<< HEAD
     infra_payload: "{{ playbook_dir }}/../examples/create_multi_nisd_infra.json"
     vdev_payload: "{{ playbook_dir }}/../examples/create_multi_nisd_vdev.json"
 =======
     infra_payload: "./examples/create_multi_nisd_infra.json"
     vdev_payload: "./examples/create_multi_nisd_vdev.json"
 >>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
+=======
+    infra_payload: "{{ playbook_dir }}/../examples/create_multi_nisd_infra.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_multi_nisd_vdev.json"
+>>>>>>> 406b372 (Update tidb_mount_counter_progression_validation.yml)
 
     # Expected to be created by the recipe framework or NISD setup.
     lookout_uuid: "{{ LookoutUUID }}"
@@ -610,6 +615,7 @@
             msg:
               - "Multi-NISD mount-counter validation failed."
 <<<<<<< HEAD
+<<<<<<< HEAD
               - "Failure: {{ ansible_failed_result.msg | default(ansible_failed_result) }}"
               - "Check the NISD, ublk, and tidb API log files."
 
@@ -623,3 +629,11 @@
           fail:
             msg: "{{ recipe_name }} failed."
 >>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
+=======
+              - "Failure: {{ ansible_failed_result.msg | default(ansible_failed_result) }}"
+              - "Check the NISD, ublk, and tidb API log files."
+
+        - name: "{{ recipe_name }}: Mark recipe as failed."
+          set_fact:
+            terminate_recipe: true
+>>>>>>> 406b372 (Update tidb_mount_counter_progression_validation.yml)
