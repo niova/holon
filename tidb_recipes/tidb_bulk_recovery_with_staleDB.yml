@@ -14,22 +14,35 @@
     bulk_write_count: 1200
     api_request_timeout: 15
 
+<<<<<<< HEAD
     tikv_settle_seconds: 15
+=======
+    tikv_settle_seconds: 5
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
     raft_gc_wait_seconds: 8
     region_recovery_timeout: 300
     leader_transfer_timeout: 180
 
+<<<<<<< HEAD
     # TiUP Playground topology for this recipe. The tidb_setup lookup plugin
     # starts and tears down this cluster, including mdsvc-api.
     playground_pd_count: 1
     playground_tikv_count: 3
     playground_tidb_count: 1
+=======
+    # The recipe deploys its own TiUP cluster and destroys it during cleanup.
+    destroy_cluster_after_test: true
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
 
   tasks:
     - block:
 
         # =====================================================
+<<<<<<< HEAD
         # 0. Build TiUP Playground configuration
+=======
+        # 0. Validate cluster backend and build a test topology
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
         # =====================================================
 
         - name: "{{ recipe_name }}: Check if app_type is tidb."
@@ -37,16 +50,44 @@
             msg: "app_type is: {{ app_type }}"
           failed_when: app_type != "tidb"
 
+<<<<<<< HEAD
+=======
+        - name: "{{ recipe_name }}: Skip staleDB recipe for Docker backend."
+          debug:
+            msg: "Skipping staleDB recovery because it requires the TiUP cluster backend."
+          when: ClusterParams.tidb_backend | default('docker') != 'cluster'
+
+        - name: "{{ recipe_name }}: End play for Docker backend."
+          meta: end_play
+          when: ClusterParams.tidb_backend | default('docker') != 'cluster'
+
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
         - name: "{{ recipe_name }}: Save original cluster parameters."
           set_fact:
             original_cluster_params: "{{ ClusterParams }}"
 
+<<<<<<< HEAD
+=======
+        - name: "{{ recipe_name }}: Validate TiUP cluster configuration."
+          debug:
+            msg:
+              - "TiUP cluster: {{ ClusterParams.cluster_name | default('undefined') }}"
+              - "Topology file: {{ ClusterParams.topo_file | default('undefined') }}"
+              - "TiDB version: {{ ClusterParams.tidb_version | default('v8.5.0') }}"
+          failed_when:
+            ClusterParams.cluster_name is not defined or
+            ClusterParams.cluster_name | string | length == 0 or
+            ClusterParams.topo_file is not defined or
+            ClusterParams.topo_file | string | length == 0
+
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
         - name: "{{ recipe_name }}: Initialize recipe state."
           set_fact:
             cluster_setup_done: false
             recovered_node_down: false
             stale_db_recipe_failed: false
             stale_db_recipe_failure: {}
+<<<<<<< HEAD
             temp_tikv_config_created: false
 
         # TiUP Playground does not consume a TiUP cluster topology YAML.
@@ -85,10 +126,79 @@
             temp_tikv_config_created: true
 
         - name: "{{ recipe_name }}: Configure TiUP Playground cluster parameters."
+=======
+            temp_topology_created: false
+
+        # prevent TiKV from splitting the workload Region while this test runs. 
+        # We create a temporary copy of the supplied topology rather than editing the caller's topo file.
+        #
+        # The low Raft-log GC threshold is test-only. It makes a 1200-write
+        # outage more likely to require snapshot-style catch-up rather than
+        # merely replaying every retained log entry.
+        - name: "{{ recipe_name }}: Read source TiUP topology."
+          set_fact:
+            source_topology: >-
+              {{ lookup('file', original_cluster_params.topo_file) | from_yaml }}
+
+        - name: "{{ recipe_name }}: Build TiKV staleDB test configuration."
+          set_fact:
+            stale_db_tikv_config: >-
+              {{
+                (
+                  source_topology.get('server_configs', {}).get('tikv', {})
+                )
+                | combine({
+                    'raftstore.split-region-check-tick-interval': '0s',
+                    'raftstore.raft-log-gc-tick-interval': '1s',
+                    'raftstore.raft-log-gc-threshold': 16,
+                    'raftstore.raft-log-reserve-max-ticks': 1,
+                    'coprocessor.split-region-on-table': false
+                  })
+              }}
+
+        - name: "{{ recipe_name }}: Build temporary server configuration."
+          set_fact:
+            stale_db_server_configs: >-
+              {{
+                source_topology.get('server_configs', {})
+                | combine({'tikv': stale_db_tikv_config})
+              }}
+
+        - name: "{{ recipe_name }}: Build temporary TiUP topology."
+          set_fact:
+            stale_db_topology: >-
+              {{
+                source_topology
+                | combine({'server_configs': stale_db_server_configs})
+              }}
+            stale_db_topology_dir: >-
+              {{ original_cluster_params.base_dir }}/{{ original_cluster_params.raft_uuid }}
+            stale_db_topology_file: >-
+              {{ original_cluster_params.base_dir }}/{{ original_cluster_params.raft_uuid }}/{{ recipe_name }}-topo.yaml
+
+        - name: "{{ recipe_name }}: Create temporary topology directory."
+          file:
+            path: "{{ stale_db_topology_dir }}"
+            state: directory
+            mode: "0755"
+
+        - name: "{{ recipe_name }}: Write temporary single-Region topology."
+          copy:
+            dest: "{{ stale_db_topology_file }}"
+            content: "{{ stale_db_topology | to_nice_yaml(indent=2, sort_keys=false) }}"
+            mode: "0644"
+
+        - name: "{{ recipe_name }}: Mark temporary topology created."
+          set_fact:
+            temp_topology_created: true
+
+        - name: "{{ recipe_name }}: Use staleDB topology for this deployment."
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
           set_fact:
             test_cluster_params: >-
               {{
                 original_cluster_params
+<<<<<<< HEAD
                 | combine(
                     {
                       'tidb_backend': 'playground',
@@ -109,10 +219,14 @@
                     },
                     recursive=true
                   )
+=======
+                | combine({'topo_file': stale_db_topology_file})
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
               }}
             ClusterParams: >-
               {{
                 original_cluster_params
+<<<<<<< HEAD
                 | combine(
                     {
                       'tidb_backend': 'playground',
@@ -145,10 +259,16 @@
               - "TiDB instances: {{ ClusterParams.playground_db }}"
               - "TiKV config: {{ ClusterParams.playground_tikv_config }}"
 
+=======
+                | combine({'topo_file': stale_db_topology_file})
+              }}
+
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
         # =====================================================
         # 1. Start three TiKV replicas and mdsvc-api
         # =====================================================
 
+<<<<<<< HEAD
         - name: "{{ recipe_name }}: Start TiUP Playground cluster and mdsvc-api."
           set_fact:
             setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
@@ -164,6 +284,11 @@
           failed_when:
             setup_status.status != 'playground_setup_done' or
             setup_status.tikv_count | int != playground_tikv_count | int
+=======
+        - name: "{{ recipe_name }}: Deploy TiUP cluster and start mdsvc-api."
+          set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'setup') }}"
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
 
         - name: "{{ recipe_name }}: Mark cluster setup complete."
           set_fact:
@@ -272,7 +397,11 @@
         # locate_row_region auto-discovers the mdsvc schema/table containing
         # target_nisd_id and uses INFORMATION_SCHEMA.TIKV_REGION_STATUS to
         # require one Region ID across both record and index key ranges.
+<<<<<<< HEAD
         # The temporary TiKV config above prevents normal Region split checks.
+=======
+        # The temp topology above prevents normal size/key-count split checks.
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
         - name: "{{ recipe_name }}: Prepare Region lookup parameters."
           set_fact:
             ClusterParams: >-
@@ -336,23 +465,43 @@
 
         - name: "{{ recipe_name }}: Choose stale replica store."
           set_fact:
+<<<<<<< HEAD
             recovered_store_id: "{{ (target_region_follower_ids | first) | int }}"
+=======
+            recovered_store_id: "{{ target_region_follower_ids | first }}"
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
 
         - name: "{{ recipe_name }}: Resolve stale replica store metadata."
           set_fact:
             recovered_store: >-
               {{
                 live_tikv_stores
+<<<<<<< HEAD
                 | selectattr('id', 'equalto', (recovered_store_id | int))
+=======
+                | selectattr('id', 'equalto', recovered_store_id)
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
                 | list
                 | first
               }}
 
+<<<<<<< HEAD
         - name: "{{ recipe_name }}: Resolve Playground node ID for stale replica."
           set_fact:
             # The playground lookup resolves a TiKV process from its PD-reported
             # address, e.g. 127.0.0.1:20160. No TiUP cluster node map is needed.
             recovered_node_id: "{{ recovered_store.address }}"
+=======
+        - name: "{{ recipe_name }}: Resolve TiUP node ID for stale replica."
+          set_fact:
+            recovered_node_id: >-
+              {{
+                (test_cluster_params.store_addr_to_node_id | default({})).get(
+                  recovered_store.address,
+                  recovered_store.address
+                )
+              }}
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
 
         - name: "{{ recipe_name }}: Show selected stale replica."
           debug:
@@ -360,7 +509,11 @@
               - "Region leader remains on store {{ target_region.leader_store_id }}"
               - "Crashing follower store {{ recovered_store_id }}"
               - "TiKV address: {{ recovered_store.address }}"
+<<<<<<< HEAD
               - "Playground node ID: {{ recovered_node_id }}"
+=======
+              - "TiUP node ID: {{ recovered_node_id }}"
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
 
         - name: "{{ recipe_name }}: Select stale TiKV node."
           set_fact:
@@ -386,6 +539,7 @@
             seconds: "{{ tikv_settle_seconds }}"
 
         # =====================================================
+<<<<<<< HEAD
         # 3a. Verify the Region is still writable with 2/3 stores
         # =====================================================
 
@@ -454,12 +608,18 @@
             msg: "Initial PUT with 2/3 TiKV replicas succeeded."
 
         # =====================================================
+=======
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
         # 4. Perform all writes while the third replica is stale
         # =====================================================
 
         # Every request upserts the SAME NISD ID and changes only
         # available_size. With Region splitting disabled this keeps the record
+<<<<<<< HEAD
         # mutations in the same Raft group for the whole outage window.     
+=======
+        # mutations in the same Raft group for the whole outage window.
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
         - name: "{{ recipe_name }}: Perform bulk PUT workload with 2/3 TiKV replicas."
           set_fact:
             bulk_put_result: >-
@@ -483,12 +643,22 @@
                     'socket_path': target_nisd.socket_path,
                     'net_info': target_nisd.net_info
                   },
+<<<<<<< HEAD
                   timeout=30
                 )
               }}
           loop: "{{ range(2, (bulk_write_count | int) + 1) | list }}"
           loop_control:
             label: "PUT {{ item }}/{{ bulk_write_count }}"
+=======
+                  timeout=api_request_timeout
+                )
+              }}
+          loop: "{{ range(1, (bulk_write_count | int) + 1) | list }}"
+          loop_control:
+            label: "PUT {{ item }}/{{ bulk_write_count }}"
+          no_log: true
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
 
         - name: "{{ recipe_name }}: Print bulk workload completion."
           debug:
@@ -801,6 +971,7 @@
             cleanup_restart_result is defined
 
         # -----------------------------------------------------
+<<<<<<< HEAD
         # Tear down the TiUP Playground created by this recipe.
         # -----------------------------------------------------
 
@@ -814,10 +985,30 @@
         - name: "{{ recipe_name }}: Tear down TiUP Playground and mdsvc-api."
           set_fact:
             teardown_status: "{{ lookup('tidb_setup', 'playground_teardown') }}"
+=======
+        # Tear down the TiUP cluster created by this recipe.
+        # -----------------------------------------------------
+
+        - name: "{{ recipe_name }}: Prepare cluster parameters for teardown."
+          set_fact:
+            ClusterParams: >-
+              {{
+                original_cluster_params
+                | combine({'destroy': destroy_cluster_after_test | bool})
+              }}
+          when:
+            - original_cluster_params is defined
+            - cluster_setup_done | default(false) | bool
+
+        - name: "{{ recipe_name }}: Tear down TiDB cluster backend."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'teardown') }}"
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
           when:
             cluster_setup_done | default(false) | bool
           ignore_errors: true
 
+<<<<<<< HEAD
         - name: "{{ recipe_name }}: Remove temporary staleDB TiKV config."
           file:
             path: "{{ stale_db_tikv_config_file }}"
@@ -825,6 +1016,15 @@
           when:
             - temp_tikv_config_created | default(false) | bool
             - stale_db_tikv_config_file is defined
+=======
+        - name: "{{ recipe_name }}: Remove temporary staleDB topology."
+          file:
+            path: "{{ stale_db_topology_file }}"
+            state: absent
+          when:
+            - temp_topology_created | default(false) | bool
+            - stale_db_topology_file is defined
+>>>>>>> 8deff9e (Add tidb recipe tidb_bulk_recovery_with_staleDB.yml)
 
         - name: "{{ recipe_name }}: Restore original cluster parameters."
           set_fact:
