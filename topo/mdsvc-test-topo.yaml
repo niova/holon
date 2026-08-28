@@ -1,5 +1,5 @@
 global:
-  user: "$(whoami)"
+  user: "runner"
   ssh_port: 22
   deploy_dir: "/tmp/tidb-deploy"
   data_dir: "/tmp/tidb-data"
