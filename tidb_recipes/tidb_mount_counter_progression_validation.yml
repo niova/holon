@@ -157,6 +157,25 @@
           debug:
             msg: "Created VDEV UUID: {{ vdev_uuid }}"
 
+        - name: "{{ recipe_name }}: Get mount counter before starting ublk."
+          set_fact:
+            nisd_result_before: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'mount_vdev',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  body={
+                    'vdev_id': vdev_uuid
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print nisd result."
+          debug:
+            msg: "{{ nisd_result_before }}"
+
         - name: "{{ recipe_name }}: Wait before starting niova-ublk."
           pause:
             seconds: 25
@@ -184,7 +203,7 @@
           debug:
             msg: "{{ ublk_uuid }}"
 
-        - name: "{{ recipe_name }}: Get mount counter."
+        - name: "{{ recipe_name }}: Get mount counter after starting ublk."
           set_fact:
             nisd_result: >-
               {{
