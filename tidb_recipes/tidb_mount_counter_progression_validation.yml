@@ -5,8 +5,8 @@
   vars:
     recipe_name: "tidb_mount_counter_progression_validation"
     api_base_url: "http://localhost:8081"
-    infra_payload: "./examples/create_sample_infra.json"
-    vdev_payload: "./examples/create_sample_vdev.json"
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
 
   tasks:
@@ -193,8 +193,8 @@
                   'mount_vdev',
                   base_url=api_base_url,
                   token=login_result.access_token,
-                  params={
-                    'vdev_id': '{{ vdev_uuid }}'
+                  body={
+                    'vdev_id': vdev_uuid
                   }
                 )
               }}
@@ -202,3 +202,8 @@
         - name: "{{ recipe_name }}: Print nisd result."
           debug:
             msg: "{{ nisd_result }}"
+
+      rescue:
+        - name: "Recipe: {{ recipe_name }} failed"
+          set_fact:
+            terminate_recipe: true

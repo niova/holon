@@ -7,8 +7,8 @@
 
     api_base_url: "http://localhost:8081"
 
-    infra_payload: "./examples/create_multi_nisd_infra.json"
-    vdev_payload: "./examples/create_multi_nisd_vdev.json"
+    infra_payload: "{{ playbook_dir }}/../examples/create_multi_nisd_infra.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_multi_nisd_vdev.json"
 
     # Expected to be created by the recipe framework or NISD setup.
     lookout_uuid: "{{ LookoutUUID }}"
@@ -604,8 +604,9 @@
           debug:
             msg:
               - "Multi-NISD mount-counter validation failed."
+              - "Failure: {{ ansible_failed_result.msg | default(ansible_failed_result) }}"
               - "Check the NISD, ublk, and tidb API log files."
 
         - name: "{{ recipe_name }}: Mark recipe as failed."
-          fail:
-            msg: "{{ recipe_name }} failed."
+          set_fact:
+            terminate_recipe: true
