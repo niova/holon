@@ -168,6 +168,9 @@
             msg: "Created VDEV UUID: {{ vdev_uuid }}"
 
 <<<<<<< HEAD
+<<<<<<< HEAD
+=======
+>>>>>>> 5b1b565 (Update topo/mdsvc-test-topo.yaml)
         - name: "{{ recipe_name }}: Get mount counter before starting ublk."
           set_fact:
             nisd_result_before: >-
@@ -187,8 +190,11 @@
           debug:
             msg: "{{ nisd_result_before }}"
 
+<<<<<<< HEAD
 =======
 >>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
+=======
+>>>>>>> 5b1b565 (Update topo/mdsvc-test-topo.yaml)
         - name: "{{ recipe_name }}: Wait before starting niova-ublk."
           pause:
             seconds: 25
@@ -217,10 +223,14 @@
             msg: "{{ ublk_uuid }}"
 
 <<<<<<< HEAD
+<<<<<<< HEAD
         - name: "{{ recipe_name }}: Get mount counter after starting ublk."
 =======
         - name: "{{ recipe_name }}: Get mount counter."
 >>>>>>> ada92ff (Add the recipe tidb_multiple_nisd_mount_counter_progression_validation.yml.)
+=======
+        - name: "{{ recipe_name }}: Get mount counter after starting ublk."
+>>>>>>> 5b1b565 (Update topo/mdsvc-test-topo.yaml)
           set_fact:
             nisd_result: >-
               {{
