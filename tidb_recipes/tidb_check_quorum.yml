@@ -20,8 +20,8 @@
     tikv_settle_seconds: 5
     recovery_wait_seconds: 10
 
-    # This recipe deploys its own TiUP cluster and destroys it during cleanup.
-    destroy_cluster_after_test: true
+    # This recipe starts its own ephemeral TiUP Playground cluster.
+    # No playground tag is used, so TiUP removes the playground data when it stops.
 
   tasks:
     - block:
@@ -35,34 +35,64 @@
             msg: "app_type is: {{ app_type }}"
           failed_when: app_type != "tidb"
 
-        - name: "{{ recipe_name }}: Show TiDB backend."
-          debug:
-            msg: "tidb_backend is: {{ ClusterParams.tidb_backend | default('docker') }}"
-
-        - name: "{{ recipe_name }}: Skip quorum recipe for Docker backend."
-          debug:
-            msg: "Skipping quorum validation because it requires the TiUP cluster backend."
-          when: ClusterParams.tidb_backend | default('docker') != 'cluster'
-
-        - name: "{{ recipe_name }}: End quorum play for Docker backend."
-          meta: end_play
-          when: ClusterParams.tidb_backend | default('docker') != 'cluster'
-
         - name: "{{ recipe_name }}: Save original cluster parameters."
           set_fact:
             original_cluster_params: "{{ ClusterParams }}"
 
-        - name: "{{ recipe_name }}: Validate TiUP cluster configuration."
+        # This recipe owns its TiDB test environment. Force the non-Docker
+        # backend to TiUP Playground and explicitly request the three TiKV
+        # stores required by the quorum test.
+        - name: "{{ recipe_name }}: Configure TiUP Playground cluster."
+          set_fact:
+            ClusterParams: >-
+              {{
+                original_cluster_params
+                | combine(
+                    {
+                      'tidb_backend': 'playground',
+                      'tidb_version': original_cluster_params.tidb_version | default('v8.5.0'),
+                      'playground_host': '127.0.0.1',
+                      'playground_pd': 1,
+                      'playground_kv': 3,
+                      'playground_db': 1,
+                      'playground_tiflash': 0,
+                      'playground_without_monitor': true,
+                      'playground_tag': none,
+                      'quorum_expected_stores': 3,
+                      'quorum_expected_replicas': 3,
+                      'pd_client_url': 'http://127.0.0.1:2379',
+                      'mysql_host': '127.0.0.1',
+                      'mysql_port': '4000',
+                      'api_base_url': api_base_url
+                    },
+                    recursive=true
+                  )
+              }}
+
+        - name: "{{ recipe_name }}: Save TiUP Playground parameters."
+          set_fact:
+            playground_cluster_params: "{{ ClusterParams }}"
+
+        - name: "{{ recipe_name }}: Show TiUP Playground configuration."
           debug:
             msg:
-              - "TiUP cluster: {{ ClusterParams.cluster_name | default('undefined') }}"
-              - "Topology file: {{ ClusterParams.topo_file | default('undefined') }}"
-              - "TiDB version: {{ ClusterParams.tidb_version | default('v8.5.0') }}"
-          failed_when:
-            ClusterParams.cluster_name is not defined or
-            ClusterParams.cluster_name | string | length == 0 or
-            ClusterParams.topo_file is not defined or
-            ClusterParams.topo_file | string | length == 0
+              - "Backend: {{ ClusterParams.tidb_backend }}"
+              - "TiDB version: {{ ClusterParams.tidb_version }}"
+              - "PD instances: {{ ClusterParams.playground_pd }}"
+              - "TiKV instances: {{ ClusterParams.playground_kv }}"
+              - "TiDB instances: {{ ClusterParams.playground_db }}"
+              - "PD endpoint: {{ ClusterParams.pd_client_url }}"
+              - "TiDB endpoint: {{ ClusterParams.mysql_host }}:{{ ClusterParams.mysql_port }}"
+
+        - name: "{{ recipe_name }}: Validate TiUP Playground configuration."
+          assert:
+            that:
+              - ClusterParams.tidb_backend == 'playground'
+              - ClusterParams.playground_pd | int >= 1
+              - ClusterParams.playground_kv | int == 3
+              - ClusterParams.playground_db | int >= 1
+              - ClusterParams.quorum_expected_replicas | int == 3
+            fail_msg: "Quorum validation requires a TiUP Playground cluster with exactly three TiKV stores."
 
         - name: "{{ recipe_name }}: Initialize quorum test state."
           set_fact:
@@ -75,12 +105,12 @@
             no_quorum_get_failure: {}
 
         # =====================================================
-        # 1. Deploy TiUP cluster and start mdsvc-api
+        # 1. Start TiUP Playground cluster and mdsvc-api
         # =====================================================
 
-        - name: "{{ recipe_name }}: Set up TiDB cluster backend and start mdsvc-api."
+        - name: "{{ recipe_name }}: Start TiUP Playground cluster and mdsvc-api."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
 
         - name: "{{ recipe_name }}: Mark cluster setup complete."
           set_fact:
@@ -218,27 +248,13 @@
                 | first
               }}
 
-        - name: "{{ recipe_name }}: Store address-to-node mapping."
+        # Playground has no `tiup cluster display` node IDs.  The lookup
+        # plugin resolves the PD-reported TiKV address directly to the local
+        # playground process.
+        - name: "{{ recipe_name }}: Resolve Playground TiKV node addresses."
           set_fact:
-            store_addr_to_node_id: >-
-              {{ ClusterParams.store_addr_to_node_id | default({}) }}
-
-        - name: "{{ recipe_name }}: Resolve TiUP node IDs."
-          set_fact:
-            first_node_id: >-
-              {{
-                store_addr_to_node_id.get(
-                  first_store_to_kill.address,
-                  first_store_to_kill.address
-                )
-              }}
-            second_node_id: >-
-              {{
-                store_addr_to_node_id.get(
-                  second_store_to_kill.address,
-                  second_store_to_kill.address
-                )
-              }}
+            first_node_id: "{{ first_store_to_kill.address }}"
+            second_node_id: "{{ second_store_to_kill.address }}"
 
         - name: "{{ recipe_name }}: Print quorum test node selection."
           debug:
@@ -262,7 +278,7 @@
           set_fact:
             ClusterParams: >-
               {{
-                original_cluster_params
+                playground_cluster_params
                 | combine({'node_id': first_node_id})
               }}
 
@@ -314,7 +330,7 @@
           set_fact:
             ClusterParams: >-
               {{
-                original_cluster_params
+                playground_cluster_params
                 | combine({'node_id': second_node_id})
               }}
 
@@ -438,7 +454,7 @@
           set_fact:
             ClusterParams: >-
               {{
-                original_cluster_params
+                playground_cluster_params
                 | combine({'node_id': first_node_id})
               }}
 
@@ -528,7 +544,7 @@
           set_fact:
             ClusterParams: >-
               {{
-                original_cluster_params
+                playground_cluster_params
                 | combine({'node_id': first_node_id})
               }}
           when:
@@ -552,7 +568,7 @@
           set_fact:
             ClusterParams: >-
               {{
-                original_cluster_params
+                playground_cluster_params
                 | combine({'node_id': second_node_id})
               }}
           when:
@@ -573,27 +589,23 @@
             - cleanup_second_restart is defined
 
         # -----------------------------------------------------
-        # Tear down the TiUP cluster created by this recipe.
+        # Stop the TiUP Playground created by this recipe.
         # -----------------------------------------------------
 
-        - name: "{{ recipe_name }}: Prepare cluster parameters for teardown."
+        - name: "{{ recipe_name }}: Restore Playground parameters for teardown."
           set_fact:
-            ClusterParams: >-
-              {{
-                original_cluster_params
-                | combine({'destroy': destroy_cluster_after_test | bool})
-              }}
+            ClusterParams: "{{ playground_cluster_params }}"
           when:
-            - original_cluster_params is defined
+            - playground_cluster_params is defined
             - cluster_setup_done | default(false) | bool
 
-        - name: "{{ recipe_name }}: Tear down TiDB cluster backend."
+        - name: "{{ recipe_name }}: Tear down TiUP Playground backend."
           set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'teardown') }}"
+            teardown_status: "{{ lookup('tidb_setup', 'playground_teardown') }}"
           when:
             cluster_setup_done | default(false) | bool
 
-        - name: "{{ recipe_name }}: Print cluster teardown result."
+        - name: "{{ recipe_name }}: Print Playground teardown result."
           debug:
             var: teardown_status
           when:

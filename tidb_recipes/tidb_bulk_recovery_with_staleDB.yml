@@ -19,14 +19,17 @@
     region_recovery_timeout: 300
     leader_transfer_timeout: 180
 
-    # The recipe deploys its own TiUP cluster and destroys it during cleanup.
-    destroy_cluster_after_test: true
+    # TiUP Playground topology for this recipe. The tidb_setup lookup plugin
+    # starts and tears down this cluster, including mdsvc-api.
+    playground_pd_count: 1
+    playground_tikv_count: 3
+    playground_tidb_count: 1
 
   tasks:
     - block:
 
         # =====================================================
-        # 0. Validate cluster backend and build a test topology
+        # 0. Build TiUP Playground configuration
         # =====================================================
 
         - name: "{{ recipe_name }}: Check if app_type is tidb."
@@ -34,30 +37,9 @@
             msg: "app_type is: {{ app_type }}"
           failed_when: app_type != "tidb"
 
-        - name: "{{ recipe_name }}: Skip staleDB recipe for Docker backend."
-          debug:
-            msg: "Skipping staleDB recovery because it requires the TiUP cluster backend."
-          when: ClusterParams.tidb_backend | default('docker') != 'cluster'
-
-        - name: "{{ recipe_name }}: End play for Docker backend."
-          meta: end_play
-          when: ClusterParams.tidb_backend | default('docker') != 'cluster'
-
         - name: "{{ recipe_name }}: Save original cluster parameters."
           set_fact:
             original_cluster_params: "{{ ClusterParams }}"
-
-        - name: "{{ recipe_name }}: Validate TiUP cluster configuration."
-          debug:
-            msg:
-              - "TiUP cluster: {{ ClusterParams.cluster_name | default('undefined') }}"
-              - "Topology file: {{ ClusterParams.topo_file | default('undefined') }}"
-              - "TiDB version: {{ ClusterParams.tidb_version | default('v8.5.0') }}"
-          failed_when:
-            ClusterParams.cluster_name is not defined or
-            ClusterParams.cluster_name | string | length == 0 or
-            ClusterParams.topo_file is not defined or
-            ClusterParams.topo_file | string | length == 0
 
         - name: "{{ recipe_name }}: Initialize recipe state."
           set_fact:
@@ -65,91 +47,123 @@
             recovered_node_down: false
             stale_db_recipe_failed: false
             stale_db_recipe_failure: {}
-            temp_topology_created: false
+            temp_tikv_config_created: false
 
-        # prevent TiKV from splitting the workload Region while this test runs. 
-        # We create a temporary copy of the supplied topology rather than editing the caller's topo file.
-        #
-        # The low Raft-log GC threshold is test-only. It makes a 1200-write
-        # outage more likely to require snapshot-style catch-up rather than
-        # merely replaying every retained log entry.
-        - name: "{{ recipe_name }}: Read source TiUP topology."
+        # TiUP Playground does not consume a TiUP cluster topology YAML.
+        # Component configuration is passed through --kv.config instead.
+        # These settings keep the workload in one Region and make Raft-log GC
+        # aggressive enough for the stale-replica recovery scenario.
+        - name: "{{ recipe_name }}: Define temporary TiKV config path."
           set_fact:
-            source_topology: >-
-              {{ lookup('file', original_cluster_params.topo_file) | from_yaml }}
-
-        - name: "{{ recipe_name }}: Build TiKV staleDB test configuration."
-          set_fact:
-            stale_db_tikv_config: >-
-              {{
-                (
-                  source_topology.get('server_configs', {}).get('tikv', {})
-                )
-                | combine({
-                    'raftstore.split-region-check-tick-interval': '0s',
-                    'raftstore.raft-log-gc-tick-interval': '1s',
-                    'raftstore.raft-log-gc-threshold': 16,
-                    'raftstore.raft-log-reserve-max-ticks': 1,
-                    'coprocessor.split-region-on-table': false
-                  })
-              }}
-
-        - name: "{{ recipe_name }}: Build temporary server configuration."
-          set_fact:
-            stale_db_server_configs: >-
-              {{
-                source_topology.get('server_configs', {})
-                | combine({'tikv': stale_db_tikv_config})
-              }}
-
-        - name: "{{ recipe_name }}: Build temporary TiUP topology."
-          set_fact:
-            stale_db_topology: >-
-              {{
-                source_topology
-                | combine({'server_configs': stale_db_server_configs})
-              }}
-            stale_db_topology_dir: >-
+            stale_db_config_dir: >-
               {{ original_cluster_params.base_dir }}/{{ original_cluster_params.raft_uuid }}
-            stale_db_topology_file: >-
-              {{ original_cluster_params.base_dir }}/{{ original_cluster_params.raft_uuid }}/{{ recipe_name }}-topo.yaml
+            stale_db_tikv_config_file: >-
+              {{ original_cluster_params.base_dir }}/{{ original_cluster_params.raft_uuid }}/{{ recipe_name }}-tikv.toml
 
-        - name: "{{ recipe_name }}: Create temporary topology directory."
+        - name: "{{ recipe_name }}: Create temporary Playground config directory."
           file:
-            path: "{{ stale_db_topology_dir }}"
+            path: "{{ stale_db_config_dir }}"
             state: directory
             mode: "0755"
 
-        - name: "{{ recipe_name }}: Write temporary single-Region topology."
+        - name: "{{ recipe_name }}: Write staleDB TiKV Playground config."
           copy:
-            dest: "{{ stale_db_topology_file }}"
-            content: "{{ stale_db_topology | to_nice_yaml(indent=2, sort_keys=false) }}"
+            dest: "{{ stale_db_tikv_config_file }}"
             mode: "0644"
+            content: |
+              [raftstore]
+              split-region-check-tick-interval = "0s"
+              raft-log-gc-tick-interval = "1s"
+              raft-log-gc-threshold = 16
+              raft-log-reserve-max-ticks = 1
 
-        - name: "{{ recipe_name }}: Mark temporary topology created."
+              [coprocessor]
+              split-region-on-table = false
+
+        - name: "{{ recipe_name }}: Mark temporary TiKV config created."
           set_fact:
-            temp_topology_created: true
+            temp_tikv_config_created: true
 
-        - name: "{{ recipe_name }}: Use staleDB topology for this deployment."
+        - name: "{{ recipe_name }}: Configure TiUP Playground cluster parameters."
           set_fact:
             test_cluster_params: >-
               {{
                 original_cluster_params
-                | combine({'topo_file': stale_db_topology_file})
+                | combine(
+                    {
+                      'tidb_backend': 'playground',
+                      'tidb_version': original_cluster_params.tidb_version | default('v8.5.0'),
+                      'playground_host': '127.0.0.1',
+                      'playground_pd': playground_pd_count,
+                      'playground_kv': playground_tikv_count,
+                      'playground_db': playground_tidb_count,
+                      'playground_tiflash': 0,
+                      'playground_without_monitor': true,
+                      'playground_tikv_config': stale_db_tikv_config_file,
+                      'quorum_expected_stores': playground_tikv_count,
+                      'quorum_expected_replicas': 3,
+                      'pd_client_url': 'http://127.0.0.1:2379',
+                      'mysql_host': '127.0.0.1',
+                      'mysql_port': '4000',
+                      'api_base_url': api_base_url
+                    },
+                    recursive=true
+                  )
               }}
             ClusterParams: >-
               {{
                 original_cluster_params
-                | combine({'topo_file': stale_db_topology_file})
+                | combine(
+                    {
+                      'tidb_backend': 'playground',
+                      'tidb_version': original_cluster_params.tidb_version | default('v8.5.0'),
+                      'playground_host': '127.0.0.1',
+                      'playground_pd': playground_pd_count,
+                      'playground_kv': playground_tikv_count,
+                      'playground_db': playground_tidb_count,
+                      'playground_tiflash': 0,
+                      'playground_without_monitor': true,
+                      'playground_tikv_config': stale_db_tikv_config_file,
+                      'quorum_expected_stores': playground_tikv_count,
+                      'quorum_expected_replicas': 3,
+                      'pd_client_url': 'http://127.0.0.1:2379',
+                      'mysql_host': '127.0.0.1',
+                      'mysql_port': '4000',
+                      'api_base_url': api_base_url
+                    },
+                    recursive=true
+                  )
               }}
+
+        - name: "{{ recipe_name }}: Show TiUP Playground configuration."
+          debug:
+            msg:
+              - "Backend: {{ ClusterParams.tidb_backend }}"
+              - "TiDB version: {{ ClusterParams.tidb_version }}"
+              - "PD instances: {{ ClusterParams.playground_pd }}"
+              - "TiKV instances: {{ ClusterParams.playground_kv }}"
+              - "TiDB instances: {{ ClusterParams.playground_db }}"
+              - "TiKV config: {{ ClusterParams.playground_tikv_config }}"
 
         # =====================================================
         # 1. Start three TiKV replicas and mdsvc-api
         # =====================================================
 
-        - name: "{{ recipe_name }}: Deploy TiUP cluster and start mdsvc-api."
+        - name: "{{ recipe_name }}: Start TiUP Playground cluster and mdsvc-api."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
+
+        - name: "{{ recipe_name }}: Validate Playground startup."
+          debug:
+            msg:
+              - "Playground status: {{ setup_status.status }}"
+              - "Playground PID: {{ setup_status.playground_pid }}"
+              - "PD instances: {{ setup_status.pd_count }}"
+              - "TiKV instances: {{ setup_status.tikv_count }}"
+              - "TiDB instances: {{ setup_status.tidb_count }}"
+          failed_when:
+            setup_status.status != 'playground_setup_done' or
+            setup_status.tikv_count | int != playground_tikv_count | int
 
         - name: "{{ recipe_name }}: Mark cluster setup complete."
           set_fact:
@@ -258,7 +272,7 @@
         # locate_row_region auto-discovers the mdsvc schema/table containing
         # target_nisd_id and uses INFORMATION_SCHEMA.TIKV_REGION_STATUS to
         # require one Region ID across both record and index key ranges.
-        # The temp topology above prevents normal size/key-count split checks.
+        # The temporary TiKV config above prevents normal Region split checks.
         - name: "{{ recipe_name }}: Prepare Region lookup parameters."
           set_fact:
             ClusterParams: >-
@@ -334,15 +348,11 @@
                 | first
               }}
 
-        - name: "{{ recipe_name }}: Resolve TiUP node ID for stale replica."
+        - name: "{{ recipe_name }}: Resolve Playground node ID for stale replica."
           set_fact:
-            recovered_node_id: >-
-              {{
-                (test_cluster_params.store_addr_to_node_id | default({})).get(
-                  recovered_store.address,
-                  recovered_store.address
-                )
-              }}
+            # The playground lookup resolves a TiKV process from its PD-reported
+            # address, e.g. 127.0.0.1:20160. No TiUP cluster node map is needed.
+            recovered_node_id: "{{ recovered_store.address }}"
 
         - name: "{{ recipe_name }}: Show selected stale replica."
           debug:
@@ -350,7 +360,7 @@
               - "Region leader remains on store {{ target_region.leader_store_id }}"
               - "Crashing follower store {{ recovered_store_id }}"
               - "TiKV address: {{ recovered_store.address }}"
-              - "TiUP node ID: {{ recovered_node_id }}"
+              - "Playground node ID: {{ recovered_node_id }}"
 
         - name: "{{ recipe_name }}: Select stale TiKV node."
           set_fact:
@@ -724,34 +734,30 @@
             cleanup_restart_result is defined
 
         # -----------------------------------------------------
-        # Tear down the TiUP cluster created by this recipe.
+        # Tear down the TiUP Playground created by this recipe.
         # -----------------------------------------------------
 
-        - name: "{{ recipe_name }}: Prepare cluster parameters for teardown."
+        - name: "{{ recipe_name }}: Restore Playground parameters for teardown."
           set_fact:
-            ClusterParams: >-
-              {{
-                original_cluster_params
-                | combine({'destroy': destroy_cluster_after_test | bool})
-              }}
+            ClusterParams: "{{ test_cluster_params }}"
           when:
-            - original_cluster_params is defined
+            - test_cluster_params is defined
             - cluster_setup_done | default(false) | bool
 
-        - name: "{{ recipe_name }}: Tear down TiDB cluster backend."
+        - name: "{{ recipe_name }}: Tear down TiUP Playground and mdsvc-api."
           set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'teardown') }}"
+            teardown_status: "{{ lookup('tidb_setup', 'playground_teardown') }}"
           when:
             cluster_setup_done | default(false) | bool
           ignore_errors: true
 
-        - name: "{{ recipe_name }}: Remove temporary staleDB topology."
+        - name: "{{ recipe_name }}: Remove temporary staleDB TiKV config."
           file:
-            path: "{{ stale_db_topology_file }}"
+            path: "{{ stale_db_tikv_config_file }}"
             state: absent
           when:
-            - temp_topology_created | default(false) | bool
-            - stale_db_topology_file is defined
+            - temp_tikv_config_created | default(false) | bool
+            - stale_db_tikv_config_file is defined
 
         - name: "{{ recipe_name }}: Restore original cluster parameters."
           set_fact:
