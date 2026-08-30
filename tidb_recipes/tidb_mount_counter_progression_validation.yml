@@ -222,6 +222,14 @@
           debug:
             msg: "{{ nisd_result }}"
 
+        - name: "{{ recipe_name }}: Stop mdsvc-api server and TiDB playground."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'teardown') }}"
+
+        - name: "{{ recipe_name }}: Debug teardown status."
+          debug:
+            msg: "{{ teardown_status }}"
+
       rescue:
         - name: "Recipe: {{ recipe_name }} failed"
           set_fact:
