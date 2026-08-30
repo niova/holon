@@ -313,6 +313,8 @@ def manual_setup(cluster_params):
         "base_url": base_url,
         "server_timeout": server_timeout,
         "log_file": log_file,
+        "server_pid": server_result["pid"],
+        "server_log_file": server_result["log_file"],
     })
 
     return {
@@ -903,6 +905,8 @@ def playground_setup(cluster_params):
             "base_url": base_url,
             "server_timeout": server_timeout,
             "log_file": log_file,
+            "server_pid": server_result["pid"],
+            "server_log_file": server_result["log_file"],
         })
 
         return {
@@ -1010,6 +1014,7 @@ def _stop_playground_process(cluster_params, force=False):
                 os.remove(pid_file)
 
     return {"status": "playground_stopped", "pid": pid}
+
 
 def playground_teardown(cluster_params):
     """Stop mdsvc-api and the TiUP Playground supervisor/process tree."""
@@ -1605,10 +1610,26 @@ def transfer_region_leader(cluster_params):
 # Shared mdsvc-api start/stop
 # =========================================================
 
+def _tail_file(path, max_lines=80):
+    """Return the tail of a log file for actionable Ansible errors."""
+    if not path or not os.path.exists(path):
+        return "<log file not found: %s>" % path
+    try:
+        with open(path, "r", errors="replace") as fp:
+            lines = fp.readlines()
+        return "".join(lines[-max_lines:]).rstrip()
+    except Exception as exc:
+        return "<unable to read %s: %s>" % (path, exc)
+
 def start_server(params):
-    """Launch `go run ./cmd/server` as a detached background process."""
+    """Launch mdsvc-api as a detached background process and detect early exit."""
     server_path = params["server_path"]
     pid_file = params["pid_file"]
+
+    if not os.path.isdir(server_path):
+        raise AnsibleError("mdsvc server_path does not exist: %s" % server_path)
+    if not os.path.exists(os.path.join(server_path, "go.mod")):
+        raise AnsibleError("mdsvc server_path has no go.mod: %s" % server_path)
 
     log_file = os.path.join(server_path, "mdsvc.log")
     fp = open(log_file, "a")
@@ -1624,7 +1645,6 @@ def start_server(params):
 
     if params.get("disable_auth"):
         env["DISABLE_AUTH"] = "true"
-
     if params.get("jwt_secret"):
         env["JWT_SECRET"] = str(params["jwt_secret"])
     if params.get("tenant_admin_username"):
@@ -1636,8 +1656,27 @@ def start_server(params):
     if params.get("admin_default_password"):
         env["ADMIN_DEFAULT_PASSWORD"] = str(params["admin_default_password"])
 
+    command = params.get("server_command") or ["go", "run", "./cmd/server"]
+    if isinstance(command, str):
+        command = command.split()
+
+    fp.write("\n==== STARTING MDSVC-API ====\n")
+    fp.write("cwd=%s\n" % server_path)
+    fp.write("command=%s\n" % " ".join(command))
+    fp.write(
+        "mysql=%s:%s user=%s api=%s disable_auth=%s\n"
+        % (
+            params["mysql_host"],
+            params["mysql_port"],
+            params["mysql_user"],
+            params["base_url"],
+            bool(params.get("disable_auth")),
+        )
+    )
+    fp.flush()
+
     proc = subprocess.Popen(
-        ["go", "run", "./cmd/server"],
+        command,
         cwd=server_path,
         stdout=fp,
         stderr=fp,
@@ -1649,8 +1688,22 @@ def start_server(params):
     with open(pid_file, "w") as pidf:
         pidf.write(str(proc.pid))
 
+    fp.write("mdsvc-api launcher pid=%d\n" % proc.pid)
     fp.flush()
 
+    time.sleep(float(params.get("server_early_exit_check", 2)))
+    rc = proc.poll()
+    if rc is not None:
+        fp.close()
+        if os.path.exists(pid_file):
+            os.remove(pid_file)
+        raise AnsibleError(
+            "mdsvc-api exited before becoming ready (rc=%s). Log: %s\n"
+            "---- mdsvc.log tail ----\n%s"
+            % (rc, log_file, _tail_file(log_file))
+        )
+
+    fp.close()
     return {
         "status": "server_started",
         "pid": proc.pid,
@@ -1688,21 +1741,36 @@ def stop_server(params):
 # =========================================================
 
 def wait_for_server(params):
-    """Poll base_url until an HTTP status below 500 is returned."""
+    """Poll base_url while detecting an mdsvc process that exits early."""
     base_url = params["base_url"]
-    timeout = params["server_timeout"]
+    timeout = int(params["server_timeout"])
     log_file = _get_log_file(params)
+    server_pid = params.get("server_pid")
+    server_log_file = params.get("server_log_file")
     last_err = None
 
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     for _ in range(timeout):
+        if server_pid and not _pid_exists(int(server_pid)):
+            raise AnsibleError(
+                "mdsvc-api process pid=%s exited before %s became ready. "
+                "Server log: %s\n---- mdsvc.log tail ----\n%s"
+                % (
+                    server_pid,
+                    base_url,
+                    server_log_file,
+                    _tail_file(server_log_file),
+                )
+            )
+
         try:
             resp = requests.get(base_url, timeout=5)
             if resp.status_code < 500:
                 with open(log_file, "a") as logf:
                     _write_log_header(logf, "SERVER BECAME READY")
                 return
+            last_err = "HTTP %s" % resp.status_code
         except Exception as exc:
             last_err = str(exc)
 
@@ -1711,9 +1779,14 @@ def wait_for_server(params):
     if params.get("container_name"):
         docker_logs(params)
 
+    server_tail = ""
+    if server_log_file:
+        server_tail = "\n---- mdsvc.log tail ----\n%s" % _tail_file(server_log_file)
+
     raise AnsibleError(
         "Server at %s did not become ready within %ss. Last error: %s. "
-        "See logs: %s" % (base_url, timeout, last_err, log_file)
+        "Health log: %s. Server log: %s%s"
+        % (base_url, timeout, last_err, log_file, server_log_file, server_tail)
     )
 
 # =========================================================

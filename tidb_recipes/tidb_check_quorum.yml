@@ -63,7 +63,8 @@
                       'pd_client_url': 'http://127.0.0.1:2379',
                       'mysql_host': '127.0.0.1',
                       'mysql_port': '4000',
-                      'api_base_url': api_base_url
+                      'api_base_url': api_base_url,
+                      'server_timeout': 300
                     },
                     recursive=true
                   )
