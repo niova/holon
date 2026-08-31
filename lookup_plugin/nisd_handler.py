@@ -697,6 +697,7 @@ def start_niova_block_test(cluster_params, input_values):
         os.environ['NIOVA_GOSSIP_KEY']="dummy" 
         os.environ['NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT']="256" 
         os.environ['NIOVA_BLOCK_PROXY_TAG']="mdsvc-tidb"
+        os.environ["NIOVA_LOG_LEVEL"] = "5"
     else:
         # Resolve gossipNodes file path
         gossip_nodes_path = os.path.join(raft_dir, "gossipNodes.json")
