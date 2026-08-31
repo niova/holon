@@ -5,8 +5,8 @@
   vars:
     recipe_name: "tidb_start_niova_block_test"
     api_base_url: "http://localhost:8081"
-    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
-    vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
+    infra_payload: "/home/himani/mdsvc-tidb/examples/create_sample_infra.json"
+    vdev_payload: "/home/himani/mdsvc-tidb/examples/create_sample_vdev.json"
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
     client_id: "5e00ce0c-8021-11f1-911c-0fc57145aa3a"
 
@@ -24,7 +24,7 @@
 
         - name: "{{ recipe_name }}: Start mdsvc-tidb."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'manual_setup') }}"
 
         - name: "{{ recipe_name }}: Debug setup status."
           debug:
@@ -122,8 +122,8 @@
             input_param: {
               'nisd_device_path': '{{ nisd_dev_path.msg[0] }}',
               'nisd_uuid': '{{ nisd_uuid }}',
-              'peer_port': '13000',
-              'client_port': '13001',
+              'peer_port': '14000',
+              'client_port': '14001',
               'enable_auth': 1,
             }
           debug:
@@ -219,7 +219,7 @@
 
         - name: "{{ recipe_name }}: Stop mdsvc-api server and TiDB playground."
           set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
 
         - name: "{{ recipe_name }}: Debug teardown status."
           debug:

@@ -1790,22 +1790,6 @@ def wait_for_server(params):
     )
 
 # =========================================================
-# Generic backend-aware setup / teardown
-# =========================================================
-
-def setup(cluster_params):
-    backend = _tidb_backend(cluster_params)
-    if backend == "docker":
-        return docker_setup(cluster_params)
-    return playground_setup(cluster_params)
-
-def teardown(cluster_params):
-    backend = _tidb_backend(cluster_params)
-    if backend == "docker":
-        return docker_teardown(cluster_params)
-    return playground_teardown(cluster_params)
-
-# =========================================================
 # Lookup Entry Point
 # =========================================================
 
@@ -1817,11 +1801,7 @@ class LookupModule(LookupBase):
 
         os.environ["NIOVA_THREAD_COUNT"] = cluster_params["nthreads"]
 
-        if action == "setup":
-            result = setup(cluster_params)
-        elif action == "teardown":
-            result = teardown(cluster_params)
-        elif action == "docker_setup":
+        if action == "docker_setup":
             result = docker_setup(cluster_params)
         elif action == "docker_teardown":
             result = docker_teardown(cluster_params)
@@ -1835,7 +1815,6 @@ class LookupModule(LookupBase):
             result = playground_teardown(cluster_params)
         elif action == "list_playground_nodes":
             result = list_playground_nodes(cluster_params)
-
         elif action == "node_stop":
             result = node_stop(cluster_params)
         elif action == "node_start":
