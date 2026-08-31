@@ -224,3 +224,8 @@
         - name: "{{ recipe_name }}: Debug teardown status."
           debug:
             msg: "{{ teardown_status }}"
+
+      rescue:
+       - name: "Recipe: {{ recipe_name }} failed"
+         set_fact:
+           terminate_recipe: true
