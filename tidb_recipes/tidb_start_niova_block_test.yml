@@ -24,7 +24,7 @@
 
         - name: "{{ recipe_name }}: Start mdsvc-tidb."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'manual_setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
 
         - name: "{{ recipe_name }}: Debug setup status."
           debug:
