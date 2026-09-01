@@ -24,7 +24,7 @@
 
         - name: "{{ recipe_name }}: Start mdsvc-tidb."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
 
         - name: "{{ recipe_name }}: Debug setup status."
           debug:
@@ -219,7 +219,7 @@
 
         - name: "{{ recipe_name }}: Stop mdsvc-api server and TiDB playground."
           set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
+            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
 
         - name: "{{ recipe_name }}: Debug teardown status."
           debug:
@@ -229,3 +229,126 @@
        - name: "Recipe: {{ recipe_name }} failed"
          set_fact:
            terminate_recipe: true
+
+      always:
+
+        # ---------------------------------------------------
+        # Stop niova-block-test first
+        # ---------------------------------------------------
+
+        - name: "{{ recipe_name }}: Stop niova-block-test."
+          shell: |
+            set +e
+
+            pkill -TERM -f '[n]iova-block-test' 2>/dev/null || true
+            sleep 2
+            pkill -KILL -f '[n]iova-block-test' 2>/dev/null || true
+
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+        # ---------------------------------------------------
+        # Stop NISD
+        # ---------------------------------------------------
+
+        - name: "{{ recipe_name }}: Stop NISD."
+          shell: |
+            set +e
+
+            pkill -TERM -x nisd 2>/dev/null || true
+            sleep 2
+            pkill -KILL -x nisd 2>/dev/null || true
+
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+        # ---------------------------------------------------
+        # Stop niova-block-ctl
+        # ---------------------------------------------------
+
+        - name: "{{ recipe_name }}: Stop niova-block-ctl."
+          shell: |
+            set +e
+
+            pkill -TERM -f '[n]iova-block-ctl' 2>/dev/null || true
+            sleep 1
+            pkill -KILL -f '[n]iova-block-ctl' 2>/dev/null || true
+
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+        # ---------------------------------------------------
+        # Tear down mdsvc/TiDB docker stack
+        # ---------------------------------------------------
+
+        - name: "{{ recipe_name }}: Tear down mdsvc-tidb."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Print teardown status."
+          debug:
+            var: teardown_status
+          ignore_errors: true
+
+        # ---------------------------------------------------
+        # Kill any stale Serf process
+        # ---------------------------------------------------
+
+        - name: "{{ recipe_name }}: Stop stale Serf."
+          shell: |
+            set +e
+            pkill -TERM -x serf 2>/dev/null || true
+            sleep 1
+            pkill -KILL -x serf 2>/dev/null || true
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+        # ---------------------------------------------------
+        # Remove runtime files
+        #
+        # Do NOT remove HOLON_LOG_PATH here because you want
+        # failure logs uploaded by GitHub Actions.
+        # ---------------------------------------------------
+
+        - name: "{{ recipe_name }}: Remove runtime leftovers."
+          shell: |
+            set +e
+
+            rm -f /sample.device
+
+            if [ -d /tmp/tidb ]; then
+                rm -rf /tmp/tidb/*
+            fi
+
+            if [ -d /local ]; then
+                rm -rf /local/*
+            fi
+
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+    # -------------------------------------------------------
+    # Cleanup has completed. Now propagate the original
+    # recipe failure back to ansible-playbook.
+    # -------------------------------------------------------
+
+    - name: "{{ recipe_name }}: Fail recipe after cleanup."
+      fail:
+        msg: "Recipe {{ recipe_name }} failed. Cleanup completed."
+      when: recipe_failed | bool
