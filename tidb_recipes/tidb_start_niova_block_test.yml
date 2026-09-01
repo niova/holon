@@ -122,8 +122,8 @@
             input_param: {
               'nisd_device_path': '{{ nisd_dev_path.msg[0] }}',
               'nisd_uuid': '{{ nisd_uuid }}',
-              'peer_port': '14000',
-              'client_port': '14001',
+              'peer_port': '13000',
+              'client_port': '13001',
               'enable_auth': 1,
             }
           debug:
