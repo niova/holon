@@ -51,6 +51,8 @@
         #   cluster -> TiUP provides PD/TiKV/TiDB and mdsvc-api runs as process
 =======
 
+    - name: "Set TiDB backend defaults"
+      set_fact:
         # TiDB backend selection:
         #   docker  -> docker compose provides TiDB + mdsvc-api
         #   cluster -> TiUP provides PD/TiKV/TiDB and mdsvc-api runs as a process
@@ -129,13 +131,10 @@
 =======
           - "TiDB topology: {{ tidb_topo_file if tidb_backend == 'cluster' else 'not required for docker backend' }}"
       failed_when: >
-        app_type == 'tidb' and
+        tidb_backend not in ['docker', 'cluster'] or
         (
-          tidb_backend not in ['docker', 'cluster'] or
-          (
-            tidb_backend == 'cluster' and
-            (tidb_topo_file | string | length == 0)
-          )
+          tidb_backend == 'cluster' and
+          (tidb_topo_file | string | length == 0)
         )
 >>>>>>> 627cd21 (Update tidb_check_quorum.yml and add topo/mdsvc-test-topo.yaml.)
 
@@ -231,8 +230,8 @@
           sync_mode: "{{ sync }}"
           file_counter: 0
           prometheus_support: "{{ prometheus_support }}"
-          nlookouts: "{{ nlookouts | default(5) }}"
-          nnisds: "{{ nnisds | default(5) }}"
+          nlookouts: "{{ nlookouts }}"
+          nnisds: "{{ nnisds }}"
           niovaBlockTest_input_file_path: "{{ blocktest_input_file_path }}"
           nthreads: "{{ nthreads }}"
           s3Support: "{{ s3Support }}"
