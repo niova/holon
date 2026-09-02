@@ -268,6 +268,16 @@
           changed_when: false
           failed_when: false
 
+        - name: "{{ recipe_name }}: Remove NISD device file."
+          file:
+            path: "{{ nisd_dev_path.msg[0] }}"
+            state: absent
+          when:
+            - nisd_dev_path is defined
+            - nisd_dev_path.msg is defined
+            - nisd_dev_path.msg | length > 0
+          failed_when: false
+
         # ---------------------------------------------------
         # Stop niova-block-ctl
         # ---------------------------------------------------
@@ -327,8 +337,6 @@
           shell: |
             set +e
 
-            rm -f /sample.device
-
             if [ -d /tmp/tidb ]; then
                 rm -rf /tmp/tidb/*
             fi
@@ -351,4 +359,4 @@
     - name: "{{ recipe_name }}: Fail recipe after cleanup."
       fail:
         msg: "Recipe {{ recipe_name }} failed. Cleanup completed."
-      when: recipe_failed | bool
+      when: terminate_recipe | default(false) | bool
