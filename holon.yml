@@ -38,39 +38,74 @@
         blocktest_input_file_path: "{{ blocktest_file_path | default(false) | bool }}"
         nthreads: "{{ nthreads | default(2) | int }}"
         s3Support: "{{ s3Support | default(false) | bool }}"
-
-        # TiDB backend selection:
-        #   docker  -> docker compose provides TiDB + mdsvc-api
-        #   cluster -> TiUP provides PD/TiKV/TiDB and mdsvc-api runs as a process
-        tidb_backend: "{{ tidb_backend | default('docker') }}"
-        tidb_cluster_name: "{{ tidb_cluster_name | default('mdsvc-test') }}"
-        tidb_version: "{{ tidb_version | default('v8.5.0') }}"
-        tidb_topo_file: "{{ tidb_topo_file | default('') }}"
-        tidb_deploy_user: "{{ tidb_deploy_user | default(lookup('env', 'USER')) }}"
-        tidb_identity_file: "{{ tidb_identity_file | default(lookup('env', 'HOME') + '/.ssh/id_ed25519') }}"
-        tidb_quorum_expected_stores: "{{ tidb_quorum_expected_stores | default(3) | int }}"
-        tidb_quorum_expected_replicas: "{{ tidb_quorum_expected_replicas | default(3) | int }}"
-        tidb_quorum_ready_timeout: "{{ tidb_quorum_ready_timeout | default(240) | int }}"
       failed_when: >
         ((srv_port | int) >= 65536) or
         ((client_port | int) >= 65536) or
         ((backend_type != "raft") and (backend_type != "pumicedb"))
+
+    - name: "Set TiDB backend defaults"
+      set_fact:
+        # TiDB backend selection:
+        #   docker  -> docker compose provides TiDB + mdsvc-api
+        #   cluster -> TiUP provides PD/TiKV/TiDB and mdsvc-api runs as process
+        tidb_backend: "{{ tidb_backend | default('docker') }}"
+        tidb_cluster_name: "{{ tidb_cluster_name | default('mdsvc-test') }}"
+        tidb_version: "{{ tidb_version | default('v8.5.0') }}"
+        tidb_topo_file: "{{ tidb_topo_file | default('') }}"
+        tidb_deploy_user: >-
+          {{
+            tidb_deploy_user
+            | default(lookup('env', 'USER'))
+          }}
+        tidb_identity_file: >-
+          {{
+            tidb_identity_file
+            | default(lookup('env', 'HOME') + '/.ssh/id_ed25519')
+          }}
+        tidb_quorum_expected_stores: >-
+          {{
+            tidb_quorum_expected_stores
+            | default(3)
+            | int
+          }}
+        tidb_quorum_expected_replicas: >-
+          {{
+            tidb_quorum_expected_replicas
+            | default(3)
+            | int
+          }}
+        tidb_quorum_ready_timeout: >-
+          {{
+            tidb_quorum_ready_timeout
+            | default(240)
+            | int
+          }}
+        tidb_api_base_url: >-
+          {{
+            lookup('env', 'MDSVC_API_URL')
+            | default('http://localhost:8081', true)
+          }}
+      when: app_type == "tidb"
 
     - name: "Validate TiDB backend selection"
       debug:
         msg:
           - "TiDB backend: {{ tidb_backend }}"
           - "TiDB cluster name: {{ tidb_cluster_name }}"
-          - "TiDB topology: {{ tidb_topo_file if tidb_backend == 'cluster' else 'not required for docker backend' }}"
+          - >-
+            TiDB topology:
+            {{
+              tidb_topo_file
+              if tidb_backend == 'cluster'
+              else 'not required for docker backend'
+            }}
       failed_when: >
-        app_type == 'tidb' and
+        tidb_backend not in ['docker', 'cluster'] or
         (
-          tidb_backend not in ['docker', 'cluster'] or
-          (
-            tidb_backend == 'cluster' and
-            (tidb_topo_file | string | length == 0)
-          )
+          tidb_backend == 'cluster' and
+          (tidb_topo_file | string | length == 0)
         )
+      when: app_type == "tidb"
 
     - name: "Print the special feature parameters."
       debug:
@@ -78,7 +113,12 @@
           - "The app running is: {{ app_type }}"
           - "Coalesced enabled: {{ coalesced_wr }}"
           - "Sync enabled: {{ sync }}"
-          - "TiDB backend: {{ tidb_backend if app_type == 'tidb' else 'n/a' }}"
+
+    - name: "Print TiDB backend"
+      debug:
+        msg:
+          - "TiDB backend: {{ tidb_backend }}"
+      when: app_type == "tidb"
 
     - name: "Check if ports are already in use"
       vars:
@@ -104,23 +144,33 @@
           sync_mode: "{{ sync }}"
           file_counter: 0
           prometheus_support: "{{ prometheus_support }}"
-          nlookouts: "{{ nlookouts | default(5) }}"
-          nnisds: "{{ nnisds | default(5) }}"
+          nlookouts: "{{ nlookouts }}"
+          nnisds: "{{ nnisds }}"
           niovaBlockTest_input_file_path: "{{ blocktest_input_file_path }}"
           nthreads: "{{ nthreads }}"
           s3Support: "{{ s3Support }}"
 
-          # Backend-aware TiDB parameters consumed by tidb_setup.py.
-          tidb_backend: "{{ tidb_backend }}"
-          cluster_name: "{{ tidb_cluster_name }}"
-          tidb_version: "{{ tidb_version }}"
-          topo_file: "{{ tidb_topo_file }}"
-          deploy_user: "{{ tidb_deploy_user }}"
-          identity_file: "{{ tidb_identity_file }}"
-          quorum_expected_stores: "{{ tidb_quorum_expected_stores }}"
-          quorum_expected_replicas: "{{ tidb_quorum_expected_replicas }}"
-          quorum_ready_timeout: "{{ tidb_quorum_ready_timeout }}"
-          api_base_url: "{{ lookup('env', 'MDSVC_API_URL') | default('http://localhost:8081', true) }}"
+    - name: "Add TiDB parameters"
+      set_fact:
+        ClusterParams: >-
+          {{
+            ClusterParams
+            | combine(
+                {
+                  'tidb_backend': tidb_backend,
+                  'cluster_name': tidb_cluster_name,
+                  'tidb_version': tidb_version,
+                  'topo_file': tidb_topo_file,
+                  'deploy_user': tidb_deploy_user,
+                  'identity_file': tidb_identity_file,
+                  'quorum_expected_stores': tidb_quorum_expected_stores,
+                  'quorum_expected_replicas': tidb_quorum_expected_replicas,
+                  'quorum_ready_timeout': tidb_quorum_ready_timeout,
+                  'api_base_url': tidb_api_base_url
+                }
+              )
+          }}
+      when: app_type == "tidb"
 
     - name: "Prepare server configs"
       set_fact:
