@@ -167,6 +167,29 @@ def docker_setup(cluster_params):
 
         logf.write("\nDOCKER STACK STARTED\n")
 
+    docker_container_log = "%s/%s/%s_container_log.txt" % (
+        base_dir,
+        raft_uuid,
+        app_name,
+    )
+
+    docker_log_fp = open(docker_container_log, "a")
+
+    logs_proc = subprocess.Popen(
+        ["sudo", "docker", "logs", "-f", container_name],
+        stdout=docker_log_fp,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+    )
+
+    with open(log_file, "a") as logf:
+        logf.write(
+            "\nBACKGROUND LOG STREAM STARTED for %s pid=%d\n"
+            "Docker container logs: %s\n"
+            % (container_name, logs_proc.pid, docker_container_log)
+        )
+        logf.flush()
+
     wait_for_server({
         "base_url": base_url,
         "server_timeout": server_timeout,
@@ -174,23 +197,12 @@ def docker_setup(cluster_params):
         "container_name": container_name,
     })
 
-    with open(log_file, "a") as logf:
-        logs_proc = subprocess.Popen(
-            ["sudo", "docker", "logs", "-f", container_name],
-            stdout=logf,
-            stderr=logf,
-            start_new_session=True,
-        )
-        logf.write(
-            "\nBACKGROUND LOG STREAM STARTED for %s pid=%d\n"
-            % (container_name, logs_proc.pid)
-        )
-
     return {
         "status": "docker_setup_done",
         "container_name": container_name,
         "log_pid": logs_proc.pid,
         "log_file": log_file,
+        "docker_container_log": docker_container_log,
         "base_url": base_url,
     }
 
