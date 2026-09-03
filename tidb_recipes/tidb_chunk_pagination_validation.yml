@@ -1,0 +1,403 @@
+- name: "tidb_chunk_pagination_validation"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "tidb_chunk_pagination_validation"
+    api_base_url: "http://localhost:8081"
+    infra_payload: "{{ playbook_dir }}/../examples/e2e.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_vdev_100gb_1replica.json"
+    page_limit: 4
+
+  tasks:
+    - block:
+
+        # =====================================================
+        # 0. Validate application type
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Check if app_type is tidb."
+          debug:
+            msg: "app_type is: {{ app_type }}"
+          failed_when: app_type != "tidb"
+
+        - name: "{{ recipe_name }}: Initialize recipe state."
+          set_fact:
+            tidb_setup_attempted: false
+            tidb_setup_complete: false
+            pagination_recipe_failed: false
+            pagination_recipe_failure: {}
+
+        # =====================================================
+        # 1. Start configured TiDB backend
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Mark TiDB backend setup attempted."
+          set_fact:
+            tidb_setup_attempted: true
+
+        - name: "{{ recipe_name }}: Start configured TiDB backend."
+          set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'setup') }}"
+
+        - name: "{{ recipe_name }}: Print setup result."
+          debug:
+            var: setup_status
+
+        - name: "{{ recipe_name }}: Mark TiDB backend setup complete."
+          set_fact:
+            tidb_setup_complete: true
+
+        - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
+          uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+          register: api_health
+          retries: 90
+          delay: 3
+          until: api_health.status in [200, 301, 302]
+
+        # =====================================================
+        # 2. Login
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Login to mdsvc-api."
+          set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username='admin',
+                  password='admin'
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store access token."
+          set_fact:
+            access_token: "{{ login_result.access_token }}"
+
+        - name: "{{ recipe_name }}: Verify access token."
+          debug:
+            msg: "Login completed successfully."
+          failed_when:
+            access_token is not defined or
+            access_token | length == 0
+
+        # =====================================================
+        # 3. Read VDEV configuration
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Read VDEV payload."
+          set_fact:
+            vdev_payload_data: "{{ lookup('file', vdev_payload) | from_json }}"
+
+        - name: "{{ recipe_name }}: Store expected replica count."
+          set_fact:
+            expected_replica_count: >-
+              {{
+                vdev_payload_data.get(
+                  'data_blk_cnt',
+                  vdev_payload_data.get('replica_count', 0)
+                )
+                | int
+              }}
+
+        - name: "{{ recipe_name }}: Verify replica count."
+          assert:
+            that:
+              - expected_replica_count | int > 0
+            fail_msg: >-
+              Replica count was not found in the VDEV payload.
+              Payload: {{ vdev_payload_data }}
+
+        # =====================================================
+        # 4. Create infrastructure
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=infra_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print infrastructure response."
+          debug:
+            var: infra_result
+
+        - name: "{{ recipe_name }}: Verify infrastructure creation."
+          assert:
+            that:
+              - infra_result.status_code | int in [200, 201]
+            success_msg: "Infrastructure created successfully."
+            fail_msg: >-
+              Infrastructure creation failed.
+              Status: {{ infra_result.status_code | default('missing') }}
+              Response: {{ infra_result.data | default({}) }}
+
+        # =====================================================
+        # 5. Create VDEV
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Create VDEV."
+          set_fact:
+            vdev_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_vdev',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=vdev_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print VDEV response."
+          debug:
+            var: vdev_result
+
+        - name: Store VDEV information
+          set_fact:
+            vdev_uuid: "{{ vdev_result.vdev_id }}"
+            num_of_chunks: "{{ vdev_result.chunk_cnt | int }}"
+
+        - name: "{{ recipe_name }}: Print stored VDEV information."
+          debug:
+            msg:
+              - "VDEV UUID: {{ vdev_uuid }}"
+              - "Expected chunk count: {{ num_of_chunks }}"
+              - "Replica count: {{ expected_replica_count }}"
+
+        - name: "{{ recipe_name }}: Validate VDEV response."
+          debug:
+            msg: "VDEV response contains the required values."
+          failed_when:
+            vdev_uuid is not defined or
+            vdev_uuid | length == 0 or
+            num_of_chunks | int <= 0
+
+        # =====================================================
+        # 6. Initialize pagination state
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Initialize pagination state."
+          set_fact:
+            pagination_pages: []
+            reconstructed_chunks: []
+            current_start_chunk_idx: 0
+            pagination_complete: false
+
+        # =====================================================
+        # 7. Fetch and validate chunk mappings
+        #
+        # The get_chunk action is used with an overridden
+        # /api/chunks path so that tidb_api does not automatically
+        # traverse every page.
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Fetch paginated chunk mappings."
+          set_fact:
+            pagination_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_chunks',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={
+                    'vdev_id': vdev_uuid,
+                    'start_chunk_idx': 0,
+                    'limit': page_limit | int
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store reconstructed chunks and indexes."
+          set_fact:
+            reconstructed_chunks: "{{ pagination_result.chunks | default([]) }}"
+            reconstructed_chunk_indexes: >-
+              {{
+                pagination_result.chunks
+                | default([])
+                | map(attribute='chunk_idx')
+                | map('int')
+                | list
+              }}
+            expected_chunk_indexes: "{{ range(0, num_of_chunks | int) | list }}"
+
+        - name: "{{ recipe_name }}: Validate pagination reconstruction."
+          assert:
+            that:
+              - pagination_result.success | bool
+              - pagination_result.pagination_complete | bool
+              - pagination_result.pages_fetched | int > 0
+              - pagination_result.total_chunks_fetched | int == num_of_chunks | int
+              - reconstructed_chunks | length == num_of_chunks | int
+              - reconstructed_chunk_indexes | unique | length == num_of_chunks | int
+              - reconstructed_chunk_indexes == expected_chunk_indexes
+              - >-
+                pagination_result.expected_total_chunks is none
+                or
+                pagination_result.expected_total_chunks | int == num_of_chunks | int
+            success_msg: >-
+              Pagination validated: {{ pagination_result.pages_fetched }} pages,
+              {{ reconstructed_chunks | length }} chunks.
+            fail_msg: "Pagination validation failed: {{ pagination_result }}"
+
+        - name: "{{ recipe_name }}: Validate chunk replica mappings."
+          vars:
+            nisd_ids: "{{ item.nisd_ids | default([]) }}"
+          assert:
+            that:
+              - nisd_ids | length == expected_replica_count | int
+              - nisd_ids | unique | length == nisd_ids | length
+              - nisd_ids | reject('equalto', '') | list | length == nisd_ids | length
+            fail_msg: >-
+              Invalid mapping for chunk {{ item.chunk_idx }}:
+              nisd_ids={{ nisd_ids }},
+              expected_replicas={{ expected_replica_count }}
+          loop: "{{ reconstructed_chunks }}"
+          loop_control:
+            label: "chunk_idx={{ item.chunk_idx }}"
+
+        # =====================================================
+        # 8. Invalid parameter validation
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Build invalid-parameter query strings."
+          set_fact:
+            invalid_parameter_cases:
+              - name: "missing vdev_id"
+                query: "start_chunk_idx=0&limit={{ page_limit }}"
+ 
+              - name: "negative start_chunk_idx"
+                query: "vdev_id={{ vdev_uuid }}&start_chunk_idx=-1&limit={{ page_limit }}"
+ 
+              - name: "zero limit"
+                query: "vdev_id={{ vdev_uuid }}&start_chunk_idx=0&limit=0"
+ 
+              - name: "negative limit"
+                query: "vdev_id={{ vdev_uuid }}&start_chunk_idx=0&limit=-1"
+ 
+              - name: "unknown vdev_id"
+                query: "vdev_id=00000000-0000-0000-0000-000000000000&start_chunk_idx=0&limit={{ page_limit }}"
+ 
+        - name: "{{ recipe_name }}: Test invalid pagination parameters."
+          uri:
+            url: "{{ api_base_url }}/api/chunks?{{ item.query }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+              Content-Type: "application/json"
+            status_code: [200, 400, 404, 422]
+            return_content: true
+          register: invalid_parameter_results
+          failed_when: false
+          loop: "{{ invalid_parameter_cases }}"
+          loop_control:
+            label: "{{ item.name }}"
+ 
+        - name: "{{ recipe_name }}: Print invalid pagination results."
+          debug:
+            msg:
+              - "case={{ item.get('item', {}).get('name', 'unknown') }}"
+              - "failed={{ item.get('failed', false) }}"
+              - "status={{ item.get('status', 'missing') }}"
+              - "msg={{ item.get('msg', '') }}"
+              - "content={{ item.get('content', '') }}"
+              - "url={{ item.get('url', '') }}"
+          loop: "{{ invalid_parameter_results.results }}"
+          loop_control:
+            label: "{{ item.get('item', {}).get('name', 'unknown') }}"
+ 
+        - name: "{{ recipe_name }}: Validate invalid parameter responses."
+          vars:
+            body_json: "{{ item.json | default({}) }}"
+          assert:
+            that:
+              - item.status is defined
+              - >-
+                (item.status | int in [400, 404, 422])
+                or
+                (item.status | int == 200 and body_json.error is defined)
+            fail_msg: >-
+              Invalid request '{{ item.item.name }}' returned
+              HTTP {{ item.status | default('missing') }}: {{ item.content | default('') }}
+              (expected an HTTP error status, or HTTP 200 with a JSON
+              'error' field indicating rejection)
+          loop: "{{ invalid_parameter_results.results }}"
+          loop_control:
+            label: "{{ item.item.name }}"
+
+        # =====================================================
+        # 9. Final recipe result
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Pagination validation completed."
+          debug:
+            msg:
+              - "VDEV UUID: {{ vdev_uuid }}"
+              - "Expected chunks: {{ num_of_chunks }}"
+              - "Reconstructed chunks: {{ reconstructed_chunks | length }}"
+              - "Pages fetched: {{ pagination_result.pages_fetched }}"
+              - "Page limit: {{ page_limit }}"
+              - "Replica count: {{ expected_replica_count }}"
+              - "Chunk pagination validation passed."
+
+      rescue:
+
+        - name: "{{ recipe_name }}: Print failure context."
+          debug:
+            msg:
+              - "TiDB chunk pagination validation failed."
+              - "Backend: {{ tidb_backend | default('docker') }}"
+              - "VDEV UUID: {{ vdev_uuid | default('not-created') }}"
+              - "Expected chunks: {{ num_of_chunks | default('unknown') }}"
+              - >-
+                Failure: {{
+                  ansible_failed_result.msg
+                  | default(ansible_failed_result)
+                }}
+
+        - name: "{{ recipe_name }}: Mark recipe failed."
+          set_fact:
+            pagination_recipe_failed: true
+            pagination_recipe_failure: "{{ ansible_failed_result }}"
+
+      always:
+
+        # =====================================================
+        # 10. Always clean up whichever TiDB backend was started
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Tear down configured TiDB backend."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'teardown') }}"
+          when:
+            tidb_setup_attempted | default(false) | bool
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Print teardown result."
+          debug:
+            var: teardown_status
+          when:
+            teardown_status is defined
+
+        - name: "{{ recipe_name }}: Fail recipe after cleanup if validation failed."
+          fail:
+            msg: >-
+              TiDB chunk pagination validation failed: {{
+                pagination_recipe_failure.msg
+                | default('See previous task output for failure context.')
+              }}
+          when:
+            pagination_recipe_failed | default(false) | bool

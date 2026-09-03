@@ -1,0 +1,776 @@
+- name: "tidb_bulk_recovery_with_staleDB.yml"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "tidb_bulk_recovery_with_staleDB"
+
+    api_base_url: "http://localhost:8081"
+    infra_payload: "{{ playbook_dir }}/../examples/e2e.json"
+
+    # Generate enough committed updates that the killed replica becomes
+    # materially stale. All PUTs update the same NISD row, so the logical
+    # workload key never moves between Regions while splitting is disabled.
+    bulk_write_count: 1200
+    api_request_timeout: 15
+
+    tikv_settle_seconds: 5
+    raft_gc_wait_seconds: 8
+    region_recovery_timeout: 300
+    leader_transfer_timeout: 180
+
+    # TiUP Playground topology for this recipe. The tidb_setup lookup plugin
+    # starts and tears down this cluster, including mdsvc-api.
+    playground_pd_count: 1
+    playground_tikv_count: 3
+    playground_tidb_count: 1
+
+  tasks:
+    - block:
+
+        # =====================================================
+        # 0. Build TiUP Playground configuration
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Check if app_type is tidb."
+          debug:
+            msg: "app_type is: {{ app_type }}"
+          failed_when: app_type != "tidb"
+
+        - name: "{{ recipe_name }}: Save original cluster parameters."
+          set_fact:
+            original_cluster_params: "{{ ClusterParams }}"
+
+        - name: "{{ recipe_name }}: Initialize recipe state."
+          set_fact:
+            cluster_setup_done: false
+            recovered_node_down: false
+            stale_db_recipe_failed: false
+            stale_db_recipe_failure: {}
+            temp_tikv_config_created: false
+
+        # TiUP Playground does not consume a TiUP cluster topology YAML.
+        # Component configuration is passed through --kv.config instead.
+        # These settings keep the workload in one Region and make Raft-log GC
+        # aggressive enough for the stale-replica recovery scenario.
+        - name: "{{ recipe_name }}: Define temporary TiKV config path."
+          set_fact:
+            stale_db_config_dir: >-
+              {{ original_cluster_params.base_dir }}/{{ original_cluster_params.raft_uuid }}
+            stale_db_tikv_config_file: >-
+              {{ original_cluster_params.base_dir }}/{{ original_cluster_params.raft_uuid }}/{{ recipe_name }}-tikv.toml
+
+        - name: "{{ recipe_name }}: Create temporary Playground config directory."
+          file:
+            path: "{{ stale_db_config_dir }}"
+            state: directory
+            mode: "0755"
+
+        - name: "{{ recipe_name }}: Write staleDB TiKV Playground config."
+          copy:
+            dest: "{{ stale_db_tikv_config_file }}"
+            mode: "0644"
+            content: |
+              [raftstore]
+              split-region-check-tick-interval = "0s"
+              raft-log-gc-tick-interval = "1s"
+              raft-log-gc-threshold = 16
+              raft-log-reserve-max-ticks = 1
+
+              [coprocessor]
+              split-region-on-table = false
+
+        - name: "{{ recipe_name }}: Mark temporary TiKV config created."
+          set_fact:
+            temp_tikv_config_created: true
+
+        - name: "{{ recipe_name }}: Configure TiUP Playground cluster parameters."
+          set_fact:
+            test_cluster_params: >-
+              {{
+                original_cluster_params
+                | combine(
+                    {
+                      'tidb_backend': 'playground',
+                      'tidb_version': original_cluster_params.tidb_version | default('v8.5.0'),
+                      'playground_host': '127.0.0.1',
+                      'playground_pd': playground_pd_count,
+                      'playground_kv': playground_tikv_count,
+                      'playground_db': playground_tidb_count,
+                      'playground_tiflash': 0,
+                      'playground_without_monitor': true,
+                      'playground_tikv_config': stale_db_tikv_config_file,
+                      'quorum_expected_stores': playground_tikv_count,
+                      'quorum_expected_replicas': 3,
+                      'pd_client_url': 'http://127.0.0.1:2379',
+                      'mysql_host': '127.0.0.1',
+                      'mysql_port': '4000',
+                      'api_base_url': api_base_url
+                    },
+                    recursive=true
+                  )
+              }}
+            ClusterParams: >-
+              {{
+                original_cluster_params
+                | combine(
+                    {
+                      'tidb_backend': 'playground',
+                      'tidb_version': original_cluster_params.tidb_version | default('v8.5.0'),
+                      'playground_host': '127.0.0.1',
+                      'playground_pd': playground_pd_count,
+                      'playground_kv': playground_tikv_count,
+                      'playground_db': playground_tidb_count,
+                      'playground_tiflash': 0,
+                      'playground_without_monitor': true,
+                      'playground_tikv_config': stale_db_tikv_config_file,
+                      'quorum_expected_stores': playground_tikv_count,
+                      'quorum_expected_replicas': 3,
+                      'pd_client_url': 'http://127.0.0.1:2379',
+                      'mysql_host': '127.0.0.1',
+                      'mysql_port': '4000',
+                      'api_base_url': api_base_url
+                    },
+                    recursive=true
+                  )
+              }}
+
+        - name: "{{ recipe_name }}: Show TiUP Playground configuration."
+          debug:
+            msg:
+              - "Backend: {{ ClusterParams.tidb_backend }}"
+              - "TiDB version: {{ ClusterParams.tidb_version }}"
+              - "PD instances: {{ ClusterParams.playground_pd }}"
+              - "TiKV instances: {{ ClusterParams.playground_kv }}"
+              - "TiDB instances: {{ ClusterParams.playground_db }}"
+              - "TiKV config: {{ ClusterParams.playground_tikv_config }}"
+
+        # =====================================================
+        # 1. Start three TiKV replicas and mdsvc-api
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Start TiUP Playground cluster and mdsvc-api."
+          set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
+
+        - name: "{{ recipe_name }}: Validate Playground startup."
+          debug:
+            msg:
+              - "Playground status: {{ setup_status.status }}"
+              - "Playground PID: {{ setup_status.playground_pid }}"
+              - "PD instances: {{ setup_status.pd_count }}"
+              - "TiKV instances: {{ setup_status.tikv_count }}"
+              - "TiDB instances: {{ setup_status.tidb_count }}"
+          failed_when:
+            setup_status.status != 'playground_setup_done' or
+            setup_status.tikv_count | int != playground_tikv_count | int
+
+        - name: "{{ recipe_name }}: Mark cluster setup complete."
+          set_fact:
+            cluster_setup_done: true
+
+        - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
+          uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+          register: api_health
+          retries: 90
+          delay: 3
+          until: api_health.status in [200, 301, 302]
+
+        - name: "{{ recipe_name }}: Login to mdsvc-api."
+          set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username='admin',
+                  password='admin',
+                  timeout=api_request_timeout
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store access token."
+          set_fact:
+            access_token: "{{ login_result.access_token }}"
+
+        - name: "{{ recipe_name }}: Validate access token."
+          debug:
+            msg: "Authentication completed successfully."
+          failed_when:
+            access_token is not defined or
+            access_token | length == 0
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=infra_payload,
+                  timeout=api_request_timeout
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Validate infrastructure creation."
+          debug:
+            msg: "Infrastructure was created successfully."
+          failed_when: >
+            infra_result.status_code | int not in [200, 201] or
+            infra_result.status | int != 0
+
+        # =====================================================
+        # 2. Pick one NISD row and identify its exact Raft Region
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Fetch initial NISD resources."
+          set_fact:
+            initial_nisd_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_resource',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={'type': 'nisd'},
+                  timeout=api_request_timeout
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store initial NISD resources."
+          set_fact:
+            initial_nisd_resources: >-
+              {{ initial_nisd_result.data.payload.resources | default(initial_nisd_result.data.resources | default(initial_nisd_result.resources | default([]))) }}
+
+        - name: "{{ recipe_name }}: Validate NISD resources are available."
+          debug:
+            msg: "NISD resources discovered: {{ initial_nisd_resources | length }}"
+          failed_when: initial_nisd_resources | length == 0
+
+        - name: "{{ recipe_name }}: Select one stable workload row."
+          set_fact:
+            target_nisd: "{{ initial_nisd_resources | first }}"
+            target_nisd_id: "{{ (initial_nisd_resources | first).id }}"
+            target_initial_available_size: >-
+              {{ (initial_nisd_resources | first).available_size | int }}
+
+        - name: "{{ recipe_name }}: Validate capacity can absorb test updates."
+          debug:
+            msg:
+              - "Target NISD: {{ target_nisd_id }}"
+              - "Initial available_size: {{ target_initial_available_size }}"
+              - "Bulk PUT count: {{ bulk_write_count }}"
+          failed_when:
+            target_initial_available_size | int <= bulk_write_count | int
+
+        # locate_row_region auto-discovers the mdsvc schema/table containing
+        # target_nisd_id and uses INFORMATION_SCHEMA.TIKV_REGION_STATUS to
+        # require one Region ID across both record and index key ranges.
+        # The temporary TiKV config above prevents normal Region split checks.
+        - name: "{{ recipe_name }}: Prepare Region lookup parameters."
+          set_fact:
+            ClusterParams: >-
+              {{
+                test_cluster_params
+                | combine({
+                    'region_row_id': target_nisd_id,
+                    'region_key_column': 'id'
+                  })
+              }}
+
+        - name: "{{ recipe_name }}: Locate the single Raft Region containing the workload row."
+          set_fact:
+            target_region: "{{ lookup('tidb_setup', 'locate_row_region') }}"
+
+        - name: "{{ recipe_name }}: Validate Region has three replicas."
+          debug:
+            msg:
+              - "Table: {{ target_region.database }}.{{ target_region.table }}"
+              - "Region ID: {{ target_region.region_id }}"
+              - "Leader store: {{ target_region.leader_store_id }}"
+              - "Region peers: {{ target_region.peer_store_ids }}"
+              - "Record Region count: {{ target_region.record_region_count }}"
+              - "All table/index Region IDs: {{ target_region.table_region_ids }}"
+          failed_when:
+            not (target_region.single_raft_group | bool) or
+            target_region.record_region_count | int != 1 or
+            target_region.leader_store_id is none or
+            target_region.peer_store_ids | length != 3
+
+        # =====================================================
+        # 3. Choose a follower of THIS Region and crash it
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Fetch TiKV stores from PD."
+          set_fact:
+            tikv_store_result: "{{ lookup('tidb_setup', 'list_tikv_stores') }}"
+
+        - name: "{{ recipe_name }}: Store live TiKV servers."
+          set_fact:
+            live_tikv_stores: >-
+              {{
+                tikv_store_result.stores
+                | selectattr('state_name', 'equalto', 'Up')
+                | list
+              }}
+
+        - name: "{{ recipe_name }}: Validate at least three TiKV servers are running."
+          debug:
+            msg: "Live TiKV servers: {{ live_tikv_stores | length }}"
+          failed_when: live_tikv_stores | length < 3
+
+        - name: "{{ recipe_name }}: Build follower store ID list for target Region."
+          set_fact:
+            target_region_follower_ids: >-
+              {{
+                target_region.peer_store_ids
+                | reject('equalto', target_region.leader_store_id)
+                | list
+              }}
+
+        - name: "{{ recipe_name }}: Choose stale replica store."
+          set_fact:
+            recovered_store_id: "{{ target_region_follower_ids | first }}"
+
+        - name: "{{ recipe_name }}: Resolve stale replica store metadata."
+          set_fact:
+            recovered_store: >-
+              {{
+                live_tikv_stores
+                | selectattr('id', 'equalto', recovered_store_id)
+                | list
+                | first
+              }}
+
+        - name: "{{ recipe_name }}: Resolve Playground node ID for stale replica."
+          set_fact:
+            # The playground lookup resolves a TiKV process from its PD-reported
+            # address, e.g. 127.0.0.1:20160. No TiUP cluster node map is needed.
+            recovered_node_id: "{{ recovered_store.address }}"
+
+        - name: "{{ recipe_name }}: Show selected stale replica."
+          debug:
+            msg:
+              - "Region leader remains on store {{ target_region.leader_store_id }}"
+              - "Crashing follower store {{ recovered_store_id }}"
+              - "TiKV address: {{ recovered_store.address }}"
+              - "Playground node ID: {{ recovered_node_id }}"
+
+        - name: "{{ recipe_name }}: Select stale TiKV node."
+          set_fact:
+            ClusterParams: >-
+              {{
+                test_cluster_params
+                | combine({
+                    'node_id': recovered_node_id,
+                    'process_name': 'tikv-server'
+                  })
+              }}
+
+        - name: "{{ recipe_name }}: Hard-kill stale TiKV follower."
+          set_fact:
+            kill_result: "{{ lookup('tidb_setup', 'node_kill') }}"
+
+        - name: "{{ recipe_name }}: Mark stale TiKV follower down."
+          set_fact:
+            recovered_node_down: true
+
+        - name: "{{ recipe_name }}: Allow PD/TiKV to observe failed follower."
+          pause:
+            seconds: "{{ tikv_settle_seconds }}"
+
+        # =====================================================
+        # 4. Perform all writes while the third replica is stale
+        # =====================================================
+
+        # Every request upserts the SAME NISD ID and changes only
+        # available_size. With Region splitting disabled this keeps the record
+        # mutations in the same Raft group for the whole outage window.
+        - name: "{{ recipe_name }}: Perform bulk PUT workload with 2/3 TiKV replicas."
+          set_fact:
+            bulk_put_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'put_resource',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={'type': 'nisd'},
+                  body={
+                    'id': target_nisd.id,
+                    'peer_port': target_nisd.peer_port,
+                    'fd_pdu_id': target_nisd.fd_pdu_id,
+                    'fd_rack_id': target_nisd.fd_rack_id,
+                    'fd_hv_id': target_nisd.fd_hv_id,
+                    'fd_device_id': target_nisd.fd_device_id,
+                    'total_size': target_nisd.total_size,
+                    'available_size':
+                      (target_initial_available_size | int) - (item | int),
+                    'socket_path': target_nisd.socket_path,
+                    'net_info': target_nisd.net_info
+                  },
+                  timeout=api_request_timeout
+                )
+              }}
+          loop: "{{ range(1, (bulk_write_count | int) + 1) | list }}"
+          loop_control:
+            label: "PUT {{ item }}/{{ bulk_write_count }}"
+          no_log: true
+
+        - name: "{{ recipe_name }}: Print bulk workload completion."
+          debug:
+            msg: "Completed {{ bulk_write_count }} committed PUTs while store {{ recovered_store_id }} was offline."
+
+        - name: "{{ recipe_name }}: Capture authoritative dataset before recovery."
+          set_fact:
+            pre_recovery_nisd_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_resource',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={'type': 'nisd'},
+                  timeout=api_request_timeout
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store expected NISD dataset."
+          set_fact:
+            expected_nisd_resources: >-
+              {{ pre_recovery_nisd_result.data.payload.resources | default(pre_recovery_nisd_result.data.resources | default(pre_recovery_nisd_result.resources | default([]))) }}
+            expected_target_available_size: >-
+              {{ (target_initial_available_size | int) - (bulk_write_count | int) }}
+
+        - name: "{{ recipe_name }}: Store target row after bulk workload."
+          set_fact:
+            expected_target_nisd: >-
+              {{
+                expected_nisd_resources
+                | selectattr('id', 'equalto', target_nisd_id)
+                | list
+                | first
+              }}
+
+        - name: "{{ recipe_name }}: Validate final bulk-write value."
+          debug:
+            msg:
+              - "Expected available_size: {{ expected_target_available_size }}"
+              - "Observed available_size: {{ expected_target_nisd.available_size }}"
+          failed_when:
+            expected_target_nisd.available_size | int != expected_target_available_size | int
+
+        # Re-query with the database/table now known. This explicitly proves
+        # that the workload table did not split during the 1200 PUTs.
+        - name: "{{ recipe_name }}: Re-check single-Region invariant after bulk writes."
+          set_fact:
+            ClusterParams: >-
+              {{
+                test_cluster_params
+                | combine({
+                    'region_row_id': target_nisd_id,
+                    'region_key_column': 'id',
+                    'region_database': target_region.database,
+                    'region_table': target_region.table
+                  })
+              }}
+
+        - name: "{{ recipe_name }}: Locate Region after bulk workload."
+          set_fact:
+            region_after_writes: "{{ lookup('tidb_setup', 'locate_row_region') }}"
+
+        - name: "{{ recipe_name }}: Verify all writes stayed in the same Raft Region."
+          debug:
+            msg:
+              - "Region before writes: {{ target_region.region_id }}"
+              - "Region after writes: {{ region_after_writes.region_id }}"
+          failed_when:
+            not (region_after_writes.single_raft_group | bool) or
+            region_after_writes.record_region_count | int != 1 or
+            region_after_writes.region_id | int != target_region.region_id | int
+
+        # Give the leader time to run the intentionally aggressive test-only
+        # Raft-log GC before bringing the stale peer back.
+        - name: "{{ recipe_name }}: Allow Raft log GC to advance."
+          pause:
+            seconds: "{{ raft_gc_wait_seconds }}"
+
+        # =====================================================
+        # 5. Restart stale node and wait for Region catch-up
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Select stale TiKV node for restart."
+          set_fact:
+            ClusterParams: >-
+              {{ test_cluster_params | combine({'node_id': recovered_node_id}) }}
+
+        - name: "{{ recipe_name }}: Restart stale TiKV follower."
+          set_fact:
+            restart_result: "{{ lookup('tidb_setup', 'node_start') }}"
+
+        - name: "{{ recipe_name }}: Mark recovered node running."
+          set_fact:
+            recovered_node_down: false
+
+        - name: "{{ recipe_name }}: Prepare Region recovery wait."
+          set_fact:
+            ClusterParams: >-
+              {{
+                test_cluster_params
+                | combine({
+                    'region_id': target_region.region_id,
+                    'target_store_id': recovered_store_id,
+                    'region_recovery_timeout': region_recovery_timeout
+                  })
+              }}
+
+        - name: "{{ recipe_name }}: Wait for stale peer to catch up and become eligible."
+          set_fact:
+            recovery_result: "{{ lookup('tidb_setup', 'wait_region_store_ready') }}"
+
+        - name: "{{ recipe_name }}: Print recovered Region state."
+          debug:
+            var: recovery_result
+
+        # =====================================================
+        # 6. Force the recovered node to lead the SAME Region
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Prepare explicit Region leader transfer."
+          set_fact:
+            ClusterParams: >-
+              {{
+                test_cluster_params
+                | combine({
+                    'region_id': target_region.region_id,
+                    'target_store_id': recovered_store_id,
+                    'leader_transfer_timeout': leader_transfer_timeout
+                  })
+              }}
+
+        - name: "{{ recipe_name }}: Transfer target Region leader to recovered store."
+          set_fact:
+            transfer_result: "{{ lookup('tidb_setup', 'transfer_region_leader') }}"
+
+        - name: "{{ recipe_name }}: Read final Region state."
+          set_fact:
+            final_region_state: "{{ lookup('tidb_setup', 'get_region_state') }}"
+
+        - name: "{{ recipe_name }}: Verify recovered store is Region leader."
+          debug:
+            msg:
+              - "Region: {{ final_region_state.region_id }}"
+              - "Expected leader store: {{ recovered_store_id }}"
+              - "Actual leader store: {{ final_region_state.leader_store_id }}"
+          failed_when:
+            final_region_state.leader_store_id | int != recovered_store_id | int
+
+        # =====================================================
+        # 7. Verify database/API consistency through recovered leader
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Fetch NISD dataset after leader transfer."
+          set_fact:
+            post_recovery_nisd_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_resource',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={'type': 'nisd'},
+                  timeout=api_request_timeout
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store recovered NISD dataset."
+          set_fact:
+            recovered_nisd_resources: >-
+              {{ post_recovery_nisd_result.data.payload.resources | default([]) }}
+
+        - name: "{{ recipe_name }}: Verify complete NISD dataset is unchanged by recovery."
+          debug:
+            msg:
+              - "Expected NISD count: {{ expected_nisd_resources | length }}"
+              - "Recovered NISD count: {{ recovered_nisd_resources | length }}"
+          failed_when: >
+            (expected_nisd_resources | sort(attribute='id')) !=
+            (recovered_nisd_resources | sort(attribute='id'))
+
+        - name: "{{ recipe_name }}: Store recovered target NISD."
+          set_fact:
+            recovered_target_nisd: >-
+              {{
+                recovered_nisd_resources
+                | selectattr('id', 'equalto', target_nisd_id)
+                | list
+                | first
+              }}
+
+        - name: "{{ recipe_name }}: Verify recovered leader has latest target value."
+          debug:
+            msg:
+              - "Target NISD: {{ target_nisd_id }}"
+              - "Expected available_size: {{ expected_target_available_size }}"
+              - "Recovered available_size: {{ recovered_target_nisd.available_size }}"
+          failed_when:
+            recovered_target_nisd.available_size | int != expected_target_available_size | int
+
+        # One idempotent PUT after transfer proves the recovered replica can
+        # actively lead a new write, not merely return the recovered data.
+        - name: "{{ recipe_name }}: Perform an idempotent PUT while recovered store is leader."
+          set_fact:
+            leader_write_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'put_resource',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={'type': 'nisd'},
+                  body={
+                    'id': recovered_target_nisd.id,
+                    'peer_port': recovered_target_nisd.peer_port,
+                    'fd_pdu_id': recovered_target_nisd.fd_pdu_id,
+                    'fd_rack_id': recovered_target_nisd.fd_rack_id,
+                    'fd_hv_id': recovered_target_nisd.fd_hv_id,
+                    'fd_device_id': recovered_target_nisd.fd_device_id,
+                    'total_size': recovered_target_nisd.total_size,
+                    'available_size': recovered_target_nisd.available_size,
+                    'socket_path': recovered_target_nisd.socket_path,
+                    'net_info': recovered_target_nisd.net_info
+                  },
+                  timeout=api_request_timeout
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Re-read NISD dataset after leader write."
+          set_fact:
+            final_nisd_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_resource',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={'type': 'nisd'},
+                  timeout=api_request_timeout
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Verify idempotent leader write preserved dataset."
+          vars:
+            final_nisd_resources: "{{ final_nisd_result.data.payload.resources | default(final_nisd_result.data.resources | default(final_nisd_result.resources | default([]))) }}"
+          debug:
+            msg: "Recovered store successfully served a post-recovery write."
+          failed_when: >
+            (expected_nisd_resources | sort(attribute='id')) !=
+            (final_nisd_resources | sort(attribute='id'))
+
+        - name: "{{ recipe_name }}: Print staleDB recovery summary."
+          debug:
+            msg:
+              - "Target table: {{ target_region.database }}.{{ target_region.table }}"
+              - "Target Region: {{ target_region.region_id }}"
+              - "Writes while follower offline: {{ bulk_write_count }}"
+              - "Recovered store: {{ recovered_store_id }}"
+              - "Recovered store became Region leader: yes"
+              - "Pre/post recovery NISD dataset match: yes"
+              - "{{ recipe_name }} passed."
+
+      rescue:
+
+        - name: "{{ recipe_name }}: Print failure context."
+          debug:
+            msg:
+              - "TiDB staleDB recovery validation failed."
+              - "Target NISD: {{ target_nisd_id | default('not-selected') }}"
+              - "Target Region: {{ target_region.region_id | default('not-located') }}"
+              - "Recovered store: {{ recovered_store_id | default('not-selected') }}"
+              - "Recovered node down: {{ recovered_node_down | default(false) }}"
+              - "Failure: {{ ansible_failed_result.msg | default(ansible_failed_result) }}"
+
+        - name: "{{ recipe_name }}: Mark recipe failed."
+          set_fact:
+            stale_db_recipe_failed: true
+            stale_db_recipe_failure: "{{ ansible_failed_result }}"
+
+      always:
+
+        # -----------------------------------------------------
+        # Restore stale TiKV node if a failure occurred mid-test.
+        # -----------------------------------------------------
+
+        - name: "{{ recipe_name }}: Select stale node for cleanup restart."
+          set_fact:
+            ClusterParams: >-
+              {{
+                test_cluster_params
+                | default(original_cluster_params)
+                | combine({'node_id': recovered_node_id})
+              }}
+          when:
+            - recovered_node_down | default(false) | bool
+            - recovered_node_id is defined
+
+        - name: "{{ recipe_name }}: Restart stale TiKV node during cleanup."
+          set_fact:
+            cleanup_restart_result: "{{ lookup('tidb_setup', 'node_start') }}"
+          when:
+            - recovered_node_down | default(false) | bool
+            - recovered_node_id is defined
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Mark cleanup restart complete."
+          set_fact:
+            recovered_node_down: false
+          when:
+            cleanup_restart_result is defined
+
+        # -----------------------------------------------------
+        # Tear down the TiUP Playground created by this recipe.
+        # -----------------------------------------------------
+
+        - name: "{{ recipe_name }}: Restore Playground parameters for teardown."
+          set_fact:
+            ClusterParams: "{{ test_cluster_params }}"
+          when:
+            - test_cluster_params is defined
+            - cluster_setup_done | default(false) | bool
+
+        - name: "{{ recipe_name }}: Tear down TiUP Playground and mdsvc-api."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'playground_teardown') }}"
+          when:
+            cluster_setup_done | default(false) | bool
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Remove temporary staleDB TiKV config."
+          file:
+            path: "{{ stale_db_tikv_config_file }}"
+            state: absent
+          when:
+            - temp_tikv_config_created | default(false) | bool
+            - stale_db_tikv_config_file is defined
+
+        - name: "{{ recipe_name }}: Restore original cluster parameters."
+          set_fact:
+            ClusterParams: "{{ original_cluster_params }}"
+          when:
+            original_cluster_params is defined
+
+        - name: "{{ recipe_name }}: Fail recipe after cleanup if validation failed."
+          fail:
+            msg: >-
+              TiDB staleDB recovery validation failed: {{
+                stale_db_recipe_failure.msg
+                | default('See previous task output for failure context.')
+              }}
+          when:
+            stale_db_recipe_failed | default(false) | bool

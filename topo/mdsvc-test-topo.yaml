@@ -1,0 +1,45 @@
+global:
+  user: "runner"
+  ssh_port: 22
+  deploy_dir: "/tmp/tidb-deploy"
+  data_dir: "/tmp/tidb-data"
+
+server_configs:
+  pd:
+    replication.max-replicas: 3
+    replication.location-labels: []
+
+  tidb:
+    temp-dir: "/tmp/tidb-deploy/tidb-4000/tmp"
+
+pd_servers:
+  - host: 127.0.0.1
+    client_port: 2379
+    peer_port: 2380
+    deploy_dir: "/tmp/tidb-deploy/pd-2379"
+    data_dir: "/tmp/tidb-data/pd-2379"
+
+tidb_servers:
+  - host: 127.0.0.1
+    port: 4000
+    status_port: 10080
+    deploy_dir: "/tmp/tidb-deploy/tidb-4000"
+
+tikv_servers:
+  - host: 127.0.0.1
+    port: 20160
+    status_port: 20180
+    deploy_dir: "/tmp/tidb-deploy/tikv-20160"
+    data_dir: "/tmp/tidb-data/tikv-20160"
+
+  - host: 127.0.0.1
+    port: 20161
+    status_port: 20181
+    deploy_dir: "/tmp/tidb-deploy/tikv-20161"
+    data_dir: "/tmp/tidb-data/tikv-20161"
+
+  - host: 127.0.0.1
+    port: 20162
+    status_port: 20182
+    deploy_dir: "/tmp/tidb-deploy/tikv-20162"
+    data_dir: "/tmp/tidb-data/tikv-20162"
