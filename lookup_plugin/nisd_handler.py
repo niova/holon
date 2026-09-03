@@ -711,8 +711,8 @@ def start_niova_block_test(cluster_params, input_values):
         os.environ["NIOVA_LOG_LEVEL"] = "5"
         
     if enable_authentication == 1:
-        # os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
-        # os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
+        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
+        os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
         # os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
         os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
         os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
