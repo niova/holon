@@ -251,34 +251,6 @@
           failed_when: false
 
         # ---------------------------------------------------
-        # Stop NISD
-        # ---------------------------------------------------
-
-        - name: "{{ recipe_name }}: Stop NISD."
-          shell: |
-            set +e
-
-            pkill -TERM -x nisd 2>/dev/null || true
-            sleep 2
-            pkill -KILL -x nisd 2>/dev/null || true
-
-            exit 0
-          args:
-            executable: /bin/bash
-          changed_when: false
-          failed_when: false
-
-        - name: "{{ recipe_name }}: Remove NISD device file."
-          file:
-            path: "{{ nisd_dev_path.msg[0] }}"
-            state: absent
-          when:
-            - nisd_dev_path is defined
-            - nisd_dev_path.msg is defined
-            - nisd_dev_path.msg | length > 0
-          failed_when: false
-
-        # ---------------------------------------------------
         # Stop niova-block-ctl
         # ---------------------------------------------------
 

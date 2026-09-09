@@ -73,9 +73,9 @@ def run_nisd_command(cluster_params, input_values):
     sock_dir = f"/tmp/.niova/{nisd_uuid}"
     os.makedirs(sock_dir, exist_ok=True)
 
-    if enable_authentication == 1:
-        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
-        os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
+    # if enable_authentication == 1:
+    #     os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
+    #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
     else:
         os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '0'
 
@@ -215,9 +215,9 @@ def run_niova_ublk(cluster_params, input_values):
     # os.environ["NIOVA_LOG_LEVEL"] = "5"
 
     if enable_auth == 1:
-        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
-        os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
-        os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
+        # os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
+        # os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
+        # os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
         os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['user_name']
         os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['user_secret']
 
