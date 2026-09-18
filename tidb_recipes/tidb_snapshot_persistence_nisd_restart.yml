@@ -1,0 +1,552 @@
+- name: "tidb_snapshot_persistence_nisd_restart.yml"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "tidb_snapshot_persistence_nisd_restart"
+    api_base_url: "http://localhost:8081"
+
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
+
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+    nisd_peer_port: "13000"
+    nisd_client_port: "13001"
+
+    cp_username: "admin"
+    cp_password: "admin"
+
+    niova_block_repo: "{{ lookup('env', 'NIOVA_BLOCK_REPO') | default(playbook_dir ~ '/../..', true) }}"
+    snapshot_test_script: "{{ niova_block_repo }}/test/system-tests/snapshot-persistence-nisd-restart.sh"
+    niova_snapshot_bin: "{{ niova_block_repo }}/scripts/niova-snapshot"
+    niova_ublk_bin: >-
+      {{
+        (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova-ublk')
+        if lookup('env', 'NIOVA_BIN_PATH')
+        else 'niova-ublk'
+      }}
+
+    gossip_path: "{{ lookup('env', 'NIOVA_WORKSPACE') }}/mdsvc-tidb/configs/gossipNodes"
+    recipe_state_file: >-
+      {{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/{{ ClusterParams.raft_uuid }}.json
+
+  tasks:
+    - block:
+
+        # ------------------------------------------------------------
+        # 0. Preconditions
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Validate application type."
+          ansible.builtin.assert:
+            that:
+              - app_type == "tidb"
+            fail_msg: "This recipe must run with app_type=tidb."
+
+        - name: "{{ recipe_name }}: Generate unique snapshot name."
+          ansible.builtin.set_fact:
+            snapshot_name: "snapshot-persistence-{{ lookup('pipe', 'date +%s%N') }}"
+
+        - name: "{{ recipe_name }}: Set test log directory."
+          ansible.builtin.set_fact:
+            snapshot_test_logdir: >-
+              {{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/snapshot-persistence-nisd-restart
+
+        - name: "{{ recipe_name }}: Verify test script exists."
+          ansible.builtin.stat:
+            path: "{{ snapshot_test_script }}"
+          register: snapshot_script_stat
+
+        - name: "{{ recipe_name }}: Assert test dependencies exist."
+          ansible.builtin.assert:
+            that:
+              - snapshot_script_stat.stat.exists
+            fail_msg: "Snapshot persistence script not found: {{ snapshot_test_script }}"
+
+        # ------------------------------------------------------------
+        # 1. Start mdsvc-tidb / CP
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Start mdsvc-tidb."
+          ansible.builtin.set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+
+        - name: "{{ recipe_name }}: Wait for mdsvc-api."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        # ------------------------------------------------------------
+        # 2. Login
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Login to mdsvc-api."
+          ansible.builtin.set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username=cp_username,
+                  password=cp_password
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Verify access token."
+          ansible.builtin.assert:
+            that:
+              - login_result.access_token is defined
+              - login_result.access_token | length > 0
+
+        # ------------------------------------------------------------
+        # 3. Create infra
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Create infra."
+          ansible.builtin.set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=infra_payload
+                )
+              }}
+
+        # ------------------------------------------------------------
+        # 4. Create persistent NISD backing storage ONCE
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Create NISD backing device."
+          vars:
+            img_dir: "/snapshot-persistence.device"
+            bs: "64M"
+            count: 160
+          ansible.builtin.debug:
+            msg:
+              - "{{ lookup('helper', 'create_dd_file', img_dir, bs, count) }}"
+          register: nisd_dev_path
+
+        - name: "{{ recipe_name }}: Store backing device path."
+          ansible.builtin.set_fact:
+            nisd_device_path: "{{ nisd_dev_path.msg[0] }}"
+
+        - name: "{{ recipe_name }}: Capture original backing-file identity."
+          ansible.builtin.command:
+            argv:
+              - stat
+              - "-c"
+              - "%d:%i:%s"
+              - "{{ nisd_device_path }}"
+          register: backing_identity_before
+          changed_when: false
+
+        # ------------------------------------------------------------
+        # 5. Initialize backing storage exactly once
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Initialize NISD backing storage."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+          ansible.builtin.debug:
+            msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
+
+        # ------------------------------------------------------------
+        # 6. Start NISD
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Start NISD."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "{{ nisd_peer_port }}"
+              client_port: "{{ nisd_client_port }}"
+              enable_auth: 1
+          ansible.builtin.debug:
+            msg:
+              - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
+
+        - name: "{{ recipe_name }}: Wait for recipe state file."
+          ansible.builtin.stat:
+            path: "{{ recipe_state_file }}"
+          register: recipe_state_stat
+          retries: 20
+          delay: 1
+          until: recipe_state_stat.stat.exists
+
+        # ------------------------------------------------------------
+        # 7. Create vdev
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Create vdev."
+          ansible.builtin.set_fact:
+            vdev_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_vdev',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=vdev_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Extract and validate vdev UUID."
+          ansible.builtin.set_fact:
+            vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
+
+        - name: "{{ recipe_name }}: Assert vdev UUID exists."
+          ansible.builtin.assert:
+            that:
+              - vdev_uuid is defined
+              - vdev_uuid | length > 0
+
+        # ------------------------------------------------------------
+        # 8. Start live RW ublk and dynamically identify /dev/ublkbN
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Record current ublk devices."
+          ansible.builtin.shell: |
+            shopt -s nullglob
+            for dev in /dev/ublkb*; do printf '%s\n' "$dev"; done
+          args:
+            executable: /bin/bash
+          register: ublk_before
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Start live RW niova-ublk."
+          vars:
+            input_param:
+              cp_mode: 1
+              enable_auth: 1
+              nisd_uuid: "{{ nisd_uuid }}"
+              vdev_uuid: "{{ vdev_uuid }}"
+              user_name: "{{ cp_username }}"
+              user_secret: "{{ cp_password }}"
+          ansible.builtin.set_fact:
+            live_ublk_uuid: "{{ lookup('nisd_handler', 'run_ublk_device', input_param) }}"
+
+        - name: "{{ recipe_name }}: Wait for live ublk device."
+          ansible.builtin.shell: |
+            shopt -s nullglob
+            for dev in /dev/ublkb*; do printf '%s\n' "$dev"; done
+          args:
+            executable: /bin/bash
+          register: ublk_after
+          changed_when: false
+          retries: 40
+          delay: 1
+          until: >-
+            (ublk_after.stdout_lines | difference(ublk_before.stdout_lines) | length) >= 1
+
+        - name: "{{ recipe_name }}: Identify live device."
+          ansible.builtin.set_fact:
+            live_ublk_devices: "{{ ublk_after.stdout_lines | difference(ublk_before.stdout_lines) }}"
+
+        - name: "{{ recipe_name }}: Require exactly one live device."
+          ansible.builtin.assert:
+            that:
+              - live_ublk_devices | length == 1
+
+        - name: "{{ recipe_name }}: Store live device."
+          ansible.builtin.set_fact:
+            live_device: "{{ live_ublk_devices[0] }}"
+
+        - name: "{{ recipe_name }}: Verify live block device."
+          ansible.builtin.stat:
+            path: "{{ live_device }}"
+          register: live_device_stat
+
+        - name: "{{ recipe_name }}: Assert live block device is ready."
+          ansible.builtin.assert:
+            that:
+              - live_device_stat.stat.exists
+              - live_device_stat.stat.isblk | default(false)
+
+        # ------------------------------------------------------------
+        # 9. PRE-RESTART TEST
+        #    A -> snapshot -> B; verify live=B and snapshot=A.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Run pre-restart snapshot checks."
+          ansible.builtin.shell: |
+            set -o pipefail
+            bash "{{ snapshot_test_script }}" prepare
+          args:
+            executable: /bin/bash
+          environment: &snapshot_test_environment
+            VDEV_UUID: "{{ vdev_uuid }}"
+            LIVE_DEVICE: "{{ live_device }}"
+            SNAPSHOT_NAME: "{{ snapshot_name }}"
+            NIOVA_SNAPSHOT: "{{ niova_snapshot_bin }}"
+            NIOVA_UBLK: "{{ niova_ublk_bin }}"
+            MDSVC_API_URL: "{{ api_base_url }}"
+            INTEGRATION_ADMIN_USERNAME: "{{ cp_username }}"
+            INTEGRATION_ADMIN_PASSWORD: "{{ cp_password }}"
+            TEST_LOGDIR: "{{ snapshot_test_logdir }}"
+            RECOVERY_TIMEOUT: "90"
+
+            NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
+            NIOVA_GOSSIP_KEY: "dummy"
+            NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
+            NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
+            NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
+            NIOVA_BLOCK_PROXY_TAG: "mdsvc-tidb"
+            NIOVA_BLOCK_UBLK_UNIFIED: "0"
+          register: pre_restart_result
+
+        - name: "{{ recipe_name }}: Assert pre-restart checks passed."
+          ansible.builtin.assert:
+            that:
+              - pre_restart_result.rc == 0
+              - "'PASS: snapshot persistence pre-restart phase' in pre_restart_result.stdout"
+            fail_msg: "Pre-restart snapshot verification failed."
+
+        # ------------------------------------------------------------
+        # 10. Independent CP check before restart
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Lookup snapshot before NISD restart."
+          ansible.builtin.set_fact:
+            snapshot_before: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_snapshot',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  params={
+                    'vdev_id': vdev_uuid,
+                    'name': snapshot_name
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Verify snapshot before restart."
+          ansible.builtin.assert:
+            that:
+              - snapshot_before.status_code | int == 200
+              - snapshot_before.state == "applied"
+              - snapshot_before.snapshot_id | int > 0
+              - snapshot_before.vdev_id == vdev_uuid
+              - snapshot_before.name == snapshot_name
+
+        # ------------------------------------------------------------
+        # 11. Capture old NISD PID from existing recipe state
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Read recipe state before NISD restart."
+          ansible.builtin.slurp:
+            src: "{{ recipe_state_file }}"
+          register: recipe_state_before_raw
+
+        - name: "{{ recipe_name }}: Extract old NISD PID."
+          ansible.builtin.set_fact:
+            old_nisd_pid: >-
+              {{
+                ((recipe_state_before_raw.content | b64decode | from_json)
+                  .nisd_process.process_pid) | int
+              }}
+
+        - name: "{{ recipe_name }}: Verify old NISD is running."
+          ansible.builtin.shell: "kill -0 {{ old_nisd_pid }}"
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        # ------------------------------------------------------------
+        # 12. Stop NISD only. Do NOT stop or restart the live nclient/ublk.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Stop NISD."
+          ansible.builtin.command:
+            argv:
+              - kill
+              - "-TERM"
+              - "{{ old_nisd_pid | string }}"
+          changed_when: true
+
+        - name: "{{ recipe_name }}: Wait for old NISD PID to exit."
+          ansible.builtin.shell: |
+            if kill -0 "{{ old_nisd_pid }}" 2>/dev/null; then
+                exit 1
+            fi
+          args:
+            executable: /bin/bash
+          register: old_nisd_exit
+          changed_when: false
+          retries: 30
+          delay: 1
+          until: old_nisd_exit.rc == 0
+
+        # ------------------------------------------------------------
+        # 13. Restart SAME NISD using SAME UUID and SAME backing storage.
+        #     IMPORTANT: niova-block-ctl is NOT run again.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Restart NISD on existing backing storage."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "{{ nisd_peer_port }}"
+              client_port: "{{ nisd_client_port }}"
+              enable_auth: 1
+          ansible.builtin.debug:
+            msg:
+              - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
+
+        - name: "{{ recipe_name }}: Read recipe state after NISD restart."
+          ansible.builtin.slurp:
+            src: "{{ recipe_state_file }}"
+          register: recipe_state_after_raw
+          retries: 20
+          delay: 1
+          until: >-
+            ((recipe_state_after_raw.content | b64decode | from_json)
+              .nisd_process.process_pid | int) != (old_nisd_pid | int)
+
+        - name: "{{ recipe_name }}: Extract restarted NISD PID."
+          ansible.builtin.set_fact:
+            new_nisd_pid: >-
+              {{
+                ((recipe_state_after_raw.content | b64decode | from_json)
+                  .nisd_process.process_pid) | int
+              }}
+
+        - name: "{{ recipe_name }}: Verify NISD process was actually restarted."
+          ansible.builtin.assert:
+            that:
+              - new_nisd_pid | int > 0
+              - new_nisd_pid | int != old_nisd_pid | int
+            fail_msg: "NISD PID did not change across restart."
+
+        - name: "{{ recipe_name }}: Verify restarted NISD process is running."
+          ansible.builtin.shell: "kill -0 {{ new_nisd_pid }}"
+          args:
+            executable: /bin/bash
+          changed_when: false
+          register: new_nisd_alive
+          retries: 20
+          delay: 1
+          until: new_nisd_alive.rc == 0
+
+        # ------------------------------------------------------------
+        # 14. Prove the backing file was not recreated/truncated.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Capture backing-file identity after restart."
+          ansible.builtin.command:
+            argv:
+              - stat
+              - "-c"
+              - "%d:%i:%s"
+              - "{{ nisd_device_path }}"
+          register: backing_identity_after
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Verify same persistent backing storage."
+          ansible.builtin.assert:
+            that:
+              - backing_identity_after.stdout == backing_identity_before.stdout
+            fail_msg: >-
+              NISD backing storage changed across restart.
+              before={{ backing_identity_before.stdout }}
+              after={{ backing_identity_after.stdout }}
+
+        # ------------------------------------------------------------
+        # 15. POST-RESTART TEST
+        #     Same live ublk must recover; verify live=B and snapshot=A again.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Run post-restart persistence checks."
+          ansible.builtin.shell: |
+            set -o pipefail
+            bash "{{ snapshot_test_script }}" verify-after-restart
+          args:
+            executable: /bin/bash
+          environment: *snapshot_test_environment
+          register: post_restart_result
+
+        - name: "{{ recipe_name }}: Print post-restart test output."
+          ansible.builtin.debug:
+            var: post_restart_result.stdout_lines
+
+        - name: "{{ recipe_name }}: Assert post-restart data checks passed."
+          ansible.builtin.assert:
+            that:
+              - post_restart_result.rc == 0
+              - "'PASS: snapshot persistence across NISD restart' in post_restart_result.stdout"
+            fail_msg: >-
+              Snapshot data/metadata did not survive the NISD restart.
+              Logs: {{ snapshot_test_logdir }}
+
+        # ------------------------------------------------------------
+        # 16. Independent CP check after restart
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Lookup snapshot after NISD restart."
+          ansible.builtin.set_fact:
+            snapshot_after: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_snapshot',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  params={
+                    'vdev_id': vdev_uuid,
+                    'name': snapshot_name
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Verify snapshot metadata survived restart."
+          ansible.builtin.assert:
+            that:
+              - snapshot_after.status_code | int == 200
+              - snapshot_after.state == "applied"
+              - snapshot_after.snapshot_id | int == snapshot_before.snapshot_id | int
+              - snapshot_after.vdev_id == vdev_uuid
+              - snapshot_after.name == snapshot_name
+            fail_msg: "Snapshot CP metadata changed or disappeared after NISD restart."
+
+        - name: "{{ recipe_name }}: Report success."
+          ansible.builtin.debug:
+            msg:
+              - "Snapshot persistence across NISD restart PASSED"
+              - "vdev={{ vdev_uuid }}"
+              - "snapshot={{ snapshot_name }}"
+              - "snapshot_id={{ snapshot_after.snapshot_id }}"
+              - "old_nisd_pid={{ old_nisd_pid }}"
+              - "new_nisd_pid={{ new_nisd_pid }}"
+              - "backing_storage={{ nisd_device_path }}"
+              - "live_device={{ live_device }}"
+              - "logs={{ snapshot_test_logdir }}"
+
+      always:
+        # ------------------------------------------------------------
+        # Cleanup
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Delete test snapshot if present."
+          ansible.builtin.command:
+            argv:
+              - "{{ niova_snapshot_bin }}"
+              - "--vdev"
+              - "{{ vdev_uuid | default('') }}"
+              - "--op"
+              - "delete"
+              - "--snapshot-name"
+              - "{{ snapshot_name | default('') }}"
+          environment:
+            NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
+            NIOVA_GOSSIP_KEY: "dummy"
+            NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
+            NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
+            NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
+            NIOVA_BLOCK_PROXY_TAG: "mdsvc-tidb"
+          register: snapshot_delete_result
+          changed_when: snapshot_delete_result.rc == 0
+          failed_when: false
+          when:
+            - vdev_uuid is defined
+            - snapshot_name is defined
+
+        - name: "{{ recipe_name }}: Stop mdsvc-api and TiDB stack."
+          ansible.builtin.set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+          failed_when: false
