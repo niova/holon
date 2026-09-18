@@ -1,0 +1,173 @@
+- name: "tidb_snapshot_lifecycle_regression"
+  hosts: localhost
+  connection: local
+  vars:
+    recipe_name: "tidb_snapshot_lifecycle_regression"
+    api_base_url: "http://localhost:8081"
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+    cp_username: admin
+    cp_password: admin
+    niova_block_repo: "{{ lookup('env','NIOVA_BLOCK_REPO') | default(playbook_dir ~ '/../..', true) }}"
+    regression_script: "{{ niova_block_repo }}/test/system-tests/snapshot-lifecycle-regression.sh"
+    niova_snapshot_bin: "{{ niova_block_repo }}/scripts/niova-snapshot"
+    niova_ublk_bin: "{{ (lookup('env','NIOVA_BIN_PATH') ~ '/bin/niova-ublk') if lookup('env','NIOVA_BIN_PATH') else 'niova-ublk' }}"
+    gossip_path: "{{ lookup('env','NIOVA_WORKSPACE') }}/mdsvc-tidb/configs/gossipNodes"
+    max_iterations: 1000
+    preserve_environment_on_failure: true
+
+  tasks:
+    - name: "Run snapshot lifecycle regression setup and test"
+      block:
+        - ansible.builtin.assert:
+            that: ["app_type == 'tidb'"]
+            fail_msg: "This recipe requires app_type=tidb"
+
+        - name: "Verify regression script"
+          ansible.builtin.stat:
+            path: "{{ regression_script }}"
+          register: regression_script_stat
+
+        - ansible.builtin.assert:
+            that: ["regression_script_stat.stat.exists"]
+            fail_msg: "Missing {{ regression_script }}"
+
+        - name: "Start mdsvc-tidb"
+          ansible.builtin.set_fact:
+            setup_status: "{{ lookup('tidb_setup','docker_setup') }}"
+
+        - name: "Wait for control plane"
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            status_code: [200, 301, 302]
+            timeout: 10
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        - name: "Login"
+          ansible.builtin.set_fact:
+            login_result: "{{ lookup('tidb_api','login',base_url=api_base_url,username=cp_username,password=cp_password) }}"
+
+        - name: "Create infrastructure"
+          ansible.builtin.set_fact:
+            infra_result: "{{ lookup('tidb_api','create_infra',base_url=api_base_url,token=login_result.access_token,file=infra_payload) }}"
+
+        - name: "Create NISD backing file"
+          vars: { img_dir: "/snapshot-regression.device", bs: "64M", count: 160 }
+          ansible.builtin.debug:
+            msg: "{{ lookup('helper','create_dd_file',img_dir,bs,count) }}"
+          register: nisd_dev_result
+
+        - ansible.builtin.set_fact:
+            nisd_device_path: "{{ nisd_dev_result.msg[0] }}"
+
+        - name: "Initialize NISD backing storage"
+          vars:
+            input_param: { nisd_device_path: "{{ nisd_device_path }}", nisd_uuid: "{{ nisd_uuid }}" }
+          ansible.builtin.debug:
+            msg: "{{ lookup('nisd_handler','run-niova-block-ctl',input_param) }}"
+
+        - name: "Start NISD"
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "13000"
+              client_port: "13001"
+              enable_auth: 1
+          ansible.builtin.debug:
+            msg: "{{ lookup('nisd_handler','run_nisd',input_param) }}"
+
+        - name: "Create VDEV"
+          ansible.builtin.set_fact:
+            vdev_result: "{{ lookup('tidb_api','create_vdev',base_url=api_base_url,token=login_result.access_token,file=vdev_payload) }}"
+
+        - ansible.builtin.set_fact:
+            vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
+            regression_logdir: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/snapshot-lifecycle-regression"
+
+        - name: "Record ublk devices before live mount"
+          ansible.builtin.shell: "shopt -s nullglob; printf '%s\\n' /dev/ublkb*"
+          args: { executable: /bin/bash }
+          register: ublk_before
+          changed_when: false
+
+        - name: "Start live RW niova-ublk"
+          vars:
+            input_param:
+              cp_mode: 1
+              enable_auth: 1
+              nisd_uuid: "{{ nisd_uuid }}"
+              vdev_uuid: "{{ vdev_uuid }}"
+              user_name: "{{ cp_username }}"
+              user_secret: "{{ cp_password }}"
+          ansible.builtin.set_fact:
+            live_ublk_uuid: "{{ lookup('nisd_handler','run_ublk_device',input_param) }}"
+
+        - name: "Discover live block device"
+          ansible.builtin.shell: "shopt -s nullglob; printf '%s\\n' /dev/ublkb*"
+          args: { executable: /bin/bash }
+          register: ublk_after
+          changed_when: false
+          retries: 45
+          delay: 1
+          until: (ublk_after.stdout_lines | difference(ublk_before.stdout_lines) | length) == 1
+
+        - ansible.builtin.set_fact:
+            live_device: "{{ (ublk_after.stdout_lines | difference(ublk_before.stdout_lines))[0] }}"
+
+        - name: "Resolve service PIDs and logs for health/evidence checks"
+          ansible.builtin.shell: |
+            set -o pipefail
+            nisd_pid="$(pgrep -n -f '(^|/)nisd([[:space:]]|$).*{{ nisd_uuid }}' || true)"
+            ublk_pid="$(pgrep -n -f '(^|/)niova-ublk([[:space:]]|$).*{{ vdev_uuid }}' || true)"
+            printf 'NISD_PID=%s\nLIVE_UBLK_PID=%s\n' "$nisd_pid" "$ublk_pid"
+          args: { executable: /bin/bash }
+          register: service_ids
+          changed_when: false
+
+        - name: "Run bounded lifecycle loop"
+          ansible.builtin.shell: "timeout --signal=TERM --kill-after=30s {{ ((max_iterations | int) * 15 + 60) }}m bash {{ regression_script | quote }}"
+          args: { executable: /bin/bash }
+          environment:
+            VDEV_UUID: "{{ vdev_uuid }}"
+            LIVE_DEVICE: "{{ live_device }}"
+            MAX_ITERATIONS: "{{ max_iterations | string }}"
+            TEST_LOGDIR: "{{ regression_logdir }}"
+            NIOVA_SNAPSHOT: "{{ niova_snapshot_bin }}"
+            NIOVA_UBLK: "{{ niova_ublk_bin }}"
+            MDSVC_API_URL: "{{ api_base_url }}"
+            INTEGRATION_ADMIN_USERNAME: "{{ cp_username }}"
+            INTEGRATION_ADMIN_PASSWORD: "{{ cp_password }}"
+            NISD_PID: "{{ service_ids.stdout | regex_search('NISD_PID=([^\\n]*)','\\1') | first | default('') }}"
+            LIVE_UBLK_PID: "{{ service_ids.stdout | regex_search('LIVE_UBLK_PID=([^\\n]*)','\\1') | first | default('') }}"
+            NISD_LOG: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/nisd-{{ nisd_uuid }}.log"
+            LIVE_UBLK_LOG: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/niova-ublk-{{ live_ublk_uuid }}.log"
+            NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
+            NIOVA_GOSSIP_KEY: dummy
+            NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
+            NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
+            NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
+            NIOVA_BLOCK_PROXY_TAG: mdsvc-tidb
+            NIOVA_BLOCK_UBLK_UNIFIED: "0"
+          register: regression_result
+
+      rescue:
+        - ansible.builtin.set_fact: { regression_failed: true }
+        - ansible.builtin.debug:
+            msg: "Regression stopped. Environment was not restarted or torn down. Artifacts: {{ regression_logdir | default('not initialized') }}"
+        - ansible.builtin.fail:
+            msg: "Snapshot lifecycle regression failed; diagnostic state preserved."
+
+      always:
+        - name: "Clean up only after a fully successful run"
+          ansible.builtin.set_fact:
+            teardown_status: "{{ lookup('tidb_setup','docker_teardown') }}"
+          when:
+            - not (regression_failed | default(false))
+            - regression_result is defined
+            - regression_result.rc == 0
+          failed_when: false

@@ -1,0 +1,612 @@
+- name: "tidb_multiple_nisd_mount_counter_progression_validation.yml"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "tidb_multiple_nisd_mount_counter_progression_validation"
+
+    api_base_url: "http://localhost:8081"
+
+    infra_payload: "{{ playbook_dir }}/../examples/create_multi_nisd_infra.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_multi_nisd_vdev.json"
+
+    # Expected to be created by the recipe framework or NISD setup.
+    lookout_uuid: "{{ LookoutUUID }}"
+
+    # The UUIDs here must match the NISD UUIDs present in infra_payload.
+    nisd_nodes:
+      - nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+        device_name: "/multi_nisd_0.device"
+        peer_port: "13000"
+        client_port: "13001"
+
+      - nisd_uuid: "2b04d5b0-5184-49b4-972b-1c94a2057e75"
+        device_name: "/multi_nisd_1.device"
+        peer_port: "13002"
+        client_port: "13003"
+
+      - nisd_uuid: "3c15e6c1-5184-49b4-972b-1c94a2057e76"
+        device_name: "/multi_nisd_2.device"
+        peer_port: "13004"
+        client_port: "13005"
+
+  tasks:
+    - block:
+
+        # ============================================================
+        # 1. Validate recipe application type
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Check if app_type is tidb."
+          debug:
+            msg: "app_type is: {{ app_type }}"
+          failed_when: app_type != "tidb"
+
+        # ============================================================
+        # 2. Start control plane
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Start mdsvc-tidb Docker stack."
+          set_fact:
+            docker_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+
+        - name: "{{ recipe_name }}: Print Docker setup result."
+          debug:
+            var: docker_status
+
+        - name: "{{ recipe_name }}: Wait for mdsvc-api."
+          uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code:
+              - 200
+              - 301
+              - 302
+          register: api_health
+          retries: 30
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        # ============================================================
+        # 3. Login
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Login to mdsvc-api."
+          set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username='admin',
+                  password='admin'
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store access token."
+          set_fact:
+            access_token: "{{ login_result.access_token }}"
+
+        - name: "{{ recipe_name }}: Verify access token."
+          assert:
+            that:
+              - access_token is defined
+              - access_token | length > 0
+            fail_msg: "Login succeeded, but no access token was returned."
+
+        # ============================================================
+        # 4. Create multi-NISD infrastructure
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=infra_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print infrastructure response."
+          debug:
+            var: infra_result
+
+        # ============================================================
+        # 5. Create backing devices for all NISDs
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Create NISD backing devices."
+          vars:
+            img_dir: "{{ item.device_name }}"
+            bs: "64M"
+            count: 160
+          debug:
+            msg:
+              - "{{ lookup('helper', 'create_dd_file', img_dir, bs, count) }}"
+          loop: "{{ nisd_nodes }}"
+          loop_control:
+            label: "{{ item.nisd_uuid }}"
+          register: nisd_device_results
+
+        - name: "{{ recipe_name }}: Initialize runtime NISD list."
+          set_fact:
+            runtime_nisd_nodes: []
+
+        - name: "{{ recipe_name }}: Build runtime NISD configuration."
+          set_fact:
+            runtime_nisd_nodes: >-
+              {{
+                runtime_nisd_nodes
+                +
+                [
+                  item.0
+                  | combine(
+                      {
+                        'device_path': item.1.msg[0]
+                      }
+                    )
+                ]
+              }}
+          loop: "{{ nisd_nodes | zip(nisd_device_results.results) | list }}"
+          loop_control:
+            label: "{{ item.0.nisd_uuid }}"
+
+        - name: "{{ recipe_name }}: Print runtime NISD configuration."
+          debug:
+            var: runtime_nisd_nodes
+
+        # ============================================================
+        # 6. Start niova-block-ctl for every NISD
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Start niova-block-ctl processes."
+          vars:
+            input_param:
+              nisd_device_path: "{{ item.device_path }}"
+              nisd_uuid: "{{ item.nisd_uuid }}"
+          debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run-niova-block-ctl',
+                  input_param
+                )
+              }}
+          loop: "{{ runtime_nisd_nodes }}"
+          loop_control:
+            label: "{{ item.nisd_uuid }}"
+
+        # ============================================================
+        # 7. Start all NISDs
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Start NISD processes."
+          vars:
+            input_param:
+              nisd_device_path: "{{ item.device_path }}"
+              nisd_uuid: "{{ item.nisd_uuid }}"
+              peer_port: "{{ item.peer_port }}"
+              client_port: "{{ item.client_port }}"
+              enable_auth: 1
+          debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run_nisd',
+                  input_param
+                )
+              }}
+          loop: "{{ runtime_nisd_nodes }}"
+          loop_control:
+            label: "{{ item.nisd_uuid }}"
+
+        - name: "{{ recipe_name }}: Wait for NISD registration."
+          pause:
+            seconds: 10
+
+        # ============================================================
+        # 8. Verify that configured NISDs are visible in CP
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Fetch NISDs from control plane."
+          set_fact:
+            cp_nisd_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_nisd',
+                  base_url=api_base_url,
+                  token=access_token
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print control-plane NISDs."
+          debug:
+            var: cp_nisd_result
+
+        # The exact response field may be "nisds" or nested under data.
+        - name: "{{ recipe_name }}: Normalize control-plane NISD list."
+          set_fact:
+            cp_nisds: >-
+              {{
+                cp_nisd_result.data.nisds
+                | default(
+                    cp_nisd_result.data
+                    | default([])
+                  )
+              }}
+
+        - name: "{{ recipe_name }}: Extract control-plane NISD UUIDs."
+          set_fact:
+            cp_nisd_uuids: >-
+              {{
+                cp_nisds
+                | map(attribute='nisd_uuid')
+                | map('string')
+                | list
+              }}
+          when:
+            - cp_nisds is sequence
+            - cp_nisds | length > 0
+
+        - name: "{{ recipe_name }}: Verify configured NISDs are registered."
+          assert:
+            that:
+              - item.nisd_uuid | string in cp_nisd_uuids
+            fail_msg: >-
+              NISD {{ item.nisd_uuid }} is not registered with the
+              control plane. Registered NISDs: {{ cp_nisd_uuids }}
+          loop: "{{ runtime_nisd_nodes }}"
+          loop_control:
+            label: "{{ item.nisd_uuid }}"
+          when:
+            - cp_nisd_uuids is defined
+
+        # ============================================================
+        # 9. Create VDEV
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Create VDEV."
+          set_fact:
+            vdev_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_vdev',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=vdev_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print VDEV response."
+          debug:
+            var: vdev_result
+
+        - name: "{{ recipe_name }}: Extract VDEV UUID."
+          set_fact:
+            vdev_uuid: >-
+              {{
+                vdev_result.vdev_id
+                | default(
+                    vdev_result.uuid
+                    | default(vdev_result.data.vdev_id)
+                  )
+              }}
+
+        - name: "{{ recipe_name }}: Verify VDEV UUID."
+          assert:
+            that:
+              - vdev_uuid is defined
+              - vdev_uuid | string | length > 0
+            fail_msg: "VDEV creation response did not contain a VDEV UUID."
+
+        - name: "{{ recipe_name }}: Print VDEV UUID."
+          debug:
+            msg: "Created VDEV UUID: {{ vdev_uuid }}"
+
+        # ============================================================
+        # 10. Fetch all chunks allocated to the VDEV
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Fetch VDEV chunks."
+          set_fact:
+            chunks_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_chunks',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={
+                    'vdev_id': vdev_uuid
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print chunk allocation."
+          debug:
+            var: chunks_result
+
+        - name: "{{ recipe_name }}: Store VDEV chunks."
+          set_fact:
+            vdev_chunks: "{{ chunks_result.chunks | default([]) }}"
+
+        - name: "{{ recipe_name }}: Verify chunks were allocated."
+          assert:
+            that:
+              - vdev_chunks | length > 0
+            fail_msg: "No chunks were allocated for VDEV {{ vdev_uuid }}."
+
+        # Each chunk is expected to contain nisd_ids.
+        - name: "{{ recipe_name }}: Extract allocated NISD UUIDs."
+          set_fact:
+            allocated_nisd_uuids: >-
+              {{
+                vdev_chunks
+                | map(attribute='nisd_ids')
+                | flatten
+                | map('string')
+                | unique
+                | list
+              }}
+
+        - name: "{{ recipe_name }}: Print allocated NISD UUIDs."
+          debug:
+            msg:
+              - "VDEV UUID: {{ vdev_uuid }}"
+              - "Allocated NISDs: {{ allocated_nisd_uuids }}"
+              - "Number of allocated NISDs: {{ allocated_nisd_uuids | length }}"
+
+        - name: "{{ recipe_name }}: Verify chunks use multiple NISDs."
+          assert:
+            that:
+              - allocated_nisd_uuids | length > 1
+            fail_msg: >-
+              VDEV chunks were not distributed across multiple NISDs.
+              Allocated NISDs: {{ allocated_nisd_uuids }}
+            success_msg: >-
+              VDEV chunks are distributed across
+              {{ allocated_nisd_uuids | length }} NISDs.
+
+        - name: "{{ recipe_name }}: Verify allocated NISDs belong to this cluster."
+          vars:
+            configured_nisd_uuids: >-
+              {{
+                runtime_nisd_nodes
+                | map(attribute='nisd_uuid')
+                | map('string')
+                | list
+              }}
+          assert:
+            that:
+              - item | string in configured_nisd_uuids
+            fail_msg: >-
+              Chunk allocation contains unknown NISD {{ item }}.
+              Configured NISDs: {{ configured_nisd_uuids }}
+          loop: "{{ allocated_nisd_uuids }}"
+
+        # ============================================================
+        # 11. Start niova-ublk using the created VDEV
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Wait before starting niova-ublk."
+          pause:
+            seconds: 25
+
+        - name: "{{ recipe_name }}: Start ublk device."
+          vars:
+            input_param:
+              enable_auth: 1
+              cp_mode: 1
+              user_name: "admin"
+              user_secret: "admin"
+
+              # Used as the bootstrap NISD.
+              nisd_uuid: "{{ allocated_nisd_uuids | first }}"
+
+              vdev_uuid: "{{ vdev_uuid }}"
+          debug:
+            msg:
+              - >-
+                {{
+                  lookup(
+                    'nisd_handler',
+                    'run_ublk_device',
+                    input_param
+                  )
+                }}
+          register: ublk_result
+
+        - name: "{{ recipe_name }}: Print ublk result."
+          debug:
+            var: ublk_result
+
+        # ============================================================
+        # 12. Increment and fetch CP mount counter
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Mount VDEV through control plane."
+          set_fact:
+            mount_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'mount_vdev',
+                  base_url=api_base_url,
+                  token=access_token,
+                  body={
+                    'vdev_id': vdev_uuid
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print VDEV mount response."
+          debug:
+            var: mount_result
+
+        - name: "{{ recipe_name }}: Store CP mount counter."
+          set_fact:
+            cp_mount_counter: >-
+              {{
+                mount_result.mount_counter
+                | default(mount_result.data.mount_counter)
+                | int
+              }}
+
+        - name: "{{ recipe_name }}: Verify CP mount counter."
+          assert:
+            that:
+              - cp_mount_counter | int > 0
+            fail_msg: >-
+              Invalid CP mount counter for VDEV {{ vdev_uuid }}:
+              {{ cp_mount_counter }}
+
+        - name: "{{ recipe_name }}: Print CP mount counter."
+          debug:
+            msg: >-
+              Control-plane mount counter for VDEV {{ vdev_uuid }}
+              is {{ cp_mount_counter }}.
+
+        - name: "{{ recipe_name }}: Wait for mount ID propagation."
+          pause:
+            seconds: 5
+
+        # ============================================================
+        # 13. Fetch chunk information from participating NISDs
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Initialize NISD chunk snapshots."
+          set_fact:
+            nisd_chunk_snapshots: []
+
+        - name: "{{ recipe_name }}: Fetch chunks from each allocated NISD."
+          vars:
+            nisd_chunks_response: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  item,
+                  ['/nisd_chunks'],
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          set_fact:
+            nisd_chunk_snapshots: >-
+              {{
+                nisd_chunk_snapshots
+                +
+                [
+                  {
+                    'nisd_uuid': item,
+                    'chunks':
+                      nisd_chunks_response['//nisd_chunks']
+                      | default([])
+                  }
+                ]
+              }}
+          loop: "{{ allocated_nisd_uuids }}"
+          loop_control:
+            label: "{{ item }}"
+
+        - name: "{{ recipe_name }}: Print NISD chunk snapshots."
+          debug:
+            var: nisd_chunk_snapshots
+
+        # ============================================================
+        # 14. Validate NISD chunk mount-id against CP mount counter
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Verify VDEV chunks exist on each NISD."
+          vars:
+            matching_vdev_chunks: >-
+              {{
+                item.chunks
+                | selectattr(
+                    'vdev-uuid',
+                    'equalto',
+                    vdev_uuid | string
+                  )
+                | list
+              }}
+          assert:
+            that:
+              - matching_vdev_chunks | length > 0
+            fail_msg: >-
+              NISD {{ item.nisd_uuid }} does not contain chunks for
+              VDEV {{ vdev_uuid }}.
+          loop: "{{ nisd_chunk_snapshots }}"
+          loop_control:
+            label: "{{ item.nisd_uuid }}"
+
+        - name: "{{ recipe_name }}: Verify NISD mount IDs."
+          vars:
+            matching_vdev_chunks: >-
+              {{
+                item.chunks
+                | selectattr(
+                    'vdev-uuid',
+                    'equalto',
+                    vdev_uuid | string
+                  )
+                | list
+              }}
+
+            nisd_mount_ids: >-
+              {{
+                matching_vdev_chunks
+                | map(attribute='mount-id')
+                | map('int')
+                | unique
+                | list
+              }}
+          assert:
+            that:
+              - nisd_mount_ids | length == 1
+              - nisd_mount_ids[0] | int == cp_mount_counter | int
+            fail_msg: >-
+              Mount ID mismatch on NISD {{ item.nisd_uuid }}.
+              VDEV: {{ vdev_uuid }}.
+              NISD chunk mount IDs: {{ nisd_mount_ids }}.
+              CP mount counter: {{ cp_mount_counter }}.
+            success_msg: >-
+              NISD {{ item.nisd_uuid }} mount ID
+              {{ nisd_mount_ids[0] }} matches CP mount counter
+              {{ cp_mount_counter }}.
+          loop: "{{ nisd_chunk_snapshots }}"
+          loop_control:
+            label: "{{ item.nisd_uuid }}"
+
+        # ============================================================
+        # 15. Final result
+        # ============================================================
+
+        - name: "{{ recipe_name }}: Print validation summary."
+          debug:
+            msg:
+              - "Multi-NISD mount-counter validation passed."
+              - "VDEV UUID: {{ vdev_uuid }}"
+              - "CP mount counter: {{ cp_mount_counter }}"
+              - "Participating NISDs: {{ allocated_nisd_uuids }}"
+              - "Total VDEV chunks: {{ vdev_chunks | length }}"
+
+      rescue:
+        - name: "{{ recipe_name }}: Recipe failed."
+          debug:
+            msg:
+              - "Multi-NISD mount-counter validation failed."
+              - "Failure: {{ ansible_failed_result.msg | default(ansible_failed_result) }}"
+              - "Check the NISD, ublk, and tidb API log files."
+
+        - name: "{{ recipe_name }}: Mark recipe as failed."
+          set_fact:
+            terminate_recipe: true

@@ -1,0 +1,629 @@
+- name: "tidb_check_quorum.yml"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "tidb_check_quorum"
+
+    api_base_url: "http://localhost:8081"
+
+    infra_payload: "{{ playbook_dir }}/../examples/e2e.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_vdev_100gb_1replica.json"
+
+    # Normal requests should have enough time to complete while quorum exists.
+    quorum_request_timeout: 15
+
+    # Requests made with quorum intentionally lost must not hang indefinitely.
+    no_quorum_request_timeout: 5
+
+    # Give PD/TiKV a short interval to observe node failure/recovery.
+    tikv_settle_seconds: 5
+    recovery_wait_seconds: 10
+
+    # This recipe starts its own ephemeral TiUP Playground cluster.
+    # No playground tag is used, so TiUP removes the playground data when it stops.
+
+  tasks:
+    - block:
+
+        # =====================================================
+        # 0. Validate application / cluster configuration
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Check if app_type is tidb."
+          debug:
+            msg: "app_type is: {{ app_type }}"
+          failed_when: app_type != "tidb"
+
+        - name: "{{ recipe_name }}: Save original cluster parameters."
+          set_fact:
+            original_cluster_params: "{{ ClusterParams }}"
+
+        # This recipe owns its TiDB test environment. Force the non-Docker
+        # backend to TiUP Playground and explicitly request the three TiKV
+        # stores required by the quorum test.
+        - name: "{{ recipe_name }}: Configure TiUP Playground cluster."
+          set_fact:
+            ClusterParams: >-
+              {{
+                original_cluster_params
+                | combine(
+                    {
+                      'tidb_backend': 'playground',
+                      'tidb_version': original_cluster_params.tidb_version | default('v8.5.0'),
+                      'playground_host': '127.0.0.1',
+                      'playground_pd': 1,
+                      'playground_kv': 3,
+                      'playground_db': 1,
+                      'playground_tiflash': 0,
+                      'playground_without_monitor': true,
+                      'playground_tag': none,
+                      'quorum_expected_stores': 3,
+                      'quorum_expected_replicas': 3,
+                      'pd_client_url': 'http://127.0.0.1:2379',
+                      'mysql_host': '127.0.0.1',
+                      'mysql_port': '4000',
+                      'api_base_url': api_base_url,
+                      'server_timeout': 300
+                    },
+                    recursive=true
+                  )
+              }}
+
+        - name: "{{ recipe_name }}: Save TiUP Playground parameters."
+          set_fact:
+            playground_cluster_params: "{{ ClusterParams }}"
+
+        - name: "{{ recipe_name }}: Show TiUP Playground configuration."
+          debug:
+            msg:
+              - "Backend: {{ ClusterParams.tidb_backend }}"
+              - "TiDB version: {{ ClusterParams.tidb_version }}"
+              - "PD instances: {{ ClusterParams.playground_pd }}"
+              - "TiKV instances: {{ ClusterParams.playground_kv }}"
+              - "TiDB instances: {{ ClusterParams.playground_db }}"
+              - "PD endpoint: {{ ClusterParams.pd_client_url }}"
+              - "TiDB endpoint: {{ ClusterParams.mysql_host }}:{{ ClusterParams.mysql_port }}"
+
+        - name: "{{ recipe_name }}: Validate TiUP Playground configuration."
+          assert:
+            that:
+              - ClusterParams.tidb_backend == 'playground'
+              - ClusterParams.playground_pd | int >= 1
+              - ClusterParams.playground_kv | int == 3
+              - ClusterParams.playground_db | int >= 1
+              - ClusterParams.quorum_expected_replicas | int == 3
+            fail_msg: "Quorum validation requires a TiUP Playground cluster with exactly three TiKV stores."
+
+        - name: "{{ recipe_name }}: Initialize quorum test state."
+          set_fact:
+            cluster_setup_done: false
+            first_node_down: false
+            second_node_down: false
+            no_quorum_write_failed: false
+            no_quorum_get_failed: false
+            no_quorum_write_failure: {}
+            no_quorum_get_failure: {}
+
+        # =====================================================
+        # 1. Start TiUP Playground cluster and mdsvc-api
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Start TiUP Playground cluster and mdsvc-api."
+          set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
+
+        - name: "{{ recipe_name }}: Mark cluster setup complete."
+          set_fact:
+            cluster_setup_done: true
+
+        - name: "{{ recipe_name }}: Print cluster setup result."
+          debug:
+            var: setup_status
+
+        - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
+          uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+          register: api_health
+          retries: 90
+          delay: 3
+          until: api_health.status in [200, 301, 302]
+
+        - name: "{{ recipe_name }}: Login to mdsvc-api."
+          set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username='admin',
+                  password='admin',
+                  timeout=quorum_request_timeout
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Store access token."
+          set_fact:
+            access_token: "{{ login_result.access_token }}"
+
+        - name: "{{ recipe_name }}: Validate access token."
+          debug:
+            msg: "Authentication completed successfully."
+          failed_when:
+            access_token is not defined or
+            access_token | length == 0
+
+        # =====================================================
+        # 2. Create test infrastructure
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=infra_payload,
+                  timeout=quorum_request_timeout
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print infrastructure response."
+          debug:
+            var: infra_result
+
+        - name: "{{ recipe_name }}: Validate infrastructure response."
+          debug:
+            msg: "Infrastructure was created successfully."
+          failed_when: >
+            infra_result.status_code | int not in [200, 201] or
+            infra_result.status | int != 0
+
+        # =====================================================
+        # 3. Discover TiKV stores and choose kill order
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Fetch TiKV stores from PD."
+          set_fact:
+            tikv_store_result: "{{ lookup('tidb_setup', 'list_tikv_stores') }}"
+
+        - name: "{{ recipe_name }}: Store live TiKV servers."
+          set_fact:
+            live_tikv_stores: >-
+              {{
+                tikv_store_result.stores
+                | selectattr('state_name', 'equalto', 'Up')
+                | list
+              }}
+
+        - name: "{{ recipe_name }}: Print TiKV store state."
+          debug:
+            var: live_tikv_stores
+
+        # The requested 3 -> 2 -> 1 -> 2 sequence only proves quorum loss
+        # when the test starts with exactly three live TiKV stores.
+        - name: "{{ recipe_name }}: Validate exactly three TiKV servers are running."
+          debug:
+            msg: "Live TiKV servers: {{ live_tikv_stores | length }}"
+          failed_when:
+            live_tikv_stores | length != 3
+
+        # TiKV has per-Region leaders rather than one global server leader.
+        # Preserve the store currently holding the most Region leaders and
+        # randomly choose the first of the other two stores to kill.
+        - name: "{{ recipe_name }}: Select preserved TiKV store."
+          set_fact:
+            preserved_store: >-
+              {{
+                live_tikv_stores
+                | sort(attribute='leader_count', reverse=true)
+                | first
+              }}
+
+        - name: "{{ recipe_name }}: Build follower candidate list."
+          set_fact:
+            follower_stores: >-
+              {{
+                live_tikv_stores
+                | rejectattr('id', 'equalto', preserved_store.id)
+                | list
+              }}
+
+        - name: "{{ recipe_name }}: Select first random follower to kill."
+          set_fact:
+            first_store_to_kill: "{{ follower_stores | random }}"
+
+        - name: "{{ recipe_name }}: Select second follower to kill."
+          set_fact:
+            second_store_to_kill: >-
+              {{
+                follower_stores
+                | rejectattr('id', 'equalto', first_store_to_kill.id)
+                | list
+                | first
+              }}
+
+        # Playground has no `tiup cluster display` node IDs.  The lookup
+        # plugin resolves the PD-reported TiKV address directly to the local
+        # playground process.
+        - name: "{{ recipe_name }}: Resolve Playground TiKV node addresses."
+          set_fact:
+            first_node_id: "{{ first_store_to_kill.address }}"
+            second_node_id: "{{ second_store_to_kill.address }}"
+
+        - name: "{{ recipe_name }}: Print quorum test node selection."
+          debug:
+            msg:
+              - >-
+                Preserved store: id={{ preserved_store.id }},
+                address={{ preserved_store.address }},
+                region-leaders={{ preserved_store.leader_count }}
+              - >-
+                First kill: id={{ first_store_to_kill.id }},
+                node={{ first_node_id }}
+              - >-
+                Second kill: id={{ second_store_to_kill.id }},
+                node={{ second_node_id }}
+
+        # =====================================================
+        # 4. Kill first server: 2/3 TiKV stores remain
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Select first TiKV node for kill."
+          set_fact:
+            ClusterParams: >-
+              {{
+                playground_cluster_params
+                | combine({'node_id': first_node_id})
+              }}
+
+        - name: "{{ recipe_name }}: Kill first TiKV server."
+          set_fact:
+            first_kill_result: "{{ lookup('tidb_setup', 'node_kill') }}"
+
+        - name: "{{ recipe_name }}: Mark first TiKV server down."
+          set_fact:
+            first_node_down: true
+
+        - name: "{{ recipe_name }}: Wait after first TiKV kill."
+          pause:
+            seconds: "{{ tikv_settle_seconds }}"
+
+        # =====================================================
+        # 5. Verify write succeeds with 2/3 quorum
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Create VDEV with two of three TiKV servers available."
+          set_fact:
+            majority_vdev_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_vdev',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=vdev_payload,
+                  timeout=quorum_request_timeout
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Validate VDEV creation succeeds with quorum."
+          debug:
+            msg:
+              - "HTTP status: {{ majority_vdev_result.status_code }}"
+              - "API status: {{ majority_vdev_result.status | default('missing') }}"
+              - "VDEV ID: {{ majority_vdev_result.vdev_id | default(majority_vdev_result.uuid | default('not-returned')) }}"
+          failed_when: >
+            majority_vdev_result.status_code | int not in [200, 201] or
+            majority_vdev_result.status | default(-1) | int != 0
+
+        # =====================================================
+        # 6. Kill second server: only 1/3 remains
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Select second TiKV node for kill."
+          set_fact:
+            ClusterParams: >-
+              {{
+                playground_cluster_params
+                | combine({'node_id': second_node_id})
+              }}
+
+        - name: "{{ recipe_name }}: Kill second TiKV server."
+          set_fact:
+            second_kill_result: "{{ lookup('tidb_setup', 'node_kill') }}"
+
+        - name: "{{ recipe_name }}: Mark second TiKV server down."
+          set_fact:
+            second_node_down: true
+
+        - name: "{{ recipe_name }}: Wait after quorum loss."
+          pause:
+            seconds: "{{ tikv_settle_seconds }}"
+
+        # =====================================================
+        # 7. Verify write fails or times out without quorum
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Attempt create-vdev without quorum."
+          block:
+
+            - name: "{{ recipe_name }}: Send create-vdev request without quorum."
+              set_fact:
+                no_quorum_vdev_result: >-
+                  {{
+                    lookup(
+                      'tidb_api',
+                      'create_vdev',
+                      base_url=api_base_url,
+                      token=access_token,
+                      file=vdev_payload,
+                      timeout=no_quorum_request_timeout
+                    )
+                  }}
+
+            - name: "{{ recipe_name }}: Record no-quorum write response."
+              set_fact:
+                no_quorum_write_failed: >-
+                  {{
+                    no_quorum_vdev_result.status_code | int not in [200, 201]
+                    or
+                    no_quorum_vdev_result.status | default(-1) | int != 0
+                  }}
+
+          rescue:
+
+            # tidb_api raises AnsibleError for HTTP errors and request timeouts.
+            # That is the expected behavior while quorum is unavailable.
+            - name: "{{ recipe_name }}: Record expected no-quorum write failure."
+              set_fact:
+                no_quorum_write_failed: true
+                no_quorum_write_failure: "{{ ansible_failed_result }}"
+
+        - name: "{{ recipe_name }}: Validate create-vdev cannot commit without quorum."
+          debug:
+            msg:
+              - "Write failed/timed out as expected: {{ no_quorum_write_failed }}"
+              - >-
+                Failure: {{
+                  no_quorum_write_failure.msg
+                  | default('API returned a non-success status')
+                }}
+          failed_when:
+            not no_quorum_write_failed | bool
+
+        # =====================================================
+        # 8. Observe GET behavior without quorum
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Attempt GET without quorum."
+          block:
+
+            - name: "{{ recipe_name }}: Send GET resource request without quorum."
+              set_fact:
+                no_quorum_get_result: >-
+                  {{
+                    lookup(
+                      'tidb_api',
+                      'get_resource',
+                      base_url=api_base_url,
+                      token=access_token,
+                      params={'type': 'nisd'},
+                      timeout=no_quorum_request_timeout
+                    )
+                  }}
+
+            - name: "{{ recipe_name }}: Record no-quorum GET response."
+              set_fact:
+                no_quorum_get_failed: >-
+                  {{
+                    no_quorum_get_result.status_code | int not in [200, 201]
+                    or
+                    no_quorum_get_result.status | default(-1) | int != 0
+                  }}
+
+          rescue:
+
+            - name: "{{ recipe_name }}: Record no-quorum GET failure."
+              set_fact:
+                no_quorum_get_failed: true
+                no_quorum_get_failure: "{{ ansible_failed_result }}"
+
+        # GET is observational rather than a hard assertion: depending on the
+        # exact read path/lease state, a read can behave differently from a write.
+        - name: "{{ recipe_name }}: Print no-quorum GET result."
+          debug:
+            msg:
+              - "GET failed/timed out: {{ no_quorum_get_failed }}"
+              - >-
+                GET result/failure: {{
+                  no_quorum_get_failure.msg
+                  | default(no_quorum_get_result | default({}))
+                }}
+
+        # =====================================================
+        # 9. Restore one server: quorum returns to 2/3
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Select first killed TiKV node for restart."
+          set_fact:
+            ClusterParams: >-
+              {{
+                playground_cluster_params
+                | combine({'node_id': first_node_id})
+              }}
+
+        - name: "{{ recipe_name }}: Restart one killed TiKV server."
+          set_fact:
+            first_restart_result: "{{ lookup('tidb_setup', 'node_start') }}"
+
+        - name: "{{ recipe_name }}: Mark first TiKV server recovered."
+          set_fact:
+            first_node_down: false
+
+        - name: "{{ recipe_name }}: Wait for quorum recovery."
+          pause:
+            seconds: "{{ recovery_wait_seconds }}"
+
+        # =====================================================
+        # 10. Verify write succeeds again after quorum recovery
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Create VDEV after quorum recovery."
+          set_fact:
+            recovered_vdev_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_vdev',
+                  base_url=api_base_url,
+                  token=access_token,
+                  file=vdev_payload,
+                  timeout=quorum_request_timeout
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Validate VDEV creation succeeds after quorum recovery."
+          debug:
+            msg:
+              - "HTTP status: {{ recovered_vdev_result.status_code }}"
+              - "API status: {{ recovered_vdev_result.status | default('missing') }}"
+              - "VDEV ID: {{ recovered_vdev_result.vdev_id | default(recovered_vdev_result.uuid | default('not-returned')) }}"
+          failed_when: >
+            recovered_vdev_result.status_code | int not in [200, 201] or
+            recovered_vdev_result.status | default(-1) | int != 0
+
+        # =====================================================
+        # 11. Final result
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Print quorum validation summary."
+          debug:
+            msg:
+              - "Initial TiKV servers: {{ live_tikv_stores | length }}"
+              - "First server killed: {{ first_node_id }}"
+              - "Write with 2/3 servers: succeeded"
+              - "Second server killed: {{ second_node_id }}"
+              - "Write with 1/3 servers failed/timed out: {{ no_quorum_write_failed }}"
+              - "GET with 1/3 servers failed/timed out: {{ no_quorum_get_failed }}"
+              - "Restarted server: {{ first_node_id }}"
+              - "Write after quorum recovery: succeeded"
+              - "TiDB quorum validation passed."
+
+      rescue:
+
+        - name: "{{ recipe_name }}: Print failure context."
+          debug:
+            msg:
+              - "TiDB quorum validation failed."
+              - "First node: {{ first_node_id | default('not-selected') }}"
+              - "Second node: {{ second_node_id | default('not-selected') }}"
+              - "First node down: {{ first_node_down | default(false) }}"
+              - "Second node down: {{ second_node_down | default(false) }}"
+              - "No-quorum write failed: {{ no_quorum_write_failed | default(false) }}"
+              - "No-quorum GET failed: {{ no_quorum_get_failed | default(false) }}"
+              - "Failure: {{ ansible_failed_result.msg | default(ansible_failed_result) }}"
+
+        - name: "{{ recipe_name }}: Mark recipe failed."
+          set_fact:
+            quorum_recipe_failed: true
+            quorum_recipe_failure: "{{ ansible_failed_result }}"
+
+      always:
+
+        # -----------------------------------------------------
+        # Restore any TiKV node still down.
+        # -----------------------------------------------------
+
+        - name: "{{ recipe_name }}: Select first TiKV node for cleanup restart."
+          set_fact:
+            ClusterParams: >-
+              {{
+                playground_cluster_params
+                | combine({'node_id': first_node_id})
+              }}
+          when:
+            first_node_down | default(false) | bool
+
+        - name: "{{ recipe_name }}: Restart first TiKV node during cleanup."
+          set_fact:
+            cleanup_first_restart: "{{ lookup('tidb_setup', 'node_start') }}"
+          when:
+            first_node_down | default(false) | bool
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Mark first cleanup restart complete."
+          set_fact:
+            first_node_down: false
+          when:
+            - first_node_down | default(false) | bool
+            - cleanup_first_restart is defined
+
+        - name: "{{ recipe_name }}: Select second TiKV node for cleanup restart."
+          set_fact:
+            ClusterParams: >-
+              {{
+                playground_cluster_params
+                | combine({'node_id': second_node_id})
+              }}
+          when:
+            second_node_down | default(false) | bool
+
+        - name: "{{ recipe_name }}: Restart second TiKV node during cleanup."
+          set_fact:
+            cleanup_second_restart: "{{ lookup('tidb_setup', 'node_start') }}"
+          when:
+            second_node_down | default(false) | bool
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Mark second cleanup restart complete."
+          set_fact:
+            second_node_down: false
+          when:
+            - second_node_down | default(false) | bool
+            - cleanup_second_restart is defined
+
+        # -----------------------------------------------------
+        # Stop the TiUP Playground created by this recipe.
+        # -----------------------------------------------------
+
+        - name: "{{ recipe_name }}: Restore Playground parameters for teardown."
+          set_fact:
+            ClusterParams: "{{ playground_cluster_params }}"
+          when:
+            - playground_cluster_params is defined
+            - cluster_setup_done | default(false) | bool
+
+        - name: "{{ recipe_name }}: Tear down TiUP Playground backend."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'playground_teardown') }}"
+          when:
+            cluster_setup_done | default(false) | bool
+
+        - name: "{{ recipe_name }}: Print Playground teardown result."
+          debug:
+            var: teardown_status
+          when:
+            teardown_status is defined
+
+        - name: "{{ recipe_name }}: Restore original cluster parameters."
+          set_fact:
+            ClusterParams: "{{ original_cluster_params }}"
+          when:
+            original_cluster_params is defined
+
+        - name: "{{ recipe_name }}: Fail recipe after cleanup if validation failed."
+          fail:
+            msg: >-
+              TiDB quorum validation failed: {{
+                quorum_recipe_failure.msg
+                | default('See previous task output for failure context.')
+              }}
+          when:
+            quorum_recipe_failed | default(false) | bool

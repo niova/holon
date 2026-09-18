@@ -1,0 +1,413 @@
+- name: "tidb_snapshot_basic_point_in_time.yml"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "tidb_snapshot_basic_point_in_time"
+    api_base_url: "http://localhost:8081"
+
+    # Reuse the same CP/NISD setup payload style as the existing TiDB recipes.
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
+
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+
+    cp_username: "admin"
+    cp_password: "admin"
+
+    # Override these with -e if your repository layout differs.
+    niova_block_repo: "{{ lookup('env', 'NIOVA_BLOCK_REPO') | default(playbook_dir ~ '/../..', true) }}"
+    snapshot_test_script: "{{ niova_block_repo }}/test/system-tests/snapshot-basic-point-in-time.sh"
+    niova_snapshot_bin: "{{ niova_block_repo }}/scripts/niova-snapshot"
+    niova_ublk_bin: >-
+      {{
+        (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova-ublk')
+        if lookup('env', 'NIOVA_BIN_PATH')
+        else 'niova-ublk'
+      }}
+
+    gossip_path: "{{ lookup('env', 'NIOVA_WORKSPACE') }}/mdsvc-tidb/configs/gossipNodes"
+
+  tasks:
+    - block:
+
+        # ------------------------------------------------------------
+        # 0. Validate recipe and test dependencies
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Check application type."
+          ansible.builtin.assert:
+            that:
+              - app_type == "tidb"
+            fail_msg: "This recipe must run with app_type=tidb."
+
+        - name: "{{ recipe_name }}: Generate unique snapshot name."
+          ansible.builtin.set_fact:
+            snapshot_name: "snapshot-basic-{{ lookup('pipe', 'date +%s%N') }}"
+
+        - name: "{{ recipe_name }}: Build test log directory path."
+          ansible.builtin.set_fact:
+            snapshot_test_logdir: >-
+              {{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/snapshot-basic-point-in-time
+
+        - name: "{{ recipe_name }}: Verify snapshot test script exists."
+          ansible.builtin.stat:
+            path: "{{ snapshot_test_script }}"
+          register: snapshot_script_stat
+
+        - name: "{{ recipe_name }}: Assert snapshot test script exists."
+          ansible.builtin.assert:
+            that:
+              - snapshot_script_stat.stat.exists
+            fail_msg: "Snapshot test script not found: {{ snapshot_test_script }}"
+
+        - name: "{{ recipe_name }}: Verify niova-snapshot exists."
+          ansible.builtin.stat:
+            path: "{{ niova_snapshot_bin }}"
+          register: snapshot_cli_stat
+
+        - name: "{{ recipe_name }}: Assert niova-snapshot exists."
+          ansible.builtin.assert:
+            that:
+              - snapshot_cli_stat.stat.exists
+            fail_msg: "niova-snapshot not found: {{ niova_snapshot_bin }}"
+
+        # ------------------------------------------------------------
+        # 1. Start mdsvc-tidb / control plane
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Start mdsvc-tidb."
+          ansible.builtin.set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+
+        - name: "{{ recipe_name }}: Wait for mdsvc-api."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        # ------------------------------------------------------------
+        # 2. Login to CP
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Login to mdsvc-api."
+          ansible.builtin.set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username=cp_username,
+                  password=cp_password
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Verify access token."
+          ansible.builtin.assert:
+            that:
+              - login_result.access_token is defined
+              - login_result.access_token | length > 0
+            fail_msg: "Login succeeded but no access token was returned."
+
+        # ------------------------------------------------------------
+        # 3. Create infrastructure
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Create infra."
+          ansible.builtin.set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=infra_payload
+                )
+              }}
+
+        # ------------------------------------------------------------
+        # 4. Create NISD backing device
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Create NISD device file."
+          vars:
+            img_dir: "/snapshot-basic.device"
+            bs: "64M"
+            count: 160
+          ansible.builtin.debug:
+            msg:
+              - "{{ lookup('helper', 'create_dd_file', img_dir, bs, count) }}"
+          register: nisd_dev_path
+
+        - name: "{{ recipe_name }}: Capture NISD backing-device path."
+          ansible.builtin.set_fact:
+            nisd_device_path: "{{ nisd_dev_path.msg[0] }}"
+
+        - name: "{{ recipe_name }}: Verify NISD backing device exists."
+          ansible.builtin.stat:
+            path: "{{ nisd_device_path }}"
+          register: nisd_device_stat
+
+        - name: "{{ recipe_name }}: Assert NISD backing device exists."
+          ansible.builtin.assert:
+            that:
+              - nisd_device_stat.stat.exists
+            fail_msg: "NISD backing device was not created: {{ nisd_device_path }}"
+
+        # ------------------------------------------------------------
+        # 5. Initialize NISD backing storage
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Run niova-block-ctl."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+          debug:
+            msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
+
+        # ------------------------------------------------------------
+        # 6. Start NISD
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Start NISD."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "13000"
+              client_port: "13001"
+              enable_auth: 1
+          debug:
+            msg:
+              - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
+
+        # ------------------------------------------------------------
+        # 7. Create vdev
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Create vdev."
+          ansible.builtin.set_fact:
+            vdev_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_vdev',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=vdev_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Extract vdev UUID."
+          ansible.builtin.set_fact:
+            vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
+
+        - name: "{{ recipe_name }}: Verify vdev UUID."
+          ansible.builtin.assert:
+            that:
+              - vdev_uuid is defined
+              - vdev_uuid | length > 0
+            fail_msg: "create_vdev did not return a vdev UUID."
+
+        # ------------------------------------------------------------
+        # 8. Start the live RW niova-ublk and discover its block device
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Record existing ublk devices."
+          ansible.builtin.shell: |
+            shopt -s nullglob
+            for dev in /dev/ublkb*; do
+                printf '%s\n' "$dev"
+            done
+          args:
+            executable: /bin/bash
+          register: ublk_before
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Start live RW niova-ublk."
+          vars:
+            input_param:
+              cp_mode: 1
+              enable_auth: 1
+              nisd_uuid: "{{ nisd_uuid }}"
+              vdev_uuid: "{{ vdev_uuid }}"
+              user_name: "{{ cp_username }}"
+              user_secret: "{{ cp_password }}"
+          ansible.builtin.set_fact:
+            live_ublk_uuid: "{{ lookup('nisd_handler', 'run_ublk_device', input_param) }}"
+
+        - name: "{{ recipe_name }}: Wait for live ublk block device."
+          ansible.builtin.shell: |
+            shopt -s nullglob
+            for dev in /dev/ublkb*; do
+                printf '%s\n' "$dev"
+            done
+          args:
+            executable: /bin/bash
+          register: ublk_after
+          changed_when: false
+          retries: 40
+          delay: 1
+          until: >-
+            (ublk_after.stdout_lines | difference(ublk_before.stdout_lines) | length) >= 1
+
+        - name: "{{ recipe_name }}: Compute newly-created live ublk device."
+          ansible.builtin.set_fact:
+            live_ublk_devices: "{{ ublk_after.stdout_lines | difference(ublk_before.stdout_lines) }}"
+
+        - name: "{{ recipe_name }}: Verify exactly one live ublk device was created."
+          ansible.builtin.assert:
+            that:
+              - live_ublk_devices | length == 1
+            fail_msg: >-
+              Expected exactly one new live ublk device, found
+              {{ live_ublk_devices | length }}: {{ live_ublk_devices }}
+
+        - name: "{{ recipe_name }}: Store live block-device path."
+          ansible.builtin.set_fact:
+            live_device: "{{ live_ublk_devices[0] }}"
+
+        - name: "{{ recipe_name }}: Verify live device is a block device."
+          ansible.builtin.stat:
+            path: "{{ live_device }}"
+          register: live_device_stat
+
+        - name: "{{ recipe_name }}: Assert live block device is ready."
+          ansible.builtin.assert:
+            that:
+              - live_device_stat.stat.exists
+              - live_device_stat.stat.isblk | default(false)
+            fail_msg: "Live ublk device is not ready: {{ live_device }}"
+
+        # ------------------------------------------------------------
+        # 9. Run point-in-time snapshot data-path test
+        #
+        # The shell test verifies:
+        #   - A write succeeds and CRC32C verifies
+        #   - exact pre-snapshot region hash is recorded
+        #   - snapshot create succeeds
+        #   - CP reaches state=applied
+        #   - B overwrites the exact same VBLKs and CRC32C verifies
+        #   - A hash != B hash
+        #   - live view hash == B
+        #   - RO snapshot mount is created
+        #   - snapshot CRC32C verification succeeds against A
+        #   - snapshot hash == A and != B
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Run basic point-in-time snapshot test."
+          ansible.builtin.shell: |
+            set -o pipefail
+            bash "{{ snapshot_test_script }}"
+          args:
+            executable: /bin/bash
+          environment:
+            VDEV_UUID: "{{ vdev_uuid }}"
+            LIVE_DEVICE: "{{ live_device }}"
+            SNAPSHOT_NAME: "{{ snapshot_name }}"
+            NIOVA_SNAPSHOT: "{{ niova_snapshot_bin }}"
+            NIOVA_UBLK: "{{ niova_ublk_bin }}"
+            MDSVC_API_URL: "{{ api_base_url }}"
+            INTEGRATION_ADMIN_USERNAME: "{{ cp_username }}"
+            INTEGRATION_ADMIN_PASSWORD: "{{ cp_password }}"
+            TEST_LOGDIR: "{{ snapshot_test_logdir }}"
+            DELETE_SNAPSHOT_ON_SUCCESS: "0"
+
+            # Environment required by the RO snapshot niova-ublk launched
+            # from the shell test.
+            NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
+            NIOVA_GOSSIP_KEY: "dummy"
+            NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
+            NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
+            NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
+            NIOVA_BLOCK_PROXY_TAG: "mdsvc-tidb"
+            NIOVA_BLOCK_UBLK_UNIFIED: "0"
+          register: snapshot_test_result
+
+        - name: "{{ recipe_name }}: Print snapshot test output."
+          ansible.builtin.debug:
+            var: snapshot_test_result.stdout_lines
+
+        - name: "{{ recipe_name }}: Assert shell test succeeded."
+          ansible.builtin.assert:
+            that:
+              - snapshot_test_result.rc == 0
+              - "'PASS: basic snapshot point-in-time test' in snapshot_test_result.stdout"
+            fail_msg: >-
+              Snapshot point-in-time test failed. Logs:
+              {{ snapshot_test_logdir }}
+
+        # ------------------------------------------------------------
+        # 10. Independent CP verification through tidb_api lookup plugin
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Lookup snapshot through CP API."
+          ansible.builtin.set_fact:
+            snapshot_info: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_snapshot',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  params={
+                    'vdev_id': vdev_uuid,
+                    'name': snapshot_name
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Verify CP snapshot state and ID."
+          ansible.builtin.assert:
+            that:
+              - snapshot_info.status_code | int == 200
+              - snapshot_info.state == "applied"
+              - snapshot_info.snapshot_id is defined
+              - snapshot_info.snapshot_id | int > 0
+              - snapshot_info.vdev_id == vdev_uuid
+              - snapshot_info.name == snapshot_name
+            fail_msg: >-
+              CP snapshot validation failed. Snapshot response:
+              {{ snapshot_info }}
+
+        - name: "{{ recipe_name }}: Report successful verification."
+          ansible.builtin.debug:
+            msg:
+              - "Snapshot basic point-in-time test PASSED"
+              - "vdev={{ vdev_uuid }}"
+              - "snapshot={{ snapshot_name }}"
+              - "snapshot_id={{ snapshot_info.snapshot_id }}"
+              - "state={{ snapshot_info.state }}"
+              - "live_device={{ live_device }}"
+              - "logs={{ snapshot_test_logdir }}"
+
+      always:
+        # ------------------------------------------------------------
+        # Cleanup
+        # The shell script stops its own RO snapshot mount.  Keep cleanup
+        # best-effort so a failed assertion does not hide the original error.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Delete test snapshot if it exists."
+          ansible.builtin.command:
+            argv:
+              - "{{ niova_snapshot_bin }}"
+              - "--vdev"
+              - "{{ vdev_uuid | default('') }}"
+              - "--op"
+              - "delete"
+              - "--snapshot-name"
+              - "{{ snapshot_name | default('') }}"
+          environment:
+            NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
+            NIOVA_GOSSIP_KEY: "dummy"
+            NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
+            NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
+            NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
+            NIOVA_BLOCK_PROXY_TAG: "mdsvc-tidb"
+          register: snapshot_delete_result
+          changed_when: snapshot_delete_result.rc == 0
+          failed_when: false
+          when:
+            - vdev_uuid is defined
+            - snapshot_name is defined
+
+        - name: "{{ recipe_name }}: Stop mdsvc-api and TiDB stack."
+          ansible.builtin.set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+          failed_when: false
