@@ -262,6 +262,13 @@ def extract_fields(data):
         "total_chunks",
         "status",
         "message",
+
+        # Snapshot fields
+        "snapshot_id",
+        "name",
+        "state",
+        "created_at",
+        "completed_at",
     ]
 
     def collect(obj):
@@ -655,6 +662,10 @@ class LookupModule(LookupBase):
             "create_vdev": ("POST", "/api/vdev"),
             "get_vdev": ("GET", "/api/vdev"),
             "mount_vdev": ("POST", "/api/vdev/mount"),
+
+            # Snapshot lookup APIs
+            "get_snapshot": ("GET", "/api/snapshot"),
+            "get_snapshot_name": ("GET", "/api/snapshot/name"),
 
             "get_chunk": ("GET", "/api/chunk"),
             "get_chunks": ("GET", "/api/chunks"),
