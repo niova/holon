@@ -76,8 +76,8 @@ def run_nisd_command(cluster_params, input_values):
     # if enable_authentication == 1:
     #     os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
     #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
-    else:
-        os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '0'
+    # else:
+    #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '0'
 
     os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}" 
