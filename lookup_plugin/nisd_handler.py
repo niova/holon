@@ -7,6 +7,7 @@ import os
 import time
 import shutil
 import subprocess
+import glob
 from genericcmd import *
 from func_timeout import func_timeout, FunctionTimedOut
 import time as time_global
@@ -76,8 +77,8 @@ def run_nisd_command(cluster_params, input_values):
     # if enable_authentication == 1:
     #     os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
     #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
-    else:
-        os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '0'
+    # else:
+    #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '0'
 
     os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}" 
@@ -154,8 +155,35 @@ def replace_last_path_segment(path, old_segment, new_segment):
         # Return the path unchanged if the last segment doesn't match
         return path
 
+def list_ublk_devices():
+    return set(glob.glob("/dev/ublkb*"))
+
+def wait_for_new_ublk_device(before, timeout=30):
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        current = list_ublk_devices()
+        new_devices = current - before
+
+        if len(new_devices) == 1:
+            return next(iter(new_devices))
+
+        if len(new_devices) > 1:
+            raise RuntimeError(
+                "More than one new ublk device appeared: "
+                f"{sorted(new_devices)}"
+            )
+
+        time.sleep(0.2)
+
+    raise RuntimeError(
+        "Timed out waiting for new /dev/ublkbN device"
+    )
+
 # start a ublk device of size 8GB
 def run_niova_ublk(cluster_params, input_values):
+    before_devices = list_ublk_devices()
+
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']
     binary_dir = os.getenv('NIOVA_BIN_PATH')
@@ -171,11 +199,19 @@ def run_niova_ublk(cluster_params, input_values):
     enable_auth = input_values['enable_auth']
     nisd_uuid = input_values['nisd_uuid']
     vdev_uuid = input_values['vdev_uuid']
+    snapshot_name = input_values.get("snapshot_name")
+    client_uuid = input_values.get("client_uuid")
+
+    genericcmdobj = GenericCmds()
     
     # generate ublk uuid if not cp_mode
-    if cp_mode == 0:
-        genericcmdobj = GenericCmds()
+    if cp_mode == 0: 
         ublk_uuid = genericcmdobj.generate_uuid()
+    elif snapshot_name:
+        if not client_uuid:
+            client_uuid = genericcmdobj.generate_uuid()
+
+        ublk_uuid = client_uuid
     else:
         ublk_uuid = vdev_uuid
 
@@ -222,16 +258,34 @@ def run_niova_ublk(cluster_params, input_values):
         os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['user_secret']
 
     if cp_mode == 1:
-        command = [
-            "sudo",
-            "-E",
-            bin_path,
-            "-t", "cp",
-            "-v", vdev_uuid,
-            "-q", "128",
-            "-b", "1048576",
-            "-T"
-        ]
+        if snapshot_name:
+
+            # Snapshot RO mount
+            command = [
+                "sudo",
+                "-E",
+                bin_path,
+                "-t", "cp",
+                "-v", vdev_uuid,
+                "-u", client_uuid,
+                "-k", f"snapshot_name={snapshot_name}",
+                "-q", "128",
+                "-b", "1048576",
+            ]
+
+            ublk_uuid = client_uuid
+
+        else:
+            command = [
+                "sudo",
+                "-E",
+                bin_path,
+                "-t", "cp",
+                "-v", vdev_uuid,
+                "-q", "128",
+                "-b", "1048576",
+                "-T"
+            ]
 
     else:
         command = [
@@ -278,6 +332,11 @@ def run_niova_ublk(cluster_params, input_values):
         pid = ublk_proc.pid
         logger.info(f"Actual niova-ublk PID: {pid}")
 
+        device_path = wait_for_new_ublk_device(
+            before_devices,
+            timeout=int(input_values.get("device_timeout", 30))
+        )
+
     except Exception as e:
         logger.error(f"Failed to start niova-ublk: {e}")
         fp.close()
@@ -288,19 +347,42 @@ def run_niova_ublk(cluster_params, input_values):
     ps = psutil.Process(pid)
     process_status = ps.status()
 
-    if not "ublk_process" in recipe_conf:
-        recipe_conf['ublk_process'] = {}
+    if "ublk_processes" not in recipe_conf:
+        recipe_conf["ublk_processes"] = {}
 
-    recipe_conf['ublk_process']['process_pid'] = pid
-    recipe_conf['ublk_process']['process_type'] = "ublk_process"
-    recipe_conf['ublk_process']['process_app_type'] = app_name
-    recipe_conf['ublk_process']['process_status'] = process_status
+    if not snapshot_name:
+         if "ublk_process" not in recipe_conf:
+            recipe_conf["ublk_process"] = {}
+        recipe_conf['ublk_process']['process_pid'] = pid
+        recipe_conf['ublk_process']['process_type'] = "ublk_process"
+        recipe_conf['ublk_process']['process_app_type'] = app_name
+        recipe_conf['ublk_process']['process_status'] = process_status
 
-    recipe_conf['ublk_process']['ublk_uuid'] = ublk_uuid
-    recipe_conf['ublk_process']['vdev_uuid'] = vdev_uuid
-    recipe_conf['ublk_process']['nisd_uuid'] = nisd_uuid
-    recipe_conf['ublk_process']['command'] = command
-    recipe_conf['ublk_process']['log_file'] = log_file
+        recipe_conf['ublk_process']['ublk_uuid'] = ublk_uuid
+        recipe_conf['ublk_process']['vdev_uuid'] = vdev_uuid
+        recipe_conf['ublk_process']['nisd_uuid'] = nisd_uuid
+        recipe_conf['ublk_process']['command'] = command
+        recipe_conf['ublk_process']['log_file'] = log_file
+
+    process_key = client_uuid if snapshot_name else vdev_uuid
+
+    recipe_conf["ublk_processes"][process_key] = {
+        "process_pid": pid,
+        "process_type": "ublk_process",
+        "process_app_type": app_name,
+        "process_status": process_status,
+        "device_path": device_path,
+
+        "ublk_uuid": ublk_uuid,
+        "vdev_uuid": vdev_uuid,
+        "nisd_uuid": nisd_uuid,
+
+        "client_uuid": client_uuid,
+        "snapshot_name": snapshot_name,
+
+        "command": command,
+        "log_file": log_file,
+    }
 
     genericcmdobj = GenericCmds()
     genericcmdobj.recipe_json_dump(recipe_conf)
@@ -308,7 +390,60 @@ def run_niova_ublk(cluster_params, input_values):
     # Sync the log file so all the logs from run_niova_ublk gets written to log file.
     fp.flush()
     os.fsync(fp.fileno())
-    return ublk_uuid
+    return {
+        "ublk_uuid": ublk_uuid,
+        "client_uuid": client_uuid,
+        "vdev_uuid": vdev_uuid,
+        "snapshot_name": snapshot_name,
+        "device_path": device_path,
+        "pid": pid,
+        "log_file": log_file,
+    }
+
+def stop_ublk(cluster_params, input_values):
+    process_key = input_values["process_key"]
+    timeout = int(input_values.get("timeout", 10))
+
+    recipe_conf = load_recipe_op_config(cluster_params)
+
+    processes = recipe_conf.get("ublk_processes", {})
+    info = processes.get(process_key)
+
+    if not info:
+        raise RuntimeError(
+            f"No tracked ublk process: {process_key}"
+        )
+
+    pid = int(info["process_pid"])
+
+    try:
+        proc = psutil.Process(pid)
+    except psutil.NoSuchProcess:
+        info["process_status"] = "stopped"
+        GenericCmds().recipe_json_dump(recipe_conf)
+
+        return {
+            "process_key": process_key,
+            "status": "already-stopped",
+        }
+
+    proc.terminate()
+
+    try:
+        proc.wait(timeout=timeout)
+    except psutil.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=5)
+
+    info["process_status"] = "stopped"
+
+    GenericCmds().recipe_json_dump(recipe_conf)
+
+    return {
+        "process_key": process_key,
+        "pid": pid,
+        "status": "stopped",
+    }
 
 # this method is similar to start_niova_block_ctl_process but the difference is it doesn't create the device internally
 def run_niova_block_ctl(cluster_params, input_value):
@@ -814,6 +949,9 @@ class LookupModule(LookupBase):
 
             ublk_uuid = run_niova_ublk(cluster_params, input_values)
             return [ublk_uuid]
+
+        elif process_type == "stop_ublk":
+            return [stop_ublk(cluster_params, input_values)]
 
         elif process_type == "run_nisd":
             return [run_nisd_command(cluster_params, input_values)]
