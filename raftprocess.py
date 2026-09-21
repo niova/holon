@@ -190,7 +190,7 @@ class RaftProcess:
         Constructor:
         Purpose: Initialisation
         Parameter:  @cluster_type: Cluster is raft cluster or pumiceDB cluster.
-					@uuid: UUID of server or client for which process object is
+                    @uuid: UUID of server or client for which process object is
                             created.
                     @process_type: Type of the process(server or client)
     '''
