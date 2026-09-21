@@ -351,7 +351,7 @@ def run_niova_ublk(cluster_params, input_values):
         recipe_conf["ublk_processes"] = {}
 
     if not snapshot_name:
-         if "ublk_process" not in recipe_conf:
+        if "ublk_process" not in recipe_conf:
             recipe_conf["ublk_process"] = {}
         recipe_conf['ublk_process']['process_pid'] = pid
         recipe_conf['ublk_process']['process_type'] = "ublk_process"
