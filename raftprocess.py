@@ -302,7 +302,7 @@ class RaftProcess:
         try:
             process_obj.send_signal(signal.SIGSTOP)
         except subprocess.SubprocessError as e:
-            logging.error("Failed to send Stop signal with error: %s" % os.stderror(e.errno))
+            logging.error("Failed to send Stop signal with error: %s" % e)
             return -1
 
         '''
@@ -324,7 +324,7 @@ class RaftProcess:
         try:
             process_obj.send_signal(signal.SIGCONT)
         except subprocess.SubprocessError as e:
-            logging.error("Failed to send CONT signal with error: %s" % os.stderror(e.errno))
+            logging.error("Failed to send CONT signal with error: %s" % e)
             return -1
 
         self.process_status = "running"
@@ -342,7 +342,7 @@ class RaftProcess:
         try:
             process_obj.send_signal(signal.SIGTERM)
         except subprocess.SubprocessError as e:
-            logging.error("Failed to send kill signal with error: %s" % os.stderror(e.errno))
+            logging.error("Failed to send kill signal with error: %s" % e)
             return -1
         self.Wait_for_process_status("killed", pid)
         self.process_status = "killed"
