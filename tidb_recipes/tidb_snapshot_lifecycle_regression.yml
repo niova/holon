@@ -1,4 +1,4 @@
-- name: "tidb_snapshot_lifecycle_regression"
+- name: "tidb_snapshot_lifecycle_regression.yml"
   hosts: localhost
   connection: local
   vars:
