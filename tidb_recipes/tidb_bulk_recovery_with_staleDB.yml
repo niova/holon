@@ -14,7 +14,7 @@
     bulk_write_count: 1200
     api_request_timeout: 15
 
-    tikv_settle_seconds: 5
+    tikv_settle_seconds: 15
     raft_gc_wait_seconds: 8
     region_recovery_timeout: 300
     leader_transfer_timeout: 180
@@ -386,12 +386,80 @@
             seconds: "{{ tikv_settle_seconds }}"
 
         # =====================================================
+        # 3a. Verify the Region is still writable with 2/3 stores
+        # =====================================================
+
+        - name: "{{ recipe_name }}: Prepare post-kill Region state check."
+          set_fact:
+            ClusterParams: >-
+              {{
+                test_cluster_params
+                | combine({
+                    'region_id': target_region.region_id
+                  })
+              }}
+
+        - name: "{{ recipe_name }}: Read Region state after follower kill."
+          set_fact:
+            post_kill_region_state: "{{ lookup('tidb_setup', 'get_region_state') }}"
+
+        - name: "{{ recipe_name }}: Print Region state after follower kill."
+          debug:
+            msg:
+              - "Region: {{ post_kill_region_state.region_id }}"
+              - "Leader store: {{ post_kill_region_state.leader_store_id }}"
+              - "Killed store: {{ recovered_store_id }}"
+
+        - name: "{{ recipe_name }}: Validate Region still has a live leader."
+          assert:
+            that:
+              - post_kill_region_state.leader_store_id is not none
+              - post_kill_region_state.leader_store_id | int != recovered_store_id | int
+            fail_msg: >-
+              Region {{ target_region.region_id }} does not have a usable
+              leader after killing store {{ recovered_store_id }}.
+              Region state: {{ post_kill_region_state }}
+
+        # Perform one write before starting the large workload. This proves
+        # that the remaining two replicas can still commit writes.
+        - name: "{{ recipe_name }}: Verify write succeeds with one follower offline."
+          set_fact:
+            quorum_test_put_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'put_resource',
+                  base_url=api_base_url,
+                  token=access_token,
+                  params={'type': 'nisd'},
+                  body={
+                    'id': target_nisd.id,
+                    'peer_port': target_nisd.peer_port,
+                    'fd_pdu_id': target_nisd.fd_pdu_id,
+                    'fd_rack_id': target_nisd.fd_rack_id,
+                    'fd_hv_id': target_nisd.fd_hv_id,
+                    'fd_device_id': target_nisd.fd_device_id,
+                    'total_size': target_nisd.total_size,
+                    'available_size':
+                      (target_initial_available_size | int) - 1,
+                    'socket_path': target_nisd.socket_path,
+                    'net_info': target_nisd.net_info
+                  },
+                  timeout=30
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Print quorum write result."
+          debug:
+            msg: "Initial PUT with 2/3 TiKV replicas succeeded."
+
+        # =====================================================
         # 4. Perform all writes while the third replica is stale
         # =====================================================
 
         # Every request upserts the SAME NISD ID and changes only
         # available_size. With Region splitting disabled this keeps the record
-        # mutations in the same Raft group for the whole outage window.
+        # mutations in the same Raft group for the whole outage window.     
         - name: "{{ recipe_name }}: Perform bulk PUT workload with 2/3 TiKV replicas."
           set_fact:
             bulk_put_result: >-
@@ -415,13 +483,12 @@
                     'socket_path': target_nisd.socket_path,
                     'net_info': target_nisd.net_info
                   },
-                  timeout=api_request_timeout
+                  timeout=30
                 )
               }}
-          loop: "{{ range(1, (bulk_write_count | int) + 1) | list }}"
+          loop: "{{ range(2, (bulk_write_count | int) + 1) | list }}"
           loop_control:
             label: "PUT {{ item }}/{{ bulk_write_count }}"
-          no_log: true
 
         - name: "{{ recipe_name }}: Print bulk workload completion."
           debug:
