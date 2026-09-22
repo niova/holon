@@ -336,14 +336,14 @@
 
         - name: "{{ recipe_name }}: Choose stale replica store."
           set_fact:
-            recovered_store_id: "{{ target_region_follower_ids | first }}"
+            recovered_store_id: "{{ (target_region_follower_ids | first) | int }}"
 
         - name: "{{ recipe_name }}: Resolve stale replica store metadata."
           set_fact:
             recovered_store: >-
               {{
                 live_tikv_stores
-                | selectattr('id', 'equalto', recovered_store_id)
+                | selectattr('id', 'equalto', (recovered_store_id | int))
                 | list
                 | first
               }}
