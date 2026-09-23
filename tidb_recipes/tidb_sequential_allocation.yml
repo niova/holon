@@ -34,7 +34,7 @@
 
         - name: "{{ recipe_name }}: Set up mdsvc-tidb backend."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
 
         - name: "{{ recipe_name }}: Print setup result."
           debug:
@@ -514,7 +514,7 @@
 
         - name: "{{ recipe_name }}: Stop mdsvc-api server and TiDB playground."
           set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'teardown') }}"
+            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
 
         - name: "{{ recipe_name }}: Debug teardown status."
           debug:
