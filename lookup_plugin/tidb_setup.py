@@ -173,8 +173,7 @@ def docker_setup(cluster_params):
         app_name,
     )
 
-    docker_log_fp = open(docker_container_log, "a")
-
+    with open(docker_container_log, "a") as docker_log_fp:
     logs_proc = subprocess.Popen(
         ["sudo", "docker", "logs", "-f", container_name],
         stdout=docker_log_fp,

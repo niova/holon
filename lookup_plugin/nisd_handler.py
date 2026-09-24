@@ -159,9 +159,9 @@ def list_ublk_devices():
     return set(glob.glob("/dev/ublkb*"))
 
 def wait_for_new_ublk_device(before, timeout=30):
-    deadline = time.time() + timeout
+    start = time.monotonic()
 
-    while time.time() < deadline:
+    while time.monotonic() - start < timeout:
         current = list_ublk_devices()
         new_devices = current - before
 
