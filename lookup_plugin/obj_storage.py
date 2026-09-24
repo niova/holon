@@ -97,7 +97,7 @@ class Minio:
             process_obj.send_signal(signal.SIGCONT)
             print("MinIO has been resumed.")
         except subprocess.SubprocessError as e:
-            logging.error("Failed to send CONT signal with error: %s" % os.stderror(e.errno))
+            logging.error("Failed to send CONT signal with error: %s" % e)
             return -1        
         
         return 0
