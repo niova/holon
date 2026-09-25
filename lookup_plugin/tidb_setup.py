@@ -174,12 +174,12 @@ def docker_setup(cluster_params):
     )
 
     with open(docker_container_log, "a") as docker_log_fp:
-    logs_proc = subprocess.Popen(
-        ["sudo", "docker", "logs", "-f", container_name],
-        stdout=docker_log_fp,
-        stderr=subprocess.STDOUT,
-        start_new_session=True,
-    )
+        logs_proc = subprocess.Popen(
+            ["sudo", "docker", "logs", "-f", container_name],
+            stdout=docker_log_fp,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
 
     with open(log_file, "a") as logf:
         logf.write(
