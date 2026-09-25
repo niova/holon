@@ -205,9 +205,9 @@ def niova_raft_lookup_ctlreq(recipe_conf, ctlreq_cmd_dict, peer_uuid, getProcess
 Load the recipe json file and get the file contents as dictionary.
 '''
 def niova_get_recipe_json_data(cluster_params):
-	# Prepare the path for the recipe json file
+    # Prepare the path for the recipe json file
     raft_json_fpath = "%s/%s/%s.json" % (cluster_params['base_dir'], cluster_params['raft_uuid'], cluster_params['raft_uuid'])
-	# Load the recipe json file.
+    # Load the recipe json file.
     recipe_conf = {}
     if os.path.exists(raft_json_fpath):
         with open(raft_json_fpath, "r+", encoding="utf-8") as json_file:
@@ -220,9 +220,9 @@ Initialize the logger for ctlrequest cmd.
 '''
 def niova_ctlrequest_init_logger(cluster_params):
 
-	# Prepare the log path
+    # Prepare the log path
     log_path = "%s/%s/%s.log" % (cluster_params['base_dir'], cluster_params['raft_uuid'], cluster_params['raft_uuid'])
-	# Initialize logger
+    # Initialize logger
     logging.basicConfig(filename=log_path, filemode='a', level=logging.DEBUG, format='%(asctime)s [%(filename)s:%(lineno)d] %(message)s')
 
 '''
@@ -230,7 +230,7 @@ Prepare ctlrequest cmd parameter dictionary with passed parameters
 '''
 def niova_ctlrequest_get_cmdline_input_dict(global_args, local_args):
     ctlreq_cmd_dict = {}
-	# Get the values from ansibles global cache
+    # Get the values from ansibles global cache
     ctlreq_cmd_dict['recipe_name'] = global_args['variables']['recipe_name']
     if 'stage' in global_args.get('variables', {}):
         ctlreq_cmd_dict['stage'] = global_args['variables']['stage']
@@ -239,7 +239,7 @@ def niova_ctlrequest_get_cmdline_input_dict(global_args, local_args):
     if 'wait_for_ofile' in global_args['variables']:
         ctlreq_cmd_dict['wait_for_ofile'] = global_args['variables']['wait_for_ofile']
 
-	# cmdline parameters to the ctlrequest lookup plugin.
+    # cmdline parameters to the ctlrequest lookup plugin.
     ctlreq_cmd_dict['operation'] = local_args[0]
 
     if not isinstance(local_args[1], list):
@@ -247,7 +247,7 @@ def niova_ctlrequest_get_cmdline_input_dict(global_args, local_args):
     else:
         ctlreq_cmd_dict['peer_uuid_list'] = local_args[1]
 
-	# Now get the parameters specific to the operation.
+    # Now get the parameters specific to the operation.
     if ctlreq_cmd_dict['operation'] == "apply_cmd":
         ctlreq_cmd_dict['cmd'] = local_args[2]
         ctlreq_cmd_dict['where'] = local_args[3]

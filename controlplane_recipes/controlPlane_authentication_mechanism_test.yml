@@ -120,11 +120,11 @@
             vdev_id: >-
               {{
                 (gotest_result_1.parsed_results.tests[0].info_messages
-                | select('search','accessed their vdev')
+                | select('search','vdev with ID')
                 | first).split(': ')[1]
               }}
 
-        - name: "{{ recipe_name }}: Print vdev id"
+        - name: "{{ recipe_name }}: Print vdev id."
           debug:
             msg: "{{ vdev_id }}"
 
