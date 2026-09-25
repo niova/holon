@@ -6,6 +6,7 @@ import termios
 import os
 import shutil, os
 import time
+import logging
 import subprocess
 from constants import NIOVA_LIBEXEC_DIR
 
