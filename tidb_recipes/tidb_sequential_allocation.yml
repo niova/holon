@@ -345,6 +345,17 @@
           loop_control:
             label: "{{ item.vdev_id }}"
 
+        # Anti-affinity means placing replicas of the same chunk in different failure domains, 
+        # such as different racks. If one rack fails, replicas in other racks remain available. 
+        # Here, nisd_rack_map maps each NISD to its rack, so this check enforces rack-level anti-affinity.
+
+        # Fail if any of these invariants is violated:
+        # 1. Replica count: each chunk must have exactly expected_replica_count replicas.
+        # 2. Unique targets: each replica must be assigned to a different NISD;
+        #    the same NISD must not appear more than once for a chunk.
+        # 3. Rack anti-affinity: each replica must be in a different rack,
+        #    so a single rack failure cannot affect multiple replicas of this chunk.
+
         - name: "{{ recipe_name }}: Validate replica count, duplicate targets, and anti-affinity per chunk."
           vars:
             chunk: "{{ item.1 }}"
