@@ -20,11 +20,11 @@ def is_process_running(peer_uuid, recipe_conf):
 '''
 niova_raft_process_ops: This function perform operations like start, stop,pause
 on the server/client.
-	@recipe_conf: Recipe config parameters.
-	@cluster_type: raft or pumicedb
-	@peer_uuid: Peer UUID
-	@operation: operation to perform on the peer.
-	@proc_type: Process type (server/client)
+    @recipe_conf: Recipe config parameters.
+    @cluster_type: raft or pumicedb
+    @peer_uuid: Peer UUID
+    @operation: operation to perform on the peer.
+    @proc_type: Process type (server/client)
 '''
 def niova_raft_process_ops(peer_uuid, operation, proc_type, recipe_conf,
                            cluster_params):
@@ -163,7 +163,7 @@ def niova_client_config_create(client_uuid, recipe_conf_dict, cluster_params):
 
     '''
     check if config file for client is already created
-	'''
+    '''
     client_conf_path = "%s/%s.raft_client" % (raft_dir, client_uuid)
     if os.path.exists(client_conf_path) :
         # Client config file already present, do nothing

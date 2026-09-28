@@ -1143,7 +1143,7 @@ def corrupt_file(cluster_params, dirName, operation, chunk):
     with open(source_file_path, "wb") as f:
         f.write(data)
 
-	# upload the file 
+    # upload the file 
     Perform_S3_Operation(cluster_params, source_file_path, "upload", chunk) 
 
 def uploadAndDeleteCorruptedFile(cluster_params, dirName, operation, chunk):

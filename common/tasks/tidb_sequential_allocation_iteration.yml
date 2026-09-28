@@ -1,0 +1,215 @@
+---
+# One sequential VDEV allocation.
+# Included by tidb_sequential_allocation.yml.
+
+- name: "{{ recipe_name }}: Create VDEV allocation {{ allocation_index + 1 }}."
+  set_fact:
+    current_vdev_result: >-
+      {{
+        lookup(
+          'tidb_api',
+          'create_vdev',
+          base_url=api_base_url,
+          token=access_token,
+          file=vdev_payload
+        )
+      }}
+
+- name: "{{ recipe_name }}: Print VDEV allocation {{ allocation_index + 1 }} response."
+  debug:
+    var: current_vdev_result
+
+# Support either vdev_id or uuid depending on the mdsvc-api response.
+- name: "{{ recipe_name }}: Resolve allocated VDEV ID."
+  set_fact:
+    current_vdev_id: >-
+      {{
+        current_vdev_result.get('vdev_id')
+        or current_vdev_result.get('uuid')
+        or current_vdev_result.get('data', {}).get('payload', {}).get('vdev_id')
+        or current_vdev_result.get('data', {}).get('payload', {}).get('uuid')
+        or ''
+      }}
+
+- name: "{{ recipe_name }}: Validate allocated VDEV ID."
+  debug:
+    msg:
+      - "Allocation: {{ allocation_index + 1 }}"
+      - "VDEV ID: {{ current_vdev_id }}"
+  failed_when:
+    current_vdev_id | string | length == 0
+
+# Fetch the VDEV's chunks immediately so we know how many were allocated.
+- name: "{{ recipe_name }}: Fetch chunks for VDEV {{ current_vdev_id }}."
+  set_fact:
+    current_chunks_result: >-
+      {{
+        lookup(
+          'tidb_api',
+          'get_chunks',
+          base_url=api_base_url,
+          token=access_token,
+          params={
+            'vdev_id': current_vdev_id,
+            'limit': chunk_page_limit
+          }
+        )
+      }}
+
+- name: "{{ recipe_name }}: Store allocated chunk count."
+  set_fact:
+    current_num_chunks: >-
+      {{
+        current_chunks_result.total_chunks_fetched
+        | default(current_chunks_result.chunks | length)
+        | int
+      }}
+
+- name: "{{ recipe_name }}: Validate allocated chunks."
+  debug:
+    msg:
+      - "VDEV: {{ current_vdev_id }}"
+      - "Chunks allocated: {{ current_num_chunks }}"
+  failed_when:
+    current_num_chunks | int <= 0
+
+# -----------------------------------------------------
+# Fetch NISD capacities after this allocation
+# -----------------------------------------------------
+
+- name: "{{ recipe_name }}: Fetch NISDs after allocation {{ allocation_index + 1 }}."
+  set_fact:
+    current_nisd_result: >-
+      {{
+        lookup(
+          'tidb_api',
+          'get_resource',
+          base_url=api_base_url,
+          token=access_token,
+          params={
+            'type': 'nisd'
+          }
+        )
+      }}
+
+- name: "{{ recipe_name }}: Store current NISD resources."
+  set_fact:
+    current_nisd_resources: >-
+      {{
+        current_nisd_result.data.payload.resources
+        | default([])
+      }}
+
+- name: "{{ recipe_name }}: Validate current NISD list."
+  debug:
+    msg: >-
+      NISDs after allocation {{ allocation_index + 1 }}:
+      {{ current_nisd_resources | length }}
+  failed_when:
+    current_nisd_resources | length == 0
+
+# -----------------------------------------------------
+# Build capacity map
+# -----------------------------------------------------
+
+- name: "{{ recipe_name }}: Initialize current capacity map."
+  set_fact:
+    current_nisd_capacity_map: {}
+    capacity_changed_nisds: []
+
+- name: "{{ recipe_name }}: Build current NISD capacity map."
+  set_fact:
+    current_nisd_capacity_map: >-
+      {{
+        current_nisd_capacity_map
+        | combine({
+            item.id | string: {
+              'total_size': item.total_size | int,
+              'available_size': item.available_size | int
+            }
+          })
+      }}
+  loop: "{{ current_nisd_resources }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+# -----------------------------------------------------
+# Capacity safety checks
+# -----------------------------------------------------
+
+- name: "{{ recipe_name }}: Validate NISD capacity did not increase."
+  vars:
+    nisd_id: "{{ item.id | string }}"
+    previous_available: >-
+      {{
+        previous_nisd_capacity_map[nisd_id].available_size
+        | int
+      }}
+    current_available: "{{ item.available_size | int }}"
+  debug:
+    msg:
+      - "NISD: {{ nisd_id }}"
+      - "Previous available: {{ previous_available }}"
+      - "Current available: {{ current_available }}"
+  failed_when:
+    current_available | int < 0 or
+    current_available | int > item.total_size | int or
+    current_available | int > previous_available | int
+  when:
+    nisd_id in previous_nisd_capacity_map
+  loop: "{{ current_nisd_resources }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+- name: "{{ recipe_name }}: Find NISDs whose capacity decreased."
+  vars:
+    nisd_id: "{{ item.id | string }}"
+  set_fact:
+    capacity_changed_nisds: >-
+      {{
+        capacity_changed_nisds + [nisd_id]
+      }}
+  when:
+    - nisd_id in previous_nisd_capacity_map
+    - >
+      item.available_size | int <
+      previous_nisd_capacity_map[nisd_id].available_size | int
+  loop: "{{ current_nisd_resources }}"
+  loop_control:
+    label: "{{ item.id }}"
+
+- name: "{{ recipe_name }}: Validate allocation consumed NISD capacity."
+  debug:
+    msg:
+      - "VDEV: {{ current_vdev_id }}"
+      - "NISDs with reduced capacity: {{ capacity_changed_nisds }}"
+  failed_when:
+    capacity_changed_nisds | length == 0
+
+# -----------------------------------------------------
+# Record successful allocation
+# -----------------------------------------------------
+
+- name: "{{ recipe_name }}: Record successful allocation."
+  set_fact:
+    successful_allocations: >-
+      {{
+        successful_allocations + [{
+          'allocation_index': allocation_index | int,
+          'vdev_id': current_vdev_id,
+          'num_chunks': current_num_chunks | int,
+          'nisds_changed': capacity_changed_nisds
+        }]
+      }}
+
+- name: "{{ recipe_name }}: Save NISD capacity state for next allocation."
+  set_fact:
+    previous_nisd_capacity_map: "{{ current_nisd_capacity_map }}"
+
+- name: "{{ recipe_name }}: Print allocation {{ allocation_index + 1 }} summary."
+  debug:
+    msg:
+      - "Allocation {{ allocation_index + 1 }} completed."
+      - "VDEV: {{ current_vdev_id }}"
+      - "Chunks: {{ current_num_chunks }}"
+      - "Changed NISDs: {{ capacity_changed_nisds | length }}"

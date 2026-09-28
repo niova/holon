@@ -16,7 +16,7 @@ def ctl_req_create_cmdfile_and_copy(ctlreqobj, operation, cmd, where):
 
     # Prepare cmd_string as per the operation (GET or APPLY)
     if operation == "lookup":
-	    cmd_str = "GET %s\nOUTFILE /%s\n" % (cmd, o_base)
+        cmd_str = "GET %s\nOUTFILE /%s\n" % (cmd, o_base)
     else:
         cmd_str = "APPLY %s\nWHERE %s\nOUTFILE /%s\n" % (cmd, where, o_base)
 
