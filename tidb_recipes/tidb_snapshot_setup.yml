@@ -4,15 +4,11 @@
 
   vars:
     snapshot_api_base_url: "http://localhost:8081"
-
     infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
     vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
-
     snapshot_nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
-
     snapshot_cp_username: "admin"
     snapshot_cp_password: "admin"
-
     niova_block_repo: >-
       {{
         lookup('env', 'NIOVA_BLOCK_REPO')

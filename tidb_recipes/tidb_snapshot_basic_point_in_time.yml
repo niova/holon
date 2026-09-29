@@ -24,7 +24,7 @@
       {{ holon_repo }}/scripts/snapshot_helper.sh
     niova_snapshot_bin: >-
       {{
-        (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova-snapshot')
+        (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova/niova-snapshot')
         if lookup('env', 'NIOVA_BIN_PATH')
         else 'niova-snapshot'
       }}
