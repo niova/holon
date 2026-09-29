@@ -16,7 +16,7 @@ UBLK_TIMEOUT="${UBLK_TIMEOUT:-30}"
 DELETE_SNAPSHOTS_ON_SUCCESS="${DELETE_SNAPSHOTS_ON_SUCCESS:-1}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SNAPSHOT_TEST_HELPERS="${SNAPSHOT_TEST_HELPERS:-${SCRIPT_DIR}/snapshot-test-helpers.sh}"
+SNAPSHOT_TEST_HELPERS="${SNAPSHOT_TEST_HELPERS:-${SCRIPT_DIR}/snapshot_helper.sh}"
 [[ -r "${SNAPSHOT_TEST_HELPERS}" ]] || { echo "Missing helper: ${SNAPSHOT_TEST_HELPERS}" >&2; exit 1; }
 # shellcheck source=snapshot-test-helpers.sh
 source "${SNAPSHOT_TEST_HELPERS}"

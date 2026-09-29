@@ -33,7 +33,11 @@
     snapshot_test_helpers: >-
       {{ holon_repo }}/scripts/snapshot_helper.sh
     niova_snapshot_bin: >-
-      {{ niova_block_repo }}/bin/niova-snapshot
+      {{
+        (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova-snapshot')
+        if lookup('env', 'NIOVA_BIN_PATH')
+        else 'niova-snapshot'
+      }}
     gossip_path: >-
       {{ lookup('env', 'NIOVA_WORKSPACE') }}/mdsvc-tidb/configs/gossipNodes
     recipe_state_file: >-
@@ -149,31 +153,22 @@
             VDEV_UUID: "{{ snapshot_vdev_uuid }}"
             LIVE_DEVICE: "{{ snapshot_live_device }}"
             SNAPSHOT_NAME: "{{ snapshot_name }}"
-
-            NIOVA_SNAPSHOT: "{{ niova_snapshot_bin }}"
-
-            TEST_LOGDIR: "{{ snapshot_test_logdir }}"
             SNAPSHOT_TEST_HELPERS: "{{ snapshot_test_helpers }}"
-
+            NIOVA_SNAPSHOT: "{{ niova_snapshot_bin }}"
+            TEST_LOGDIR: "{{ snapshot_test_logdir }}"
             MDSVC_API_URL: "{{ api_base_url }}"
-
             INTEGRATION_ADMIN_USERNAME: "{{ cp_username }}"
             INTEGRATION_ADMIN_PASSWORD: "{{ cp_password }}"
-
             SNAPSHOT_FAIL_TIMEOUT: "45"
             POST_FAILURE_IO_TIMEOUT: "45"
             RECOVERY_TIMEOUT: "90"
-
             NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
             NIOVA_GOSSIP_KEY: "dummy"
-
             NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
             NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
-
             NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
             NIOVA_BLOCK_PROXY_TAG: "mdsvc-tidb"
             NIOVA_BLOCK_UBLK_UNIFIED: "0"
-
           register: baseline_result
 
         - name: "{{ recipe_name }}: Assert baseline passed."

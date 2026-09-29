@@ -29,7 +29,11 @@
     snapshot_test_helpers: >-
       {{ holon_repo }}/scripts/snapshot_helper.sh
     niova_snapshot_bin: >-
-      {{ niova_block_repo }}/bin/niova-snapshot
+      {{
+        (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova-snapshot')
+        if lookup('env', 'NIOVA_BIN_PATH')
+        else 'niova-snapshot'
+      }}
     niova_ublk_bin: >-
       {{
         (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova-ublk')
@@ -128,34 +132,25 @@
           environment:
             VDEV_UUID: "{{ snapshot_vdev_uuid }}"
             LIVE_DEVICE: "{{ snapshot_live_device }}"
-
             SNAPSHOT1_NAME: "{{ snapshot1_name }}"
             SNAPSHOT2_NAME: "{{ snapshot2_name }}"
-
             NIOVA_SNAPSHOT: "{{ niova_snapshot_bin }}"
             NIOVA_UBLK: "{{ niova_ublk_bin }}"
-
+            SNAPSHOT_TEST_HELPERS: "{{ snapshot_test_helpers }}"
             MDSVC_API_URL: "{{ api_base_url }}"
-
             INTEGRATION_ADMIN_USERNAME: "{{ cp_username }}"
             INTEGRATION_ADMIN_PASSWORD: "{{ cp_password }}"
-
             TEST_LOGDIR: "{{ snapshot_test_logdir }}"
-
             # Keep both snapshots after the shell assertions so this
             # recipe can independently validate them through tidb_api.
             DELETE_SNAPSHOTS_ON_SUCCESS: "0"
-
             NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
             NIOVA_GOSSIP_KEY: "dummy"
-
             NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
             NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
-
             NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
             NIOVA_BLOCK_PROXY_TAG: "mdsvc-tidb"
             NIOVA_BLOCK_UBLK_UNIFIED: "0"
-
           register: snapshot_test_result
 
         - name: "{{ recipe_name }}: Print snapshot test output."
@@ -322,6 +317,8 @@
           when:
             - snapshot_vdev_uuid is defined
             - snapshot1_name is defined
+            - snapshot_cli_stat is defined
+            - snapshot_cli_stat.stat.exists | default(false)
 
         - name: "{{ recipe_name }}: Stop mdsvc-api and TiDB stack."
           ansible.builtin.set_fact:

@@ -34,7 +34,7 @@ esac
 : "${TEST_LOGDIR:?TEST_LOGDIR is required}"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-SNAPSHOT_TEST_HELPERS="${SNAPSHOT_TEST_HELPERS:-${SCRIPT_DIR}/snapshot-test-helpers.sh}"
+SNAPSHOT_TEST_HELPERS="${SNAPSHOT_TEST_HELPERS:-${SCRIPT_DIR}/snapshot_helper.sh}"
 
 [[ -r "${SNAPSHOT_TEST_HELPERS}" ]] || {
     echo "Missing snapshot helper: ${SNAPSHOT_TEST_HELPERS}" >&2

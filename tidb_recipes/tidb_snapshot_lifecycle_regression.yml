@@ -22,7 +22,11 @@
     snapshot_test_helpers: >-
       {{ holon_repo }}/scripts/snapshot_helper.sh
     niova_snapshot_bin: >-
-      {{ niova_block_repo }}/bin/niova-snapshot
+      {{
+        (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova-snapshot')
+        if lookup('env', 'NIOVA_BIN_PATH')
+        else 'niova-snapshot'
+      }}
     niova_ublk_bin: >-
       {{
         (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova-ublk')
@@ -125,6 +129,7 @@
             LIVE_DEVICE: "{{ snapshot_live_device }}"
             MAX_ITERATIONS: "{{ max_iterations | string }}"
             TEST_LOGDIR: "{{ regression_logdir }}"
+            SNAPSHOT_TEST_HELPERS: "{{ snapshot_test_helpers }}"
             NIOVA_SNAPSHOT: "{{ niova_snapshot_bin }}"
             NIOVA_UBLK: "{{ niova_ublk_bin }}"
             MDSVC_API_URL: "{{ api_base_url }}"
