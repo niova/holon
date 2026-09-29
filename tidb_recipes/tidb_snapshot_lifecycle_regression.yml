@@ -11,15 +11,18 @@
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
     cp_username: "admin"
     cp_password: "admin"
+    holon_repo: "{{ playbook_dir }}/.."
     niova_block_repo: >-
       {{
         lookup('env', 'NIOVA_BLOCK_REPO')
         | default(playbook_dir ~ '/../..', true)
       }}
     regression_script: >-
-      {{ niova_block_repo }}/test/system-tests/snapshot-lifecycle-regression.sh
+      {{ holon_repo }}/scripts/snapshot-lifecycle-regression.sh
+    snapshot_test_helpers: >-
+      {{ holon_repo }}/scripts/snapshot_helper.sh
     niova_snapshot_bin: >-
-      {{ niova_block_repo }}/scripts/niova-snapshot
+      {{ niova_block_repo }}/bin/niova-snapshot
     niova_ublk_bin: >-
       {{
         (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova-ublk')

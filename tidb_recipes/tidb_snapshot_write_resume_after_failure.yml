@@ -15,7 +15,6 @@
   vars:
     recipe_name: "tidb_snapshot_write_resume_after_failure"
     api_base_url: "http://localhost:8081"
-
     # Must match tidb_snapshot_setup.yml because this test restarts
     # the SAME NISD after intentionally killing it.
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
@@ -23,17 +22,18 @@
     nisd_client_port: "13001"
     cp_username: "admin"
     cp_password: "admin"
+    holon_repo: "{{ playbook_dir }}/.."
     niova_block_repo: >-
       {{
         lookup('env', 'NIOVA_BLOCK_REPO')
         | default(playbook_dir ~ '/../..', true)
       }}
     snapshot_test_script: >-
-      {{ niova_block_repo }}/test/system-tests/snapshot-write-resume-after-failure.sh
+      {{ holon_repo }}/scripts/snapshot-write-resume-after-failure.sh
     snapshot_test_helpers: >-
-      {{ niova_block_repo }}/test/system-tests/snapshot-test-helpers.sh
+      {{ holon_repo }}/scripts/snapshot_helper.sh
     niova_snapshot_bin: >-
-      {{ niova_block_repo }}/scripts/niova-snapshot
+      {{ niova_block_repo }}/bin/niova-snapshot
     gossip_path: >-
       {{ lookup('env', 'NIOVA_WORKSPACE') }}/mdsvc-tidb/configs/gossipNodes
     recipe_state_file: >-

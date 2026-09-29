@@ -14,36 +14,32 @@
 
   vars:
     recipe_name: "tidb_snapshot_basic_point_in_time"
-
     api_base_url: "http://localhost:8081"
-
     cp_username: "admin"
     cp_password: "admin"
-
+    holon_repo: "{{ playbook_dir }}/.."
+    snapshot_test_script: >-
+      {{ holon_repo }}/scripts/snapshot-basic-point-in-time.sh
+    snapshot_test_helpers: >-
+      {{ holon_repo }}/scripts/snapshot_helper.sh
+    niova_snapshot_bin: >-
+      {{ niova_block_repo }}/bin/niova-snapshot
     niova_block_repo: >-
       {{
         lookup('env', 'NIOVA_BLOCK_REPO')
         | default(playbook_dir ~ '/../..', true)
       }}
-
-    snapshot_test_script: >-
-      {{ niova_block_repo }}/test/system-tests/snapshot-basic-point-in-time.sh
-
-    niova_snapshot_bin: "{{ niova_block_repo }}/scripts/niova-snapshot"
-
     niova_ublk_bin: >-
       {{
         (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova-ublk')
         if lookup('env', 'NIOVA_BIN_PATH')
         else 'niova-ublk'
       }}
-
     gossip_path: >-
       {{ lookup('env', 'NIOVA_WORKSPACE') }}/mdsvc-tidb/configs/gossipNodes
 
   tasks:
     - block:
-
         # ------------------------------------------------------------
         # 1. Prepare point-in-time snapshot test
         # ------------------------------------------------------------
