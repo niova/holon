@@ -205,14 +205,19 @@ def run_niova_ublk(cluster_params, input_values):
     genericcmdobj = GenericCmds()
     
     # generate ublk uuid if not cp_mode
-    if cp_mode == 0: 
+    if cp_mode == 0:
         ublk_uuid = genericcmdobj.generate_uuid()
+
     elif snapshot_name:
         if not client_uuid:
             client_uuid = genericcmdobj.generate_uuid()
 
         ublk_uuid = client_uuid
+
     else:
+        if not client_uuid:
+            client_uuid = genericcmdobj.generate_uuid()
+
         ublk_uuid = vdev_uuid
 
     # Prepare path for log file.
@@ -282,6 +287,7 @@ def run_niova_ublk(cluster_params, input_values):
                 bin_path,
                 "-t", "cp",
                 "-v", vdev_uuid,
+                "-u", client_uuid,
                 "-q", "128",
                 "-b", "1048576",
                 "-T"
