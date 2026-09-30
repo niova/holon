@@ -226,6 +226,8 @@
         - name: "{{ recipe_name }}: Delete test snapshot if it exists."
           ansible.builtin.command:
             argv:
+              - "sudo"
+              - "-E"
               - "{{ niova_snapshot_bin }}"
               - "--vdev"
               - "{{ snapshot_vdev_uuid | default('') }}"
@@ -236,13 +238,10 @@
           environment:
             NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
             NIOVA_GOSSIP_KEY: "dummy"
-
             NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
             NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
-
             NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
             NIOVA_BLOCK_PROXY_TAG: "mdsvc-tidb"
-
           register: snapshot_delete_result
           changed_when: snapshot_delete_result.rc == 0
           failed_when: false

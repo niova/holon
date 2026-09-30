@@ -163,7 +163,7 @@ snapshot_create()
     log "Creating snapshot ${snapshot_name}"
 
     set +e
-    "${NIOVA_SNAPSHOT}" \
+    sudo -E "${NIOVA_SNAPSHOT}" \
         --vdev "${VDEV_UUID}" \
         --op create \
         --snapshot-name "${snapshot_name}" \
@@ -182,7 +182,7 @@ snapshot_lookup()
 {
     local snapshot_name="$1"
 
-    "${NIOVA_SNAPSHOT}" \
+    sudo -E "${NIOVA_SNAPSHOT}" \
         --vdev "${VDEV_UUID}" \
         --op lookup \
         --snapshot-name "${snapshot_name}"
@@ -196,7 +196,7 @@ snapshot_delete()
     log "Deleting snapshot ${snapshot_name}"
 
     set +e
-    "${NIOVA_SNAPSHOT}" \
+    sudo -E "${NIOVA_SNAPSHOT}" \
         --vdev "${VDEV_UUID}" \
         --op delete \
         --snapshot-name "${snapshot_name}" \
