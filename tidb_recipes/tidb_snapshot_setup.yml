@@ -166,6 +166,40 @@
           - snapshot_vdev_uuid | length > 0
 
     # ------------------------------------------------------------
+    # Clean stale ublk processes/devices from previous test runs
+    # ------------------------------------------------------------
+
+    - name: "{{ recipe_name }}: Stop stale niova-ublk processes."
+      ansible.builtin.shell: |
+        sudo pkill -TERM -x niova-ublk 2>/dev/null || true
+
+        for _ in $(seq 1 10); do
+            if ! pgrep -x niova-ublk >/dev/null 2>&1; then
+                exit 0
+            fi
+            sleep 0.5
+        done
+
+        sudo pkill -KILL -x niova-ublk 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: "{{ recipe_name }}: Wait for stale ublk devices to disappear."
+      ansible.builtin.shell: |
+        shopt -s nullglob
+        devices=(/dev/ublkb*)
+
+        [[ ${#devices[@]} -eq 0 ]]
+      args:
+        executable: /bin/bash
+      register: stale_ublk_cleanup
+      retries: 20
+      delay: 1
+      until: stale_ublk_cleanup.rc == 0
+      changed_when: false
+
+    # ------------------------------------------------------------
     # Start live niova-ublk
     # ------------------------------------------------------------
     - name: "snapshot_setup: Record existing ublk devices."
