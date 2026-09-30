@@ -156,7 +156,8 @@ else
     [[ "${SAVED_VDEV_UUID}" == "${VDEV_UUID}" ]] || fail "vdev changed between phases"
     [[ "${SAVED_SNAPSHOT_NAME}" == "${SNAPSHOT_NAME}" ]] || fail "snapshot name changed between phases"
 
-    wait_for_live_recovery
+    log "POST-RESTART phase using restarted live device: ${LIVE_DEVICE}"
+    require_block_device "${LIVE_DEVICE}"
 
     cp_login
     wait_for_snapshot_applied "${SNAPSHOT_NAME}" "${SAVED_SNAPSHOT_ID}" post-restart

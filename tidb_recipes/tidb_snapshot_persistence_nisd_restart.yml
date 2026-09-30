@@ -115,7 +115,6 @@
 
         # ------------------------------------------------------------
         # 3. Capture identity of the persistent backing storage
-        #
         # The backing file was created and initialized by
         # tidb_snapshot_setup.yml. Record its identity now so we can
         # prove later that the restart used the exact same storage.
@@ -132,7 +131,6 @@
 
         # ------------------------------------------------------------
         # 4. Wait for recipe state file
-        #
         # This contains the currently-running NISD PID.
         # ------------------------------------------------------------
         - name: "{{ recipe_name }}: Wait for recipe state file."
@@ -145,7 +143,6 @@
 
         # ------------------------------------------------------------
         # 5. PRE-RESTART TEST
-        #
         # A -> snapshot -> B
         # Verify:
         #   live view     = B
@@ -239,10 +236,17 @@
           changed_when: false
 
         # ------------------------------------------------------------
-        # 8. Stop NISD only
-        #
-        # Do NOT stop/restart the existing live nclient/ublk.
+        # 8. Stop the live ublk before restarting NISD.
         # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Stop live ublk before NISD restart."
+          vars:
+            input_param:
+              process_key: "{{ snapshot_vdev_uuid }}"
+              timeout: 10
+          ansible.builtin.set_fact:
+            stopped_live_ublk: >-
+              {{ lookup('nisd_handler', 'stop_ublk', input_param) }}
+
         - name: "{{ recipe_name }}: Stop NISD."
           ansible.builtin.command:
             argv:
@@ -266,7 +270,6 @@
 
         # ------------------------------------------------------------
         # 9. Restart SAME NISD using SAME UUID and backing storage
-        #
         # IMPORTANT:
         # niova-block-ctl must NOT be run again.
         # ------------------------------------------------------------
@@ -347,11 +350,41 @@
               before={{ backing_identity_before.stdout }}
               after={{ backing_identity_after.stdout }}
 
+        - name: "{{ recipe_name }}: Restart live RW niova-ublk."
+          vars:
+            input_param:
+              cp_mode: 1
+              enable_auth: 1
+              nisd_uuid: "{{ nisd_uuid }}"
+              vdev_uuid: "{{ snapshot_vdev_uuid }}"
+              user_name: "{{ cp_username }}"
+              user_secret: "{{ cp_password }}"
+          ansible.builtin.set_fact:
+            restarted_live_ublk: >-
+              {{ lookup('nisd_handler', 'run_ublk_device', input_param) }}
+
+        - name: "{{ recipe_name }}: Store restarted live device."
+          ansible.builtin.set_fact:
+            snapshot_live_device: "{{ restarted_live_ublk.device_path }}"
+
+        - name: "{{ recipe_name }}: Verify restarted live device."
+          ansible.builtin.stat:
+            path: "{{ snapshot_live_device }}"
+          register: restarted_live_device_stat
+
+        - name: "{{ recipe_name }}: Assert restarted live device is ready."
+          ansible.builtin.assert:
+            that:
+              - restarted_live_device_stat.stat.exists
+              - restarted_live_device_stat.stat.isblk | default(false)
+            fail_msg: >-
+              Restarted live ublk device is not ready:
+              {{ snapshot_live_device }}
+
         # ------------------------------------------------------------
         # 12. POST-RESTART TEST
-        #
-        # The SAME live ublk must recover.
-        # Verify live=B and snapshot=A again.
+        # Restart the live ublk against the recovered NISD.
+        # Verify persisted live=B and snapshot=A again.
         # ------------------------------------------------------------
         - name: "{{ recipe_name }}: Run post-restart persistence checks."
           ansible.builtin.shell: |
@@ -426,6 +459,8 @@
         - name: "{{ recipe_name }}: Delete test snapshot if present."
           ansible.builtin.command:
             argv:
+              - "sudo"
+              - "-E"
               - "{{ niova_snapshot_bin }}"
               - "--vdev"
               - "{{ snapshot_vdev_uuid | default('') }}"
@@ -436,13 +471,10 @@
           environment:
             NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
             NIOVA_GOSSIP_KEY: "dummy"
-
             NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
             NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
-
             NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
             NIOVA_BLOCK_PROXY_TAG: "mdsvc-tidb"
-
           register: snapshot_delete_result
           changed_when: snapshot_delete_result.rc == 0
           failed_when: false
