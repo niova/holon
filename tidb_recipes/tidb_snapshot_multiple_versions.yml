@@ -161,7 +161,7 @@
           ansible.builtin.assert:
             that:
               - snapshot_test_result.rc == 0
-              - "'PASS: multiple snapshot version preservation test' in snapshot_test_result.stdout"
+              - "'PASS: multiple snapshots preserve multiple versions' in snapshot_test_result.stdout"
             fail_msg: >-
               Multiple snapshot version test failed.
               Logs: {{ snapshot_test_logdir }}
@@ -267,6 +267,8 @@
         - name: "{{ recipe_name }}: Delete snapshot 2 if it exists."
           ansible.builtin.command:
             argv:
+              - "sudo"
+              - "-E"
               - "{{ niova_snapshot_bin }}"
               - "--vdev"
               - "{{ snapshot_vdev_uuid | default('') }}"
@@ -277,13 +279,10 @@
           environment:
             NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
             NIOVA_GOSSIP_KEY: "dummy"
-
             NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
             NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
-
             NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
             NIOVA_BLOCK_PROXY_TAG: "mdsvc-tidb"
-
           register: snapshot2_delete_result
           changed_when: snapshot2_delete_result.rc == 0
           failed_when: false
@@ -294,6 +293,8 @@
         - name: "{{ recipe_name }}: Delete snapshot 1 if it exists."
           ansible.builtin.command:
             argv:
+              - "sudo"
+              - "-E"
               - "{{ niova_snapshot_bin }}"
               - "--vdev"
               - "{{ snapshot_vdev_uuid | default('') }}"
@@ -304,13 +305,10 @@
           environment:
             NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
             NIOVA_GOSSIP_KEY: "dummy"
-
             NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
             NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
-
             NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
             NIOVA_BLOCK_PROXY_TAG: "mdsvc-tidb"
-
           register: snapshot1_delete_result
           changed_when: snapshot1_delete_result.rc == 0
           failed_when: false
