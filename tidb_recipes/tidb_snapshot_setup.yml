@@ -172,13 +172,21 @@
     - name: "Stop stale niova-ublk processes."
       ansible.builtin.shell: |
         sudo pkill -TERM -x niova-ublk 2>/dev/null || true
-        for _ in $(seq 1 10); do
-            if ! pgrep -x niova-ublk >/dev/null 2>&1; then
-                exit 0
-            fi
-            sleep 0.5
-        done
+        sleep 1
         sudo pkill -KILL -x niova-ublk 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: "Delete stale ublk devices."
+      ansible.builtin.shell: |
+        shopt -s nullglob
+
+        for dev in /dev/ublkb*; do
+            dev_id="${dev#/dev/ublkb}"
+            echo "Deleting stale ublk device ${dev} (id=${dev_id})"
+            sudo ublk del -n "${dev_id}" 2>/dev/null || true
+        done
       args:
         executable: /bin/bash
       changed_when: false
