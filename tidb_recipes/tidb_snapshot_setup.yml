@@ -185,9 +185,13 @@
 
     - name: "Wait for stale ublk devices to disappear."
       ansible.builtin.shell: |
-        shopt -s nullglob
-        devices=(/dev/ublkb*)
-        [[ ${#devices[@]} -eq 0 ]]
+        if compgen -G '/dev/ublkb*' > /dev/null; then
+            echo "Stale ublk devices still exist:"
+            ls -1 /dev/ublkb*
+            exit 1
+        fi
+
+        exit 0
       args:
         executable: /bin/bash
       register: stale_ublk_cleanup
