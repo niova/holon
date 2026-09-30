@@ -240,9 +240,20 @@ def run_niova_ublk(cluster_params, input_values):
     if not os.path.exists(gossip_nodes_path):
         gossip_nodes_path = os.path.join(raft_dir, "gossipNodes")
 
-    os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
+    if cp_mode == 1:
+        # Let niova-ublk create its control interface under:
+        # /tmp/.niova/<client_uuid>/{init,input,output}
+        os.environ.pop("NIOVA_INOTIFY_BASE_PATH", None)
+        os.environ.pop("NIOVA_LOCAL_CTL_SVC_DIR", None)
+    else:
+        os.environ["NIOVA_INOTIFY_BASE_PATH"] = (
+            "%s/%s/nisd-interface" % (base_dir, raft_uuid)
+        )
+        os.environ["NIOVA_LOCAL_CTL_SVC_DIR"] = (
+            "%s/%s/nisd-interface" % (base_dir, raft_uuid)
+        )
+
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}"
-    os.environ['NIOVA_LOCAL_CTL_SVC_DIR'] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
 
     workspace_dir = os.getenv('NIOVA_WORKSPACE')
     gossip_path = "%s/mdsvc-tidb/configs/gossipNodes" % workspace_dir
@@ -342,6 +353,11 @@ def run_niova_ublk(cluster_params, input_values):
             before_devices,
             timeout=int(input_values.get("device_timeout", 30))
         )
+        
+        if cp_mode == 1:
+            ctl_input = f"/tmp/.niova/{client_uuid}/input"
+            logger.info(f"Expected ublk ctl-if input directory: {ctl_input}")
+            logger.info(f"ctl-if input exists: {os.path.isdir(ctl_input)}")
 
     except Exception as e:
         logger.error(f"Failed to start niova-ublk: {e}")
