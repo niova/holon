@@ -432,33 +432,46 @@ def stop_ublk(cluster_params, input_values):
     info = processes.get(process_key)
 
     if not info:
-        raise RuntimeError(
-            f"No tracked ublk process: {process_key}"
-        )
+        raise RuntimeError(f"No tracked ublk process: {process_key}")
 
     pid = int(info["process_pid"])
 
-    try:
-        proc = psutil.Process(pid)
-    except psutil.NoSuchProcess:
+    # If process is already gone, mark it stopped and return.
+    if not psutil.pid_exists(pid):
         info["process_status"] = "stopped"
         GenericCmds().recipe_json_dump(recipe_conf)
-
         return {
             "process_key": process_key,
             "status": "already-stopped",
         }
 
-    proc.terminate()
+    # niova-ublk was started with sudo, so stop it with sudo too.
+    subprocess.run(
+        ["sudo", "kill", "-TERM", str(pid)],
+        check=True
+    )
 
-    try:
-        proc.wait(timeout=timeout)
-    except psutil.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+    start = time.monotonic()
+
+    while psutil.pid_exists(pid):
+        if time.monotonic() - start >= timeout:
+            subprocess.run(
+                ["sudo", "kill", "-KILL", str(pid)],
+                check=True
+            )
+
+            # wait briefly for SIGKILL to take effect
+            kill_start = time.monotonic()
+            while psutil.pid_exists(pid):
+                if time.monotonic() - kill_start >= 5:
+                    raise RuntimeError(f"Failed to stop ublk process {pid}")
+                time.sleep(0.2)
+
+            break
+
+        time.sleep(0.2)
 
     info["process_status"] = "stopped"
-
     GenericCmds().recipe_json_dump(recipe_conf)
 
     return {
