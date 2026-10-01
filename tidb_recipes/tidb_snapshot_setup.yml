@@ -169,6 +169,29 @@
     # Clean stale ublk processes/devices from previous test runs
     # ------------------------------------------------------------
 
+    - name: "Debug stale ublk kernel state."
+      ansible.builtin.shell: |
+        set -x
+
+        sudo ublk list -v || true
+
+        echo "=== processes ==="
+        ps -ef | grep -E '[n]iova-ublk|[u]blk' || true
+
+        echo "=== /dev ==="
+        ls -l /dev/ublkb* /dev/ublkc* /dev/ublk-control 2>/dev/null || true
+
+        echo "=== sysfs ==="
+        for dev in /sys/class/block/ublkb*; do
+            [ -e "$dev" ] || continue
+            echo "--- $dev ---"
+            cat "$dev/dev" 2>/dev/null || true
+            cat "$dev/uevent" 2>/dev/null || true
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+
     - name: "Stop stale niova-ublk processes."
       ansible.builtin.shell: |
         sudo pkill -TERM -x niova-ublk 2>/dev/null || true
@@ -178,15 +201,31 @@
         executable: /bin/bash
       changed_when: false
 
-    - name: "Delete stale ublk devices."
+    - name: "Show stale ublk devices before cleanup."
       ansible.builtin.shell: |
-        shopt -s nullglob
+        echo "=== ublk list ==="
+        sudo ublk list -v || true
 
-        for dev in /dev/ublkb*; do
-            dev_id="${dev#/dev/ublkb}"
-            echo "Deleting stale ublk device ${dev} (id=${dev_id})"
-            sudo ublk del -n "${dev_id}" 2>/dev/null || true
-        done
+        echo "=== block devices ==="
+        ls -l /dev/ublkb* /dev/ublkc* 2>/dev/null || true
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: "Delete all stale ublk devices."
+      ansible.builtin.command:
+        argv:
+          - sudo
+          - ublk
+          - del
+          - -a
+      register: ublk_delete_result
+      changed_when: true
+
+    - name: "Show ublk state after deletion."
+      ansible.builtin.shell: |
+        sudo ublk list -v || true
+        ls -l /dev/ublkb* /dev/ublkc* 2>/dev/null || true
       args:
         executable: /bin/bash
       changed_when: false
@@ -195,10 +234,10 @@
       ansible.builtin.shell: |
         if compgen -G '/dev/ublkb*' > /dev/null; then
             echo "Stale ublk devices still exist:"
-            ls -1 /dev/ublkb*
+            sudo ublk list -v || true
+            ls -l /dev/ublkb*
             exit 1
         fi
-
         exit 0
       args:
         executable: /bin/bash
