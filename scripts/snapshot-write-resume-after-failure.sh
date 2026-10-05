@@ -195,7 +195,7 @@ snapshot_create_must_fail()
 
     set +e
     timeout --foreground "${SNAPSHOT_FAIL_TIMEOUT}s" \
-        "${NIOVA_SNAPSHOT}" \
+        sudo -E "${NIOVA_SNAPSHOT}" \
             --vdev "${VDEV_UUID}" \
             --op create \
             --snapshot-name "${SNAPSHOT_NAME}" \

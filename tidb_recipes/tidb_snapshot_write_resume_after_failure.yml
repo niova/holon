@@ -85,13 +85,10 @@
               - snapshot_login_result is defined
               - snapshot_login_result.access_token is defined
               - snapshot_login_result.access_token | length > 0
-
               - snapshot_vdev_uuid is defined
               - snapshot_vdev_uuid | length > 0
-
               - snapshot_live_device is defined
               - snapshot_live_device | length > 0
-
               - snapshot_nisd_device_path is defined
               - snapshot_nisd_device_path | length > 0
             fail_msg: >-
@@ -181,8 +178,6 @@
 
         # ------------------------------------------------------------
         # 6. Capture and kill NISD
-        #
-        # The existing live ublk client remains running.
         # ------------------------------------------------------------
         - name: "{{ recipe_name }}: Read NISD process state."
           ansible.builtin.slurp:
@@ -228,7 +223,6 @@
 
         # ------------------------------------------------------------
         # 7. Trigger snapshot while NISD is unavailable
-        #
         # Snapshot creation must fail normally rather than hanging.
         # ------------------------------------------------------------
         - name: "{{ recipe_name }}: Verify snapshot creation fails."
@@ -248,10 +242,9 @@
             fail_msg: >-
               Expected snapshot failure was not observed.
 
-        # ------------------------------------------------------------
-        # 8. Independent CP assertion:
-        #    snapshot exists, but state must be failed
-        # ------------------------------------------------------------
+        # ------------------------------------------------------------------------
+        # 8. Independent CP assertion: snapshot exists, but state must be failed
+        # ------------------------------------------------------------------------
         - name: "{{ recipe_name }}: Lookup failed snapshot."
           ansible.builtin.set_fact:
             failed_snapshot_before_restart: >-
@@ -282,7 +275,6 @@
 
         # ------------------------------------------------------------
         # 9. Restart SAME NISD using SAME backing storage
-        #
         # IMPORTANT:
         #   - Do NOT rerun niova-block-ctl
         #   - Do NOT restart the live ublk client
@@ -364,10 +356,9 @@
               before={{ backing_identity_before.stdout }}
               after={{ backing_identity_after.stdout }}
 
-        # ------------------------------------------------------------
-        # 12. Critical assertion:
-        #     SAME live client must be able to write/read again
-        # ------------------------------------------------------------
+        # --------------------------------------------------------------------------
+        # 12. Critical assertion: SAME live client must be able to write/read again
+        # --------------------------------------------------------------------------
         - name: "{{ recipe_name }}: Verify writes resume after snapshot failure."
           ansible.builtin.shell: |
             set -o pipefail
@@ -385,12 +376,10 @@
             fail_msg: >-
               Writes did not resume after NISD recovery.
 
-        # ------------------------------------------------------------
+        # ----------------------------------------------------------------------------
         # 13. Independent final CP check
-        #
-        # Restarting NISD must NOT turn the failed snapshot into an
-        # applied snapshot.
-        # ------------------------------------------------------------
+        # Restarting NISD must NOT turn the failed snapshot into an applied snapshot.
+        # ----------------------------------------------------------------------------
         - name: "{{ recipe_name }}: Lookup failed snapshot after NISD restart."
           ansible.builtin.set_fact:
             failed_snapshot_after_restart: >-
@@ -412,13 +401,10 @@
             that:
               - failed_snapshot_after_restart.status_code | int == 200
               - failed_snapshot_after_restart.state == "failed"
-
               - failed_snapshot_after_restart.snapshot_id | int ==
                 failed_snapshot_before_restart.snapshot_id | int
-
               - failed_snapshot_after_restart.vdev_id == snapshot_vdev_uuid
               - failed_snapshot_after_restart.name == snapshot_name
-
             fail_msg: >-
               Failed snapshot state changed after NISD restart.
               before={{ failed_snapshot_before_restart }}
@@ -442,7 +428,6 @@
 
         # ------------------------------------------------------------
         # Cleanup
-        #
         # The failed snapshot is intentionally not deleted through
         # normal snapshot delete because delete is defined for applied
         # snapshots. Docker teardown removes the isolated environment.
