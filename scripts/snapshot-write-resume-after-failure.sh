@@ -204,17 +204,18 @@ snapshot_create_must_fail()
     rc=${PIPESTATUS[0]}
     set -e
 
-    if [[ ${rc} -eq 0 ]]; then
-        fail "snapshot unexpectedly succeeded while NISD was down"
-    fi
-
-    # A CLI timeout does not prove that the snapshot operation itself completed
-    # with failure. It could still be pending and could leave the barrier held.
     if [[ ${rc} -eq 124 ]]; then
         fail "snapshot command timed out instead of returning a snapshot failure"
     fi
 
-    log "Snapshot command returned expected failure rc=${rc}"
+    if ! grep -Eq \
+        'Create snapshot( name=.*)? failed' \
+        "${log_file}"
+    then
+        fail "snapshot did not report the expected failure; rc=${rc}"
+    fi
+
+    log "Snapshot command reported expected failure; rc=${rc}"
 }
 
 wait_for_snapshot_failed()
