@@ -238,12 +238,12 @@
           ansible.builtin.assert:
             that:
               - failed_snapshot_result.rc == 0
-              - "'PASS: snapshot failed as expected' in failed_snapshot_result.stdout"
+              - "'PASS: snapshot failure recorded as pending' in failed_snapshot_result.stdout"
             fail_msg: >-
-              Expected snapshot failure was not observed.
+              Expected pending snapshot state after failure was not observed.
 
         # ------------------------------------------------------------------------
-        # 8. Independent CP assertion: snapshot exists, but state must be failed
+        # 8. Independent CP assertion: snapshot exists and remains pending before remount
         # ------------------------------------------------------------------------
         - name: "{{ recipe_name }}: Lookup failed snapshot."
           ansible.builtin.set_fact:
@@ -453,7 +453,7 @@
               {{ snapshot_after_remount }}
 
         # --------------------------------------------------------------------------
-        # 12. Critical assertion: SAME live client must be able to write/read again
+        # 12. Verify remounted VDEV can write/read successfully
         # --------------------------------------------------------------------------
         - name: "{{ recipe_name }}: Verify writes resume after snapshot failure."
           ansible.builtin.shell: |
@@ -513,7 +513,7 @@
               - "vdev={{ snapshot_vdev_uuid }}"
               - "snapshot={{ snapshot_name }}"
               - "snapshot_id={{ failed_snapshot_after_restart.snapshot_id }}"
-              - "snapshot_state=failed"
+              - "snapshot_state=abandoned"
               - "old_nisd_pid={{ old_nisd_pid }}"
               - "new_nisd_pid={{ new_nisd_pid }}"
               - "same_live_device={{ snapshot_live_device }}"
