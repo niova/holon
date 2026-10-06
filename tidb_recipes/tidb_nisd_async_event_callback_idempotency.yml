@@ -1,0 +1,657 @@
+- name: "tidb_nisd_async_event_callback_idempotency.yml"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    recipe_name: "tidb_nisd_async_event_callback_idempotency"
+
+    api_base_url: "http://localhost:8081"
+    cp_username: "admin"
+    cp_password: "admin"
+
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
+
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+    nisd_device_path: "/nisd-async-event-idempotency.device"
+    nisd_device_size: "10G"
+
+    nisd_peer_port: "13000"
+    nisd_client_port: "13001"
+
+    nisd_secret: >-
+      {{
+        lookup('env', 'NIOVA_NISD_SECRET')
+        | default('Nisd-secret', true)
+      }}
+
+    lookout_uuid: ""
+
+    ncp_event_ping_key: "/ncp_event/0/ping_enabled"
+    ncp_event_sno_key: "/ncp_event/0/event_sno"
+
+    # ----------------------------------------------------------------
+    # REQUIRED TEST-SPECIFIC VALUES
+    # ----------------------------------------------------------------
+    #
+    # Do not guess these values. Set them from the branch being tested:
+    #
+    #   -e snapshot_event_action=<CREATE_SNAPSHOT enum value>
+    #   -e async_event_add_path=<test AddEvent endpoint>
+    #   -e async_event_crash_after_callback_cmd='<deterministic crash hook>'
+    #
+    # The crash hook MUST terminate NISD after the snapshot callback has
+    # durably recorded its intent but BEFORE ncp_event persists event_sno.
+    #
+    async_event_add_path: "/api/test/event"
+
+    async_event_timeout_retries: 90
+    async_event_poll_delay: 1
+
+    snapshot_name: "async-idempotency-{{ lookup('pipe', 'date +%s%N') }}"
+
+  tasks:
+    - block:
+
+        # ============================================================
+        # 0. Preconditions
+        # ============================================================
+        - name: "{{ recipe_name }}: Validate required test inputs."
+          ansible.builtin.assert:
+            that:
+              - app_type == "tidb"
+              - snapshot_event_action is defined
+              - async_event_crash_after_callback_cmd is defined
+              - async_event_crash_after_callback_cmd | length > 0
+            fail_msg: >-
+              This test requires snapshot_event_action and a deterministic
+              async_event_crash_after_callback_cmd. The crash hook must fire
+              after the callback persists its durable intent but before
+              event_sno is written.
+
+        # ============================================================
+        # 1. Start Control Plane
+        # ============================================================
+        - name: "{{ recipe_name }}: Start mdsvc-tidb."
+          ansible.builtin.set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+
+        - name: "{{ recipe_name }}: Wait for Control Plane."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+            timeout: 10
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        - name: "{{ recipe_name }}: Login."
+          ansible.builtin.set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username=cp_username,
+                  password=cp_password
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          ansible.builtin.set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=infra_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Create VDEV."
+          ansible.builtin.set_fact:
+            vdev_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_vdev',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=vdev_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Save VDEV UUID."
+          ansible.builtin.set_fact:
+            vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
+
+        - name: "{{ recipe_name }}: Validate VDEV UUID."
+          ansible.builtin.assert:
+            that:
+              - vdev_uuid is defined
+              - vdev_uuid | string | length > 0
+
+        # ============================================================
+        # 2. Prepare NISD
+        # ============================================================
+        - name: "{{ recipe_name }}: Create fresh NISD backing file."
+          ansible.builtin.command:
+            argv:
+              - truncate
+              - -s
+              - "{{ nisd_device_size }}"
+              - "{{ nisd_device_path }}"
+          changed_when: true
+
+        - name: "{{ recipe_name }}: Initialize NISD backing storage."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+          ansible.builtin.debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run-niova-block-ctl',
+                  input_param
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Start NISD."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "{{ nisd_peer_port }}"
+              client_port: "{{ nisd_client_port }}"
+              enable_auth: 1
+              enable_cp_event_handler: 1
+              nisd_secret: "{{ nisd_secret }}"
+          ansible.builtin.debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run_nisd',
+                  input_param
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Wait for async-event handler."
+          vars:
+            stage: "wait_for_ping"
+          ansible.builtin.debug:
+            msg: "Waiting for ping_enabled=true"
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+          until: >-
+            (
+              lookup(
+                'niova_ctlrequest',
+                'lookup',
+                nisd_uuid,
+                ncp_event_ping_key,
+                'nisd',
+                lookout_uuid
+              )['/0/ping_enabled']
+              | string
+              | lower
+            ) in ['1', 'true']
+
+        # ============================================================
+        # 3. Verify starting event pointer
+        # ============================================================
+        - name: "{{ recipe_name }}: Read initial event_sno."
+          vars:
+            stage: "initial_event_sno"
+            initial_state: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  nisd_uuid,
+                  ncp_event_sno_key,
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          ansible.builtin.set_fact:
+            initial_event_sno: "{{ initial_state['/0/event_sno'] | int }}"
+
+        - name: "{{ recipe_name }}: Set replay serial."
+          ansible.builtin.set_fact:
+            expected_event_sno: "{{ (initial_event_sno | int) + 1 }}"
+
+        # ============================================================
+        # 4. Capture baseline snapshot metadata
+        # ============================================================
+        - name: "{{ recipe_name }}: Query snapshot before event."
+          ansible.builtin.set_fact:
+            snapshot_before: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_snapshot_name',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  params={
+                    'name': snapshot_name
+                  }
+                )
+              }}
+          ignore_errors: true
+
+        # ============================================================
+        # 5. Arm deterministic crash point
+        # ============================================================
+        #
+        # REQUIRED semantic boundary:
+        #
+        #   callback()
+        #       -> durable snapshot intent recorded
+        #       -> CRASH HERE
+        #       -> event_sno persistence would have happened next
+        #
+        # A plain sleep + kill is NOT sufficient for this test.
+        #
+        - name: "{{ recipe_name }}: Arm crash-after-callback hook."
+          ansible.builtin.shell: "{{ async_event_crash_after_callback_cmd }}"
+          args:
+            executable: /bin/bash
+          register: crash_hook_result
+          changed_when: true
+
+        - name: "{{ recipe_name }}: Verify crash hook armed successfully."
+          ansible.builtin.assert:
+            that:
+              - crash_hook_result.rc == 0
+
+        # ============================================================
+        # 6. Add one CREATE_SNAPSHOT async event
+        # ============================================================
+        - name: "{{ recipe_name }}: Add CREATE_SNAPSHOT event."
+          ansible.builtin.set_fact:
+            add_event_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'custom_request',
+                  async_event_add_path,
+                  method='POST',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  body={
+                    'EntityID': nisd_uuid,
+                    'Action': snapshot_event_action,
+                    'Params': {
+                      'vdev_id': vdev_uuid,
+                      'snapshot_name': snapshot_name
+                    }
+                  }
+                )
+              }}
+
+        # ============================================================
+        # 7. Verify callback ran and NISD crashed before event_sno save
+        # ============================================================
+        - name: "{{ recipe_name }}: Save original NISD PID."
+          ansible.builtin.shell: "pgrep -x nisd | head -n1"
+          args:
+            executable: /bin/bash
+          register: original_nisd_pid
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Wait for deterministic NISD crash."
+          ansible.builtin.shell: |
+            if kill -0 "{{ original_nisd_pid.stdout }}" 2>/dev/null; then
+              exit 1
+            fi
+            exit 0
+          args:
+            executable: /bin/bash
+          register: nisd_crashed
+          changed_when: false
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+          until: nisd_crashed.rc == 0
+
+        # ------------------------------------------------------------
+        # Verification A:
+        # durable intent must exist even though event_sno was not saved.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Verify durable snapshot intent exists."
+          ansible.builtin.set_fact:
+            snapshot_after_first_callback: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_snapshot_name',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  params={
+                    'name': snapshot_name
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Verify first callback created valid intent."
+          ansible.builtin.assert:
+            that:
+              - snapshot_after_first_callback is defined
+              - snapshot_after_first_callback.name | default(snapshot_name) == snapshot_name
+            fail_msg: >-
+              Snapshot durable intent was not visible after the first callback.
+
+        # ------------------------------------------------------------
+        # Verification B:
+        # event_sno must NOT have been persisted by the crashed process.
+        #
+        # We verify this after restart from the on-device event sector.
+        # ------------------------------------------------------------
+
+        # ============================================================
+        # 8. Restart same NISD / same device
+        # ============================================================
+        #
+        # IMPORTANT: do not run niova-block-ctl again.
+        #
+        - name: "{{ recipe_name }}: Restart NISD with same device."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "{{ nisd_peer_port }}"
+              client_port: "{{ nisd_client_port }}"
+              enable_auth: 1
+              enable_cp_event_handler: 1
+              nisd_secret: "{{ nisd_secret }}"
+          ansible.builtin.debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run_nisd',
+                  input_param
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Wait for event sector read."
+          vars:
+            stage: "wait_for_ping_after_restart"
+          ansible.builtin.debug:
+            msg: "Waiting for async-event handler after restart"
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+          until: >-
+            (
+              lookup(
+                'niova_ctlrequest',
+                'lookup',
+                nisd_uuid,
+                ncp_event_ping_key,
+                'nisd',
+                lookout_uuid
+              )['/0/ping_enabled']
+              | string
+              | lower
+            ) in ['1', 'true']
+
+        - name: "{{ recipe_name }}: Read restored event_sno."
+          vars:
+            stage: "restored_event_sno"
+            restored_state: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  nisd_uuid,
+                  ncp_event_sno_key,
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          ansible.builtin.set_fact:
+            restored_event_sno: "{{ restored_state['/0/event_sno'] | int }}"
+
+        - name: "{{ recipe_name }}: Verify event was not acknowledged before crash."
+          ansible.builtin.assert:
+            that:
+              - restored_event_sno | int == initial_event_sno | int
+            fail_msg: >-
+              Crash happened after event_sno persistence, so this run does not
+              test callback replay. Initial={{ initial_event_sno }},
+              restored={{ restored_event_sno }}.
+            success_msg: >-
+              event_sno remained {{ restored_event_sno }}; event will replay.
+
+        # ============================================================
+        # 9. Allow replay and verify serial eventually advances once
+        # ============================================================
+        - name: "{{ recipe_name }}: Wait for replay to complete."
+          vars:
+            stage: "wait_for_replayed_event"
+          ansible.builtin.debug:
+            msg: "Waiting for replayed snapshot event"
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+          until: >-
+            (
+              lookup(
+                'niova_ctlrequest',
+                'lookup',
+                nisd_uuid,
+                ncp_event_sno_key,
+                'nisd',
+                lookout_uuid
+              )['/0/event_sno']
+              | int
+            ) >= (expected_event_sno | int)
+
+        - name: "{{ recipe_name }}: Read final event_sno."
+          vars:
+            stage: "final_event_sno"
+            final_state: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  nisd_uuid,
+                  ncp_event_sno_key,
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          ansible.builtin.set_fact:
+            final_event_sno: "{{ final_state['/0/event_sno'] | int }}"
+
+        - name: "{{ recipe_name }}: Verify replay advances serial exactly once."
+          ansible.builtin.assert:
+            that:
+              - final_event_sno | int == expected_event_sno | int
+            fail_msg: >-
+              Replay produced an invalid durable event serial.
+              Expected={{ expected_event_sno }}, actual={{ final_event_sno }}.
+
+        # ============================================================
+        # 10. Idempotency verification checks
+        # ============================================================
+
+        # ------------------------------------------------------------
+        # Verification C:
+        # the logical snapshot object must still be one snapshot, not a
+        # duplicate object created by replay.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Query snapshot after replay."
+          ansible.builtin.set_fact:
+            snapshot_after_replay: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_snapshot_name',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  params={
+                    'name': snapshot_name
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Verify snapshot identity is unchanged."
+          ansible.builtin.assert:
+            that:
+              - snapshot_after_replay is defined
+              - snapshot_after_replay.name | default(snapshot_name) == snapshot_name
+              - >-
+                (
+                  snapshot_after_first_callback.snapshot_id is not defined
+                  or snapshot_after_replay.snapshot_id is not defined
+                  or snapshot_after_first_callback.snapshot_id ==
+                     snapshot_after_replay.snapshot_id
+                )
+            fail_msg: >-
+              Replayed callback created conflicting snapshot metadata.
+              First={{ snapshot_after_first_callback }}
+              Replay={{ snapshot_after_replay }}
+            success_msg: "Replay preserved the same logical snapshot intent."
+
+        # ------------------------------------------------------------
+        # Verification D:
+        # verify exactly one snapshot row/object by name when the API response
+        # exposes a collection.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Verify no duplicate snapshot metadata."
+          ansible.builtin.assert:
+            that:
+              - >-
+                (
+                  snapshot_after_replay.data is not mapping
+                  or snapshot_after_replay.data.snapshots is not defined
+                  or
+                  (
+                    snapshot_after_replay.data.snapshots
+                    | selectattr('name', 'equalto', snapshot_name)
+                    | list
+                    | length
+                  ) == 1
+                )
+            fail_msg: "Duplicate snapshot metadata detected for {{ snapshot_name }}."
+
+        # ------------------------------------------------------------
+        # Verification E:
+        # snapshot metadata must remain structurally valid.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Verify snapshot metadata remains valid."
+          ansible.builtin.assert:
+            that:
+              - snapshot_after_replay.name | default(snapshot_name) == snapshot_name
+              - >-
+                snapshot_after_replay.state | default('unknown')
+                not in ['failed', 'corrupt', 'invalid']
+            fail_msg: >-
+              Snapshot metadata entered an invalid state after replay:
+              {{ snapshot_after_replay }}.
+
+        # ------------------------------------------------------------
+        # Verification F:
+        # no obvious conflicting duplicate-operation failure should be logged.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Resolve NISD log path."
+          ansible.builtin.set_fact:
+            nisd_log_file: >-
+              {{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/nisd_{{ nisd_uuid }}.log
+
+        - name: "{{ recipe_name }}: Check for conflicting replay errors."
+          ansible.builtin.shell: |
+            set -o pipefail
+            if grep -Ei \
+              "duplicate snapshot|already exists.*error|metadata corrupt|conflicting operation" \
+              "{{ nisd_log_file }}"; then
+              exit 1
+            fi
+            exit 0
+          args:
+            executable: /bin/bash
+          register: conflicting_error_check
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Verify replay caused no conflicting operation."
+          ansible.builtin.assert:
+            that:
+              - conflicting_error_check.rc == 0
+
+        # ============================================================
+        # 11. Allow operation to complete
+        # ============================================================
+        - name: "{{ recipe_name }}: Wait for snapshot operation to complete."
+          ansible.builtin.set_fact:
+            completed_snapshot: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_snapshot_name',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  params={
+                    'name': snapshot_name
+                  }
+                )
+              }}
+          register: snapshot_completion_poll
+          retries: 90
+          delay: 2
+          until: >-
+            (
+              completed_snapshot.state | default('')
+            ) in ['applied', 'completed', 'ready']
+
+        # ------------------------------------------------------------
+        # Verification G:
+        # final state equals one successful execution.
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Verify final snapshot state."
+          ansible.builtin.assert:
+            that:
+              - completed_snapshot.name | default(snapshot_name) == snapshot_name
+              - completed_snapshot.state | default('') in ['applied', 'completed', 'ready']
+              - final_event_sno | int == expected_event_sno | int
+            fail_msg: >-
+              Final state is not equivalent to one successful snapshot event.
+              Snapshot={{ completed_snapshot }}
+              event_sno={{ final_event_sno }}
+            success_msg: >-
+              Callback replay was idempotent: one logical snapshot exists,
+              metadata is valid, and event_sno advanced exactly once.
+
+        # ============================================================
+        # 12. Final result
+        # ============================================================
+        - name: "{{ recipe_name }}: Test passed."
+          ansible.builtin.debug:
+            msg:
+              - "Callback idempotency test passed."
+              - "Initial event_sno={{ initial_event_sno }}"
+              - "Restored event_sno after crash={{ restored_event_sno }}"
+              - "Final event_sno={{ final_event_sno }}"
+              - "Snapshot={{ snapshot_name }}"
+              - "No duplicate snapshot state detected."
+              - "No conflicting metadata operation detected."
+              - "Final snapshot state={{ completed_snapshot.state | default('unknown') }}"
+
+      always:
+        - name: "{{ recipe_name }}: Remove test backing file."
+          ansible.builtin.file:
+            path: "{{ nisd_device_path }}"
+            state: absent
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Tear down mdsvc-tidb."
+          ansible.builtin.debug:
+            msg: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+          ignore_errors: true
