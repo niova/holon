@@ -460,6 +460,114 @@ def _save_playground_state(cluster_params, state):
         json.dump(state, fp, indent=2, sort_keys=True)
     os.replace(tmp_file, state_file)
 
+def _discover_playground_data_dir(cluster_params):
+    """
+    Discover the root data directory for the current TiUP Playground.
+
+    Example:
+      --data-dir=/home/runner/.tiup/data/VXGEY4L/tikv-1/data
+
+    Returns:
+      /home/runner/.tiup/data/VXGEY4L
+    """
+    processes = _playground_component_processes(cluster_params)
+
+    for proc in processes:
+        cmd = proc.get("cmd") or []
+
+        for arg in cmd:
+            if not arg.startswith("--data-dir="):
+                continue
+
+            component_data_dir = arg.split("=", 1)[1]
+
+            component_dir = os.path.dirname(
+                os.path.realpath(component_data_dir)
+            )
+
+            playground_dir = os.path.dirname(component_dir)
+
+            return playground_dir
+
+    return None
+
+def _wait_for_playground_data_dir(cluster_params, timeout=120):
+    """
+    Wait until a Playground component exposes its data directory.
+    """
+    deadline = time.time() + timeout
+    last_error = None
+
+    while time.time() < deadline:
+        try:
+            data_dir = _discover_playground_data_dir(cluster_params)
+            if data_dir:
+                return data_dir
+        except Exception as exc:
+            last_error = str(exc)
+
+        time.sleep(1)
+
+    raise AnsibleError(
+        "Unable to determine TiUP Playground data directory within %ss. "
+        "Last error: %s"
+        % (timeout, last_error or "data directory not found")
+    )
+
+def _cleanup_playground_data(cluster_params):
+    """
+    Remove data for an ephemeral TiUP Playground.
+
+    Tagged playgrounds are intentionally preserved.
+    """
+
+    tag = cluster_params.get("playground_tag")
+
+    if tag:
+        return {
+            "status": "playground_data_preserved",
+            "tag": tag,
+        }
+
+    state = _load_playground_state(cluster_params)
+    playground_state = state.get("playground", {})
+
+    data_dir = playground_state.get("data_dir")
+
+    if not data_dir:
+        return {
+            "status": "playground_data_dir_unknown",
+        }
+
+    data_dir = os.path.realpath(data_dir)
+
+    tiup_data_root = os.path.realpath(
+        os.path.expanduser("~/.tiup/data")
+    )
+
+    # Only permit deletion of a child directory of ~/.tiup/data.
+    if (
+        data_dir == tiup_data_root
+        or not data_dir.startswith(tiup_data_root + os.sep)
+    ):
+        raise AnsibleError(
+            "Refusing to remove unsafe TiUP Playground directory: %s"
+            % data_dir
+        )
+
+    if not os.path.exists(data_dir):
+        return {
+            "status": "playground_data_already_removed",
+            "data_dir": data_dir,
+        }
+
+    shutil.rmtree(data_dir)
+
+    return {
+        "status": "playground_data_removed",
+        "data_dir": data_dir,
+    }
+
 def _component_role_from_cmd(cmd):
     joined = " ".join(cmd)
     if "tikv-server" in joined:
@@ -827,24 +935,28 @@ def _wait_for_mysql_ready(cluster_params, logf):
 
 def playground_setup(cluster_params):
     """Start a local multi-node cluster with `tiup playground`."""
+
     base_dir = cluster_params["base_dir"]
     raft_uuid = cluster_params["raft_uuid"]
+
     log_file = _playground_log_file(cluster_params)
     pid_file = _playground_pid_file(cluster_params)
     state_file = _playground_state_file(cluster_params)
 
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    # Clean up a playground left by a previous failed recipe invocation.
     old_pid = _read_pid_file(pid_file)
+
     if old_pid and _pid_exists(old_pid):
         raise AnsibleError(
             "A TiUP playground is already running for this recipe context "
-            "(pid=%d). Run teardown first. PID file: %s" % (old_pid, pid_file)
+            "(pid=%d). Run teardown first. PID file: %s"
+            % (old_pid, pid_file)
         )
 
     if os.path.exists(pid_file):
         os.remove(pid_file)
+
     if os.path.exists(state_file):
         os.remove(state_file)
 
@@ -853,12 +965,15 @@ def playground_setup(cluster_params):
     with open(log_file, "a") as logf:
         logf.write("\nSTARTING TIUP PLAYGROUND\n")
         logf.write("$ %s\n" % " ".join(cmd))
+
         if cluster_params.get("topo_file"):
             logf.write(
                 "NOTE: topo_file=%s is ignored by TiUP Playground. Use "
                 "playground_pd/playground_kv/playground_db and component "
-                "*.config parameters instead.\n" % cluster_params.get("topo_file")
+                "*.config parameters instead.\n"
+                % cluster_params.get("topo_file")
             )
+
         logf.flush()
 
         playground_proc = subprocess.Popen(
@@ -871,47 +986,107 @@ def playground_setup(cluster_params):
         with open(pid_file, "w") as fp:
             fp.write(str(playground_proc.pid))
 
-        logf.write("TiUP Playground launcher pid=%d\n" % playground_proc.pid)
+        logf.write(
+            "TiUP Playground launcher pid=%d\n"
+            % playground_proc.pid
+        )
         logf.flush()
 
     try:
-        # If TiUP exits immediately, fail early with the playground log path.
         time.sleep(2)
+
         if playground_proc.poll() is not None:
             raise AnsibleError(
                 "tiup playground exited early (rc=%s). Check log: %s"
                 % (playground_proc.returncode, log_file)
             )
 
+        #
+        # Record the Playground directory before the full cluster
+        # initialization completes, so failed setup can still clean it.
+        #
+        playground_data_dir = _wait_for_playground_data_dir(
+            cluster_params,
+            timeout=120,
+        )
+
+        state = _load_playground_state(cluster_params)
+
+        state["playground"] = {
+            "pid": playground_proc.pid,
+            "tag": cluster_params.get("playground_tag"),
+            "data_dir": playground_data_dir,
+        }
+
+        _save_playground_state(cluster_params, state)
+
         with open(log_file, "a") as logf:
+            logf.write(
+                "Recorded TiUP Playground data directory: %s\n"
+                % playground_data_dir
+            )
+            logf.flush()
+
             _wait_for_pd_ready(cluster_params, logf)
             _wait_for_tikv_quorum_ready(cluster_params, logf)
             _wait_for_mysql_ready(cluster_params, logf)
 
         workspace_dir = os.getenv("NIOVA_WORKSPACE")
         repo_path = "%s/mdsvc-tidb" % workspace_dir
-        base_url = cluster_params.get("api_base_url", "http://localhost:8081")
-        server_timeout = int(cluster_params.get("server_timeout", 120))
 
-        mysql_host = cluster_params.get("mysql_host", "127.0.0.1")
-        mysql_port = str(cluster_params.get("mysql_port", "4000"))
-        mysql_user = cluster_params.get("mysql_user", "root")
-        mysql_password = cluster_params.get("mysql_password", "")
+        base_url = cluster_params.get(
+            "api_base_url",
+            "http://localhost:8081",
+        )
+
+        server_timeout = int(
+            cluster_params.get("server_timeout", 120)
+        )
+
+        mysql_host = cluster_params.get(
+            "mysql_host",
+            "127.0.0.1",
+        )
+        mysql_port = str(
+            cluster_params.get("mysql_port", "4000")
+        )
+        mysql_user = cluster_params.get(
+            "mysql_user",
+            "root",
+        )
+        mysql_password = cluster_params.get(
+            "mysql_password",
+            "",
+        )
 
         server_result = start_server({
             "server_path": repo_path,
-            "pid_file": "%s/%s/mdsvc_server.pid" % (base_dir, raft_uuid),
+            "pid_file": "%s/%s/mdsvc_server.pid"
+            % (base_dir, raft_uuid),
             "mysql_host": mysql_host,
             "mysql_port": mysql_port,
             "mysql_user": mysql_user,
             "mysql_password": mysql_password,
             "base_url": base_url,
-            "disable_auth": cluster_params.get("disable_auth", False),
-            "jwt_secret": cluster_params.get("jwt_secret"),
-            "tenant_admin_username": cluster_params.get("tenant_admin_username"),
-            "tenant_admin_password": cluster_params.get("tenant_admin_password"),
-            "admin_default_username": cluster_params.get("admin_default_username"),
-            "admin_default_password": cluster_params.get("admin_default_password"),
+            "disable_auth": cluster_params.get(
+                "disable_auth",
+                False,
+            ),
+            "jwt_secret": cluster_params.get(
+                "jwt_secret"
+            ),
+            "tenant_admin_username": cluster_params.get(
+                "tenant_admin_username"
+            ),
+            "tenant_admin_password": cluster_params.get(
+                "tenant_admin_password"
+            ),
+            "admin_default_username": cluster_params.get(
+                "admin_default_username"
+            ),
+            "admin_default_password": cluster_params.get(
+                "admin_default_password"
+            ),
         })
 
         wait_for_server({
@@ -925,27 +1100,59 @@ def playground_setup(cluster_params):
         return {
             "status": "playground_setup_done",
             "playground_pid": playground_proc.pid,
-            "playground_tag": cluster_params.get("playground_tag"),
+            "playground_tag": cluster_params.get(
+                "playground_tag"
+            ),
+            "playground_data_dir": playground_data_dir,
             "server_pid": server_result["pid"],
             "log_file": log_file,
             "server_log_file": server_result["log_file"],
             "base_url": base_url,
-            "pd_count": int(cluster_params.get("playground_pd", 1)),
-            "tikv_count": int(cluster_params.get("playground_kv", 3)),
-            "tidb_count": int(cluster_params.get("playground_db", 1)),
+            "pd_count": int(
+                cluster_params.get("playground_pd", 1)
+            ),
+            "tikv_count": int(
+                cluster_params.get("playground_kv", 3)
+            ),
+            "tidb_count": int(
+                cluster_params.get("playground_db", 1)
+            ),
         }
 
     except Exception:
         try:
             stop_server({
-                "pid_file": "%s/%s/mdsvc_server.pid" % (base_dir, raft_uuid)
+                "pid_file": "%s/%s/mdsvc_server.pid"
+                % (base_dir, raft_uuid)
             })
         except Exception:
             pass
+
         try:
-            _stop_playground_process(cluster_params, force=True)
+            _stop_playground_process(
+                cluster_params,
+                force=True,
+            )
         except Exception:
             pass
+
+        #
+        # Important: setup failure must also clean the Playground
+        # directory, otherwise cluster_setup_done remains false and
+        # the recipe's normal teardown will never execute.
+        #
+        if not cluster_params.get("playground_tag"):
+            try:
+                _cleanup_playground_data(cluster_params)
+            except Exception:
+                pass
+
+        if os.path.exists(state_file):
+            try:
+                os.remove(state_file)
+            except OSError:
+                pass
+
         raise
 
 def _stop_tracked_restarted_nodes(cluster_params, logf):
@@ -980,6 +1187,14 @@ def _stop_tracked_restarted_nodes(cluster_params, logf):
             os.kill(int(pid), signal.SIGTERM)
             if not _wait_pid_exit(int(pid), timeout=10):
                 os.kill(int(pid), signal.SIGKILL)
+
+                if not _wait_pid_exit(int(pid), timeout=5):
+                    raise AnsibleError(
+                        "Restarted Playground node %s pid=%s "
+                        "did not exit after SIGKILL"
+                        % (node_id, pid)
+                    )
+                
         except ProcessLookupError:
             pass
         except Exception as exc:
@@ -988,111 +1203,100 @@ def _stop_tracked_restarted_nodes(cluster_params, logf):
                 % (node_id, pid, exc)
             )
 
-def _cleanup_playground_data(cluster_params):
-    """
-    Remove data created by an ephemeral TiUP Playground instance.
-
-    Tagged playgrounds are intentionally preserved.
-    """
-    tag = cluster_params.get("playground_tag")
-
-    if tag:
-        return {
-            "status": "playground_data_preserved",
-            "tag": tag,
-        }
-
-    state = _load_playground_state(cluster_params)
-    playground_state = state.get("playground", {})
-
-    data_dir = playground_state.get("data_dir")
-
-    if not data_dir:
-        return {
-            "status": "playground_data_dir_unknown",
-        }
-
-    data_dir = os.path.realpath(data_dir)
-
-    if not os.path.exists(data_dir):
-        return {
-            "status": "playground_data_already_removed",
-            "data_dir": data_dir,
-        }
-
-    # Safety check: never allow broad deletion.
-    if data_dir in ("/", "/home", os.path.expanduser("~")):
-        raise AnsibleError(
-            "Refusing to remove unsafe Playground data directory: %s"
-            % data_dir
-        )
-
-    import shutil
-    shutil.rmtree(data_dir)
-
-    return {
-        "status": "playground_data_removed",
-        "data_dir": data_dir,
-    }
-
 def _stop_playground_process(cluster_params, force=False):
     pid_file = _playground_pid_file(cluster_params)
     pid = _read_pid_file(pid_file)
+
     log_file = _playground_log_file(cluster_params)
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     if not pid or not _pid_exists(pid):
         if os.path.exists(pid_file):
             os.remove(pid_file)
-        return {"status": "playground_not_running"}
+
+        return {
+            "status": "playground_not_running",
+        }
 
     with open(log_file, "a") as logf:
-        _stop_tracked_restarted_nodes(cluster_params, logf)
+        _stop_tracked_restarted_nodes(
+            cluster_params,
+            logf,
+        )
 
         try:
             pgid = os.getpgid(pid)
+
             logf.write(
-                "Stopping TiUP Playground pid=%d pgid=%d\n" % (pid, pgid)
+                "Stopping TiUP Playground pid=%d pgid=%d\n"
+                % (pid, pgid)
             )
-            os.killpg(pgid, signal.SIGTERM)
+            logf.flush()
+
+            os.killpg(
+                pgid,
+                signal.SIGTERM,
+            )
 
             if not _wait_pid_exit(pid, timeout=20):
-                if force:
-                    logf.write(
-                        "Playground did not stop after SIGTERM; sending SIGKILL.\n"
-                    )
-                    if not _wait_pid_exit(pid, timeout=5):
-                        raise AnsibleError(
-                            "TiUP Playground pid=%d did not exit after SIGKILL" % pid)
-                else:
+                if not force:
                     raise AnsibleError(
-                        "TiUP playground pid=%d did not stop within timeout" % pid
+                        "TiUP Playground pid=%d did not stop "
+                        "within timeout"
+                        % pid
                     )
+
+                logf.write(
+                    "Playground did not stop after SIGTERM; "
+                    "sending SIGKILL.\n"
+                )
+                logf.flush()
+
+                os.killpg(
+                    pgid,
+                    signal.SIGKILL,
+                )
+
+                if not _wait_pid_exit(pid, timeout=5):
+                    raise AnsibleError(
+                        "TiUP Playground pid=%d did not exit "
+                        "after SIGKILL"
+                        % pid
+                    )
+
         except ProcessLookupError:
             pass
-        finally:
-            if os.path.exists(pid_file):
-                os.remove(pid_file)
 
-    return {"status": "playground_stopped", "pid": pid}
+    if os.path.exists(pid_file):
+        os.remove(pid_file)
 
+    return {
+        "status": "playground_stopped",
+        "pid": pid,
+    }
 
 def playground_teardown(cluster_params):
-    """Stop mdsvc-api, stop Playground, and remove ephemeral Playground data."""
+    """
+    Stop mdsvc-api, Playground processes,
+    and ephemeral Playground data.
+    """
 
     base_dir = cluster_params["base_dir"]
     raft_uuid = cluster_params["raft_uuid"]
 
-    pid_dir = "%s/%s" % (base_dir, raft_uuid)
-    log_file = _playground_log_file(cluster_params)
+    pid_dir = "%s/%s" % (
+        base_dir,
+        raft_uuid,
+    )
 
     server_status = stop_server({
-        "pid_file": "%s/mdsvc_server.pid" % pid_dir
+        "pid_file": "%s/mdsvc_server.pid"
+        % pid_dir
     })
 
     playground_status = _stop_playground_process(
         cluster_params,
-        force=True
+        force=True,
     )
 
     tag = cluster_params.get("playground_tag")
@@ -1103,13 +1307,27 @@ def playground_teardown(cluster_params):
             "tag": tag,
         }
 
-        with open(log_file, "a") as logf:
-            logf.write(
-                "Playground tag %s was used; tagged TiUP data is "
-                "intentionally left in place.\n" % tag
-            )
     else:
-        data_status = _cleanup_playground_data(cluster_params)
+        data_status = _cleanup_playground_data(
+            cluster_params
+        )
+
+        if data_status["status"] not in (
+            "playground_data_removed",
+            "playground_data_already_removed",
+        ):
+            raise AnsibleError(
+                "TiUP Playground stopped but "
+                "data cleanup failed: %s"
+                % data_status
+            )
+
+    state_file = _playground_state_file(
+        cluster_params
+    )
+
+    if os.path.exists(state_file):
+        os.remove(state_file)
 
     return {
         "status": "playground_teardown_done",
