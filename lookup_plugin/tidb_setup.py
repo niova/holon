@@ -832,13 +832,6 @@ def playground_setup(cluster_params):
     log_file = _playground_log_file(cluster_params)
     pid_file = _playground_pid_file(cluster_params)
     state_file = _playground_state_file(cluster_params)
-    state = _load_playground_state(cluster_params)
-    state["playground"] = {
-        "pid": playground_proc.pid,
-        "tag": cluster_params.get("playground_tag"),
-        "data_dir": playground_data_dir,
-    }
-    _save_playground_state(cluster_params, state)
 
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
@@ -849,12 +842,6 @@ def playground_setup(cluster_params):
             "A TiUP playground is already running for this recipe context "
             "(pid=%d). Run teardown first. PID file: %s" % (old_pid, pid_file)
         )
-
-    # Previous process is dead, but its data may remain.
-    old_state = _load_playground_state(cluster_params)
-
-    if (old_state and not cluster_params.get("playground_tag")):
-        _cleanup_playground_data(cluster_params)
 
     if os.path.exists(pid_file):
         os.remove(pid_file)
