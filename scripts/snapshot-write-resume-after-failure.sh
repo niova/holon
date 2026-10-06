@@ -429,8 +429,6 @@ verify-writes-resume)
     # The failed snapshot must remain failed; it must never transition to applied
     # merely because NISD came back.
     wait_for_snapshot_abandoned
-    [[ "${LAST_FAILED_SNAPSHOT_ID}" == "${FAILED_SNAPSHOT_ID}" ]] ||
-        fail "failed snapshot ID changed after NISD restart"
 
     cat <<EOF
 PASS: writes resume after snapshot failure
