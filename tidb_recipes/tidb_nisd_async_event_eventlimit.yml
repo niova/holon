@@ -1,0 +1,356 @@
+- name: "tidb_nisd_async_event_eventlimit.yml"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    recipe_name: "tidb_nisd_async_event_eventlimit"
+
+    api_base_url: "http://localhost:8081"
+    cp_username: "admin"
+    cp_password: "admin"
+
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+
+    # Must match the NISD present in the infrastructure payload.
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+
+    # Service secret used by /api/heartbeat.
+    nisd_secret: >-
+      {{
+        lookup('env', 'NIOVA_NISD_SECRET')
+        | default('Nisd-secret', true)
+      }}
+
+    # TEST event type.
+    async_event_action: 250
+
+    # Branch-dependent test endpoint. Override with -e if needed.
+    async_event_add_path: "/api/test/event"
+
+    # Heartbeat contract under test.
+    heartbeat_event_limit: 2
+
+    event_markers:
+      - "event-1"
+      - "event-2"
+      - "event-3"
+      - "event-4"
+      - "event-5"
+
+  tasks:
+    - block:
+
+        # ------------------------------------------------------------
+        # 1. Start Control Plane
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Check application type."
+          ansible.builtin.assert:
+            that:
+              - app_type == "tidb"
+            fail_msg: "This recipe must run with app_type=tidb."
+
+        - name: "{{ recipe_name }}: Start mdsvc-tidb."
+          ansible.builtin.set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+
+        - name: "{{ recipe_name }}: Wait for Control Plane."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code:
+              - 200
+              - 301
+              - 302
+            timeout: 10
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        # ------------------------------------------------------------
+        # 2. Login and create infrastructure
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Login to Control Plane."
+          ansible.builtin.set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username=cp_username,
+                  password=cp_password
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          ansible.builtin.set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=infra_payload
+                )
+              }}
+
+        # ------------------------------------------------------------
+        # 3. Add five pending events
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Add five TEST async events."
+          ansible.builtin.set_fact:
+            add_event_results: >-
+              {{
+                add_event_results | default([]) +
+                [
+                  lookup(
+                    'tidb_api',
+                    'custom_request',
+                    async_event_add_path,
+                    method='POST',
+                    base_url=api_base_url,
+                    token=login_result.access_token,
+                    body={
+                      'EntityID': nisd_uuid,
+                      'Action': async_event_action,
+                      'Params': {
+                        'marker': item
+                      }
+                    }
+                  )
+                ]
+              }}
+          loop: "{{ event_markers }}"
+          loop_control:
+            label: "{{ item }}"
+
+        - name: "{{ recipe_name }}: Show queued event responses."
+          ansible.builtin.debug:
+            var: add_event_results
+
+        # ------------------------------------------------------------
+        # IMPORTANT
+        # ------------------------------------------------------------
+        #
+        # This test intentionally drives /api/heartbeat directly instead of
+        # waiting for the background NISD heartbeat.
+        #
+        # Reason:
+        # event_sno polling cannot identify heartbeat boundaries. If two
+        # heartbeats occur between observations, event_sno may jump from
+        # 0 -> 4. That would not tell us whether each heartbeat returned at
+        # most two events.
+        #
+        # By issuing one heartbeat request at a time, the response itself
+        # gives a deterministic heartbeat boundary.
+        #
+        # ------------------------------------------------------------
+
+        # ------------------------------------------------------------
+        # 4. Heartbeat 1: Ack=0, EventLimit=2
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Send first heartbeat."
+          ansible.builtin.set_fact:
+            heartbeat_1: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'heartbeat',
+                  base_url=api_base_url,
+                  auth_mode='service',
+                  service_secret=nisd_secret,
+                  body={
+                    'EntityID': nisd_uuid,
+                    'AckEventSerialNo': 0,
+                    'EventLimit': heartbeat_event_limit
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Extract first heartbeat events."
+          ansible.builtin.set_fact:
+            heartbeat_1_events: >-
+              {{
+                heartbeat_1.data.payload.events
+                | default(
+                    heartbeat_1.data.data.payload.events
+                    | default([])
+                  )
+              }}
+
+        - name: "{{ recipe_name }}: Verify first heartbeat returns exactly two events."
+          ansible.builtin.assert:
+            that:
+              - heartbeat_1_events | length == 2
+              - heartbeat_1_events[0].EventSerialNo | int == 1
+              - heartbeat_1_events[1].EventSerialNo | int == 2
+            fail_msg: >-
+              First heartbeat did not return exactly events 1 and 2.
+              Response={{ heartbeat_1 }}
+            success_msg: "Heartbeat 1 returned events 1 and 2 only."
+
+        # ------------------------------------------------------------
+        # 5. Heartbeat 2: Ack=2, EventLimit=2
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Send second heartbeat."
+          ansible.builtin.set_fact:
+            heartbeat_2: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'heartbeat',
+                  base_url=api_base_url,
+                  auth_mode='service',
+                  service_secret=nisd_secret,
+                  body={
+                    'EntityID': nisd_uuid,
+                    'AckEventSerialNo': 2,
+                    'EventLimit': heartbeat_event_limit
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Extract second heartbeat events."
+          ansible.builtin.set_fact:
+            heartbeat_2_events: >-
+              {{
+                heartbeat_2.data.payload.events
+                | default(
+                    heartbeat_2.data.data.payload.events
+                    | default([])
+                  )
+              }}
+
+        - name: "{{ recipe_name }}: Verify second heartbeat returns exactly two events."
+          ansible.builtin.assert:
+            that:
+              - heartbeat_2_events | length == 2
+              - heartbeat_2_events[0].EventSerialNo | int == 3
+              - heartbeat_2_events[1].EventSerialNo | int == 4
+            fail_msg: >-
+              Second heartbeat did not return exactly events 3 and 4.
+              Response={{ heartbeat_2 }}
+            success_msg: "Heartbeat 2 returned events 3 and 4 only."
+
+        # ------------------------------------------------------------
+        # 6. Heartbeat 3: Ack=4, EventLimit=2
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Send third heartbeat."
+          ansible.builtin.set_fact:
+            heartbeat_3: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'heartbeat',
+                  base_url=api_base_url,
+                  auth_mode='service',
+                  service_secret=nisd_secret,
+                  body={
+                    'EntityID': nisd_uuid,
+                    'AckEventSerialNo': 4,
+                    'EventLimit': heartbeat_event_limit
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Extract third heartbeat events."
+          ansible.builtin.set_fact:
+            heartbeat_3_events: >-
+              {{
+                heartbeat_3.data.payload.events
+                | default(
+                    heartbeat_3.data.data.payload.events
+                    | default([])
+                  )
+              }}
+
+        - name: "{{ recipe_name }}: Verify third heartbeat returns the final event only."
+          ansible.builtin.assert:
+            that:
+              - heartbeat_3_events | length == 1
+              - heartbeat_3_events[0].EventSerialNo | int == 5
+            fail_msg: >-
+              Third heartbeat did not return event 5 only.
+              Response={{ heartbeat_3 }}
+            success_msg: "Heartbeat 3 returned event 5 only."
+
+        # ------------------------------------------------------------
+        # 7. Final ACK / queue drain
+        # ------------------------------------------------------------
+        #
+        # Send AckEventSerialNo=5 once more. The response should contain no
+        # remaining events.
+        #
+        - name: "{{ recipe_name }}: Send final ACK heartbeat."
+          ansible.builtin.set_fact:
+            heartbeat_final: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'heartbeat',
+                  base_url=api_base_url,
+                  auth_mode='service',
+                  service_secret=nisd_secret,
+                  body={
+                    'EntityID': nisd_uuid,
+                    'AckEventSerialNo': 5,
+                    'EventLimit': heartbeat_event_limit
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Extract final heartbeat events."
+          ansible.builtin.set_fact:
+            heartbeat_final_events: >-
+              {{
+                heartbeat_final.data.payload.events
+                | default(
+                    heartbeat_final.data.data.payload.events
+                    | default([])
+                  )
+              }}
+
+        - name: "{{ recipe_name }}: Verify no pending events remain."
+          ansible.builtin.assert:
+            that:
+              - heartbeat_final_events | length == 0
+            fail_msg: >-
+              Events remain after AckEventSerialNo=5.
+              Response={{ heartbeat_final }}
+            success_msg: "All five events were acknowledged."
+
+        # ------------------------------------------------------------
+        # 8. Verify EventLimit behavior
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Verify EventLimit behavior."
+          ansible.builtin.assert:
+            that:
+              - heartbeat_1_events | length <= heartbeat_event_limit | int
+              - heartbeat_2_events | length <= heartbeat_event_limit | int
+              - heartbeat_3_events | length <= heartbeat_event_limit | int
+            fail_msg: >-
+              One or more heartbeat responses exceeded EventLimit=2.
+            success_msg: >-
+              EventLimit=2 verified: heartbeat response sizes were
+              {{ heartbeat_1_events | length }},
+              {{ heartbeat_2_events | length }},
+              {{ heartbeat_3_events | length }}.
+
+        - name: "{{ recipe_name }}: Test passed."
+          ansible.builtin.debug:
+            msg:
+              - "EventLimit=2 test passed."
+              - "Heartbeat 1: events 1,2"
+              - "Heartbeat 2: events 3,4"
+              - "Heartbeat 3: event 5"
+              - "Response counts: 2 -> 2 -> 1"
+              - "Final AckEventSerialNo=5 leaves no pending events."
+
+      always:
+        - name: "{{ recipe_name }}: Tear down mdsvc-tidb."
+          ansible.builtin.debug:
+            msg: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+          ignore_errors: true
