@@ -7,14 +7,15 @@
 #   baseline
 #       Verify the existing live client can write/read before the fault.
 #
-#   expect-snapshot-failure
-#       Run while NISD is DOWN. Snapshot creation must return a real failure
-#       (not merely time out), and CP must report state=failed.
+# expect-snapshot-failure
+#     Run while NISD is DOWN. Snapshot creation must fail normally.
+#     CP is expected to retain the snapshot in pending state until
+#     the VDEV is remounted.
 #
-#   verify-writes-resume
-#       Run after the SAME NISD is restarted on the SAME backing storage.
-#       The existing live client must recover, accept a new write, and read it
-#       back correctly.
+# verify-writes-resume
+#     Run after NISD is restarted and the VDEV is remounted.
+#     The failed pending snapshot must transition to abandoned,
+#     and normal I/O must resume.
 #
 
 set -Eeuo pipefail
@@ -218,7 +219,7 @@ snapshot_create_must_fail()
     log "Snapshot command reported expected failure; rc=${rc}"
 }
 
-wait_for_snapshot_failed()
+wait_for_snapshot_pending()
 {
     local deadline response state cp_id cp_name cp_vdev
 
@@ -226,8 +227,11 @@ wait_for_snapshot_failed()
     deadline=$((SECONDS + SNAPSHOT_TIMEOUT))
 
     while (( SECONDS < deadline )); do
-        if response="$(cp_get_snapshot "${SNAPSHOT_NAME}" 2>"${TEST_LOGDIR}/failed-snapshot-cp.err")"; then
-            printf '%s\n' "${response}" > "${TEST_LOGDIR}/failed-snapshot-cp.json"
+        if response="$(cp_get_snapshot "${SNAPSHOT_NAME}" \
+            2>"${TEST_LOGDIR}/pending-snapshot-cp.err")"
+        then
+            printf '%s\n' "${response}" > \
+                "${TEST_LOGDIR}/pending-snapshot-cp.json"
 
             state="$(printf '%s' "${response}" | json_get_field state || true)"
             cp_id="$(printf '%s' "${response}" | json_get_field snapshot_id || true)"
@@ -240,15 +244,15 @@ wait_for_snapshot_failed()
                 fail "failed snapshot was incorrectly recorded as applied"
             fi
 
-            if [[ "${state}" == "failed" ]]; then
+            if [[ "${state}" == "pending" ]]; then
                 [[ "${cp_id}" =~ ^[1-9][0-9]*$ ]] ||
-                    fail "failed snapshot has invalid snapshot ID '${cp_id}'"
+                    fail "pending snapshot has invalid snapshot ID '${cp_id}'"
 
                 [[ -z "${cp_name}" || "${cp_name}" == "${SNAPSHOT_NAME}" ]] ||
-                    fail "snapshot name mismatch: expected ${SNAPSHOT_NAME}, got ${cp_name}"
+                    fail "snapshot name mismatch"
 
                 [[ -z "${cp_vdev}" || "${cp_vdev}" == "${VDEV_UUID}" ]] ||
-                    fail "snapshot vdev mismatch: expected ${VDEV_UUID}, got ${cp_vdev}"
+                    fail "snapshot vdev mismatch"
 
                 LAST_FAILED_SNAPSHOT_ID="${cp_id}"
                 return 0
@@ -258,7 +262,44 @@ wait_for_snapshot_failed()
         sleep 0.5
     done
 
-    fail "CP did not report snapshot state=failed within ${SNAPSHOT_TIMEOUT}s"
+    fail "CP did not report snapshot state=pending within ${SNAPSHOT_TIMEOUT}s"
+}
+
+wait_for_snapshot_abandoned()
+{
+    local deadline response state cp_id
+
+    cp_login
+    deadline=$((SECONDS + SNAPSHOT_TIMEOUT))
+
+    while (( SECONDS < deadline )); do
+        if response="$(cp_get_snapshot "${SNAPSHOT_NAME}" \
+            2>"${TEST_LOGDIR}/abandoned-snapshot-cp.err")"
+        then
+            printf '%s\n' "${response}" > \
+                "${TEST_LOGDIR}/abandoned-snapshot-cp.json"
+
+            state="$(printf '%s' "${response}" | json_get_field state || true)"
+            cp_id="$(printf '%s' "${response}" | json_get_field snapshot_id || true)"
+
+            log "CP lookup after VDEV remount: id=${cp_id:-unknown} state=${state:-unknown}"
+
+            if [[ "${state}" == "applied" ]]; then
+                fail "failed snapshot became applied after VDEV remount"
+            fi
+
+            if [[ "${state}" == "abandoned" ]]; then
+                [[ "${cp_id}" == "${FAILED_SNAPSHOT_ID}" ]] ||
+                    fail "snapshot ID changed after VDEV remount"
+
+                return 0
+            fi
+        fi
+
+        sleep 0.5
+    done
+
+    fail "snapshot did not transition to abandoned after VDEV remount"
 }
 
 require_command timeout
@@ -318,15 +359,15 @@ expect-snapshot-failure)
         fail "snapshot name changed between phases"
 
     snapshot_create_must_fail
-    wait_for_snapshot_failed
+    wait_for_snapshot_pending
 
     update_failed_snapshot_id "${LAST_FAILED_SNAPSHOT_ID}"
 
     cat <<EOF
-PASS: snapshot failed as expected
+PASS: snapshot failure recorded as pending
   snapshot:    ${SNAPSHOT_NAME}
   snapshot id: ${LAST_FAILED_SNAPSHOT_ID}
-  CP state:    failed
+  CP state:    pending
 EOF
     ;;
 
@@ -348,7 +389,7 @@ verify-writes-resume)
 
     # NISD has been restarted by Ansible. Do NOT restart the live ublk/nclient:
     # this test needs the same client instance that experienced snapshot failure.
-    wait_for_live_recovery
+    wait_for_snapshot_abandoned
 
     # Critical assertion: this write must complete in a bounded time. If the
     # snapshot failure path forgot to release the write barrier, it will time out.
@@ -387,7 +428,7 @@ verify-writes-resume)
 
     # The failed snapshot must remain failed; it must never transition to applied
     # merely because NISD came back.
-    wait_for_snapshot_failed
+    wait_for_snapshot_abandoned
     [[ "${LAST_FAILED_SNAPSHOT_ID}" == "${FAILED_SNAPSHOT_ID}" ]] ||
         fail "failed snapshot ID changed after NISD restart"
 
@@ -395,7 +436,7 @@ verify-writes-resume)
 PASS: writes resume after snapshot failure
   snapshot:         ${SNAPSHOT_NAME}
   snapshot id:      ${FAILED_SNAPSHOT_ID}
-  snapshot state:   failed
+  snapshot state:   abandoned
   subsequent write: success
   subsequent read:  correct
   baseline hash:    ${A_HASH}
