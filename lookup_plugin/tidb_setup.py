@@ -318,6 +318,7 @@ def manual_setup(cluster_params):
         "tenant_admin_password": cluster_params.get("tenant_admin_password"),
         "admin_default_username": cluster_params.get("admin_default_username"),
         "admin_default_password": cluster_params.get("admin_default_password"),
+        "server_env": cluster_params.get("server_env",{},),
     })
 
     wait_for_server({
@@ -910,6 +911,7 @@ def playground_setup(cluster_params):
             "tenant_admin_password": cluster_params.get("tenant_admin_password"),
             "admin_default_username": cluster_params.get("admin_default_username"),
             "admin_default_password": cluster_params.get("admin_default_password"),
+            "server_env": cluster_params.get("server_env",{},),
         })
 
         wait_for_server({
@@ -1654,6 +1656,19 @@ def start_server(params):
         "MDSVC_API_URL": str(params["base_url"]),
     })
 
+    extra_env = params.get("server_env") or {}
+
+    if not isinstance(extra_env, dict):
+        raise AnsibleError(
+            "server_env must be a dictionary"
+        )
+
+    for key, value in extra_env.items():
+        if value is None:
+            continue
+
+        env[str(key)] = str(value)
+
     if params.get("disable_auth"):
         env["DISABLE_AUTH"] = "true"
     if params.get("jwt_secret"):
@@ -1747,6 +1762,70 @@ def stop_server(params):
 
     return {"status": "server_stopped", "pid": pid}
 
+def wait_server_log(cluster_params):
+    """
+    Wait until a string appears in the mdsvc server log.
+
+    Useful for async-event recipes when the CP logs incoming
+    heartbeat requests or acknowledgements.
+    """
+
+    pattern = cluster_params.get("log_pattern")
+
+    if not pattern:
+        raise AnsibleError(
+            "cluster_params['log_pattern'] is required"
+        )
+
+    timeout = int(
+        cluster_params.get(
+            "log_wait_timeout",
+            30,
+        )
+    )
+
+    workspace_dir = os.getenv("NIOVA_WORKSPACE")
+
+    if not workspace_dir:
+        raise AnsibleError(
+            "NIOVA_WORKSPACE is not set"
+        )
+
+    log_file = os.path.join(
+        workspace_dir,
+        "mdsvc-tidb",
+        "mdsvc.log",
+    )
+
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        if os.path.exists(log_file):
+            try:
+                with open(
+                    log_file,
+                    "r",
+                    errors="replace",
+                ) as fp:
+                    contents = fp.read()
+
+                if pattern in contents:
+                    return {
+                        "status": "pattern_found",
+                        "pattern": pattern,
+                        "log_file": log_file,
+                    }
+
+            except OSError:
+                pass
+
+        time.sleep(0.5)
+
+    raise AnsibleError(
+        "Timed out waiting for %r in %s"
+        % (pattern, log_file)
+    )
+
 # =========================================================
 # Health check helper
 # =========================================================
@@ -1824,6 +1903,8 @@ class LookupModule(LookupBase):
             result = playground_setup(cluster_params)
         elif action == "playground_teardown":
             result = playground_teardown(cluster_params)
+        elif action == "wait_server_log":
+            result = wait_server_log(cluster_params)
         elif action == "list_playground_nodes":
             result = list_playground_nodes(cluster_params)
         elif action == "node_stop":
