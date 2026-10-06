@@ -1087,6 +1087,10 @@ def playground_setup(cluster_params):
             "admin_default_password": cluster_params.get(
                 "admin_default_password"
             ),
+            "server_env": cluster_params.get(
+                "server_env",
+                {},
+            ),
         })
 
         wait_for_server({
@@ -1917,40 +1921,103 @@ def _tail_file(path, max_lines=80):
 
 def start_server(params):
     """Launch mdsvc-api as a detached background process and detect early exit."""
+
     server_path = params["server_path"]
     pid_file = params["pid_file"]
 
     if not os.path.isdir(server_path):
-        raise AnsibleError("mdsvc server_path does not exist: %s" % server_path)
+        raise AnsibleError(
+            "mdsvc server_path does not exist: %s" % server_path
+        )
+
     if not os.path.exists(os.path.join(server_path, "go.mod")):
-        raise AnsibleError("mdsvc server_path has no go.mod: %s" % server_path)
+        raise AnsibleError(
+            "mdsvc server_path has no go.mod: %s" % server_path
+        )
 
     log_file = os.path.join(server_path, "mdsvc.log")
     fp = open(log_file, "a")
 
+    mysql_host = str(params["mysql_host"])
+    mysql_port = str(params["mysql_port"])
+    mysql_user = str(params["mysql_user"])
+    mysql_password = str(params.get("mysql_password", ""))
+
+    if mysql_password:
+        dsn = "%s:%s@tcp(%s:%s)/" % (
+            mysql_user,
+            mysql_password,
+            mysql_host,
+            mysql_port,
+        )
+    else:
+        dsn = "%s@tcp(%s:%s)/" % (
+            mysql_user,
+            mysql_host,
+            mysql_port,
+        )
+
     env = os.environ.copy()
+
     env.update({
-        "MDSVC_MYSQL_HOST": str(params["mysql_host"]),
-        "MDSVC_MYSQL_PORT": str(params["mysql_port"]),
-        "MDSVC_MYSQL_USER": str(params["mysql_user"]),
-        "MDSVC_MYSQL_PASSWORD": str(params["mysql_password"]),
+        "MDSVC_DSN": dsn,
+        "MDSVC_LISTEN": ":8081",
+
+        # Keep these if older code paths still use them.
+        "MDSVC_MYSQL_HOST": mysql_host,
+        "MDSVC_MYSQL_PORT": mysql_port,
+        "MDSVC_MYSQL_USER": mysql_user,
+        "MDSVC_MYSQL_PASSWORD": mysql_password,
         "MDSVC_API_URL": str(params["base_url"]),
     })
 
+    extra_env = params.get("server_env") or {}
+
+    if not isinstance(extra_env, dict):
+        raise AnsibleError(
+            "server_env must be a dictionary"
+        )
+
+    for key, value in extra_env.items():
+        if value is None:
+            continue
+
+        env[str(key)] = str(value)
+
     if params.get("disable_auth"):
         env["DISABLE_AUTH"] = "true"
-    if params.get("jwt_secret"):
-        env["JWT_SECRET"] = str(params["jwt_secret"])
-    if params.get("tenant_admin_username"):
-        env["TENANT_ADMIN_USERNAME"] = str(params["tenant_admin_username"])
-    if params.get("tenant_admin_password"):
-        env["TENANT_ADMIN_PASSWORD"] = str(params["tenant_admin_password"])
-    if params.get("admin_default_username"):
-        env["ADMIN_DEFAULT_USERNAME"] = str(params["admin_default_username"])
-    if params.get("admin_default_password"):
-        env["ADMIN_DEFAULT_PASSWORD"] = str(params["admin_default_password"])
 
-    command = params.get("server_command") or ["go", "run", "./cmd/server"]
+    if params.get("jwt_secret"):
+        env["JWT_SECRET"] = str(
+            params["jwt_secret"]
+        )
+
+    if params.get("tenant_admin_username"):
+        env["TENANT_ADMIN_USERNAME"] = str(
+            params["tenant_admin_username"]
+        )
+
+    if params.get("tenant_admin_password"):
+        env["TENANT_ADMIN_PASSWORD"] = str(
+            params["tenant_admin_password"]
+        )
+
+    if params.get("admin_default_username"):
+        env["ADMIN_DEFAULT_USERNAME"] = str(
+            params["admin_default_username"]
+        )
+
+    if params.get("admin_default_password"):
+        env["ADMIN_DEFAULT_PASSWORD"] = str(
+            params["admin_default_password"]
+        )
+
+    command = params.get("server_command") or [
+        "go",
+        "run",
+        "./cmd/server",
+    ]
+
     if isinstance(command, str):
         command = command.split()
 
@@ -1958,11 +2025,16 @@ def start_server(params):
     fp.write("cwd=%s\n" % server_path)
     fp.write("command=%s\n" % " ".join(command))
     fp.write(
-        "mysql=%s:%s user=%s api=%s disable_auth=%s\n"
+        "MDSVC_DSN=%s\n"
+        % dsn
+    )
+    fp.write(
+        "MDSVC_LISTEN=%s\n"
+        % env["MDSVC_LISTEN"]
+    )
+    fp.write(
+        "api=%s disable_auth=%s\n"
         % (
-            params["mysql_host"],
-            params["mysql_port"],
-            params["mysql_user"],
             params["base_url"],
             bool(params.get("disable_auth")),
         )
@@ -1975,29 +2047,53 @@ def start_server(params):
         stdout=fp,
         stderr=fp,
         env=env,
-        preexec_fn=os.setsid,
+        start_new_session=True,
     )
 
-    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
+    os.makedirs(
+        os.path.dirname(pid_file),
+        exist_ok=True,
+    )
+
     with open(pid_file, "w") as pidf:
         pidf.write(str(proc.pid))
 
-    fp.write("mdsvc-api launcher pid=%d\n" % proc.pid)
+    fp.write(
+        "mdsvc-api launcher pid=%d\n"
+        % proc.pid
+    )
     fp.flush()
 
-    time.sleep(float(params.get("server_early_exit_check", 2)))
+    time.sleep(
+        float(
+            params.get(
+                "server_early_exit_check",
+                2,
+            )
+        )
+    )
+
     rc = proc.poll()
+
     if rc is not None:
         fp.close()
+
         if os.path.exists(pid_file):
             os.remove(pid_file)
+
         raise AnsibleError(
-            "mdsvc-api exited before becoming ready (rc=%s). Log: %s\n"
+            "mdsvc-api exited before becoming ready "
+            "(rc=%s). Log: %s\n"
             "---- mdsvc.log tail ----\n%s"
-            % (rc, log_file, _tail_file(log_file))
+            % (
+                rc,
+                log_file,
+                _tail_file(log_file),
+            )
         )
 
     fp.close()
+
     return {
         "status": "server_started",
         "pid": proc.pid,
