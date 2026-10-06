@@ -612,6 +612,21 @@
           when:
             teardown_status is defined
 
+        - name: "{{ recipe_name }}: Verify Playground data cleanup."
+          assert:
+            that:
+              - teardown_status.status == 'playground_teardown_done'
+              - teardown_status.playground.status in
+                ['playground_stopped', 'playground_not_running']
+              - teardown_status.data_cleanup.status in
+                ['playground_data_removed', 'playground_data_already_removed']
+            fail_msg: >-
+              TiUP Playground teardown did not completely clean the test environment:
+              {{ teardown_status }}
+          when:
+            - teardown_status is defined
+            - playground_cluster_params.playground_tag is none
+
         - name: "{{ recipe_name }}: Restore original cluster parameters."
           set_fact:
             ClusterParams: "{{ original_cluster_params }}"

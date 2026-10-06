@@ -60,6 +60,7 @@ import signal
 import subprocess
 import requests
 import time
+import shutil
 
 # =========================================================
 # Shared logging helpers
@@ -831,6 +832,13 @@ def playground_setup(cluster_params):
     log_file = _playground_log_file(cluster_params)
     pid_file = _playground_pid_file(cluster_params)
     state_file = _playground_state_file(cluster_params)
+    state = _load_playground_state(cluster_params)
+    state["playground"] = {
+        "pid": playground_proc.pid,
+        "tag": cluster_params.get("playground_tag"),
+        "data_dir": playground_data_dir,
+    }
+    _save_playground_state(cluster_params, state)
 
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
@@ -841,6 +849,13 @@ def playground_setup(cluster_params):
             "A TiUP playground is already running for this recipe context "
             "(pid=%d). Run teardown first. PID file: %s" % (old_pid, pid_file)
         )
+
+    # Previous process is dead, but its data may remain.
+    old_state = _load_playground_state(cluster_params)
+
+    if (old_state and not cluster_params.get("playground_tag")):
+        _cleanup_playground_data(cluster_params)
+
     if os.path.exists(pid_file):
         os.remove(pid_file)
     if os.path.exists(state_file):
@@ -986,6 +1001,53 @@ def _stop_tracked_restarted_nodes(cluster_params, logf):
                 % (node_id, pid, exc)
             )
 
+def _cleanup_playground_data(cluster_params):
+    """
+    Remove data created by an ephemeral TiUP Playground instance.
+
+    Tagged playgrounds are intentionally preserved.
+    """
+    tag = cluster_params.get("playground_tag")
+
+    if tag:
+        return {
+            "status": "playground_data_preserved",
+            "tag": tag,
+        }
+
+    state = _load_playground_state(cluster_params)
+    playground_state = state.get("playground", {})
+
+    data_dir = playground_state.get("data_dir")
+
+    if not data_dir:
+        return {
+            "status": "playground_data_dir_unknown",
+        }
+
+    data_dir = os.path.realpath(data_dir)
+
+    if not os.path.exists(data_dir):
+        return {
+            "status": "playground_data_already_removed",
+            "data_dir": data_dir,
+        }
+
+    # Safety check: never allow broad deletion.
+    if data_dir in ("/", "/home", os.path.expanduser("~")):
+        raise AnsibleError(
+            "Refusing to remove unsafe Playground data directory: %s"
+            % data_dir
+        )
+
+    import shutil
+    shutil.rmtree(data_dir)
+
+    return {
+        "status": "playground_data_removed",
+        "data_dir": data_dir,
+    }
+
 def _stop_playground_process(cluster_params, force=False):
     pid_file = _playground_pid_file(cluster_params)
     pid = _read_pid_file(pid_file)
@@ -1012,8 +1074,9 @@ def _stop_playground_process(cluster_params, force=False):
                     logf.write(
                         "Playground did not stop after SIGTERM; sending SIGKILL.\n"
                     )
-                    os.killpg(pgid, signal.SIGKILL)
-                    _wait_pid_exit(pid, timeout=5)
+                    if not _wait_pid_exit(pid, timeout=5):
+                        raise AnsibleError(
+                            "TiUP Playground pid=%d did not exit after SIGKILL" % pid)
                 else:
                     raise AnsibleError(
                         "TiUP playground pid=%d did not stop within timeout" % pid
@@ -1028,29 +1091,44 @@ def _stop_playground_process(cluster_params, force=False):
 
 
 def playground_teardown(cluster_params):
-    """Stop mdsvc-api and the TiUP Playground supervisor/process tree."""
+    """Stop mdsvc-api, stop Playground, and remove ephemeral Playground data."""
+
     base_dir = cluster_params["base_dir"]
     raft_uuid = cluster_params["raft_uuid"]
+
     pid_dir = "%s/%s" % (base_dir, raft_uuid)
     log_file = _playground_log_file(cluster_params)
 
-    server_status = stop_server({"pid_file": "%s/mdsvc_server.pid" % pid_dir})
-    playground_status = _stop_playground_process(cluster_params, force=True)
+    server_status = stop_server({
+        "pid_file": "%s/mdsvc_server.pid" % pid_dir
+    })
 
-    # Do not silently delete tagged TiUP data. A tag is explicitly a request
-    # for persistence. Recipes that need a fresh cluster should omit the tag.
+    playground_status = _stop_playground_process(
+        cluster_params,
+        force=True
+    )
+
     tag = cluster_params.get("playground_tag")
+
     if tag:
+        data_status = {
+            "status": "playground_data_preserved",
+            "tag": tag,
+        }
+
         with open(log_file, "a") as logf:
             logf.write(
-                "Playground tag %s was used; tagged TiUP data is intentionally "
-                "left in place.\n" % tag
+                "Playground tag %s was used; tagged TiUP data is "
+                "intentionally left in place.\n" % tag
             )
+    else:
+        data_status = _cleanup_playground_data(cluster_params)
 
     return {
         "status": "playground_teardown_done",
         "server": server_status,
         "playground": playground_status,
+        "data_cleanup": data_status,
         "playground_tag": tag,
     }
 
