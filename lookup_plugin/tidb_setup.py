@@ -1139,6 +1139,7 @@ def playground_setup(cluster_params):
                 "disable_auth",
                 False,
             ),
+            "server_env": cluster_params.get("server_env", {}),
             "jwt_secret": cluster_params.get(
                 "jwt_secret"
             ),
