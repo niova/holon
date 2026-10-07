@@ -120,6 +120,55 @@ def _tidb_backend(cluster_params):
 # Docker Setup
 # =========================================================
 
+def _docker_tidb_data_dir():
+    """Return the host directory bind-mounted as TiDB's /tmp/tidb."""
+    return os.path.realpath(
+        os.getenv("TIDB_DATA_DIR", "/local/tejus/docker-tidb-local")
+    )
+
+def _cleanup_docker_tidb_data(logf):
+    """Remove persisted TiDB Unistore data used by Docker test runs."""
+    data_dir = _docker_tidb_data_dir()
+
+    # Safety checks before sudo rm -rf.
+    unsafe_paths = {
+        "/",
+        "/tmp",
+        "/var",
+        "/home",
+        "/local",
+    }
+
+    if data_dir in unsafe_paths or len(data_dir) < 10:
+        raise AnsibleError(
+            "Refusing to remove unsafe TiDB data directory: %s" % data_dir
+        )
+
+    logf.write(
+        "\nREMOVING PERSISTED TIDB DATA: %s\n" % data_dir
+    )
+    logf.flush()
+
+    proc = subprocess.Popen(
+        ["sudo", "rm", "-rf", data_dir],
+        stdout=logf,
+        stderr=logf,
+    )
+
+    rc = proc.wait()
+
+    if rc != 0:
+        raise AnsibleError(
+            "Failed to remove TiDB data directory %s" % data_dir
+        )
+
+    logf.write(
+        "TIDB DATA DIRECTORY CLEANED: %s\n" % data_dir
+    )
+    logf.flush()
+
+    return data_dir
+
 def docker_setup(cluster_params):
     """Tear down existing stack, start Docker stack, and wait for API health."""
 
@@ -151,6 +200,11 @@ def docker_setup(cluster_params):
             raise AnsibleError(
                 "docker compose down failed. Check log: %s" % log_file
             )
+
+        # docker compose down -v does not remove the host bind-mounted
+        # TiDB Unistore directory. Explicitly clean it so every recipe
+        # starts with an empty database.
+        tidb_data_dir = _cleanup_docker_tidb_data(logf)
 
         logf.write("\nDOCKER STACK CLEANED UP\n")
 
@@ -204,10 +258,11 @@ def docker_setup(cluster_params):
         "log_file": log_file,
         "docker_container_log": docker_container_log,
         "base_url": base_url,
+        "tidb_data_dir": tidb_data_dir,
     }
 
 def docker_teardown(cluster_params):
-    """Stop and remove the mdsvc-tidb Docker stack and its volumes."""
+    """Stop/remove mdsvc-tidb Docker stack and persisted TiDB test data."""
 
     workspace_dir = os.getenv("NIOVA_WORKSPACE")
     repo_path = "%s/mdsvc-tidb" % workspace_dir
@@ -216,7 +271,12 @@ def docker_teardown(cluster_params):
     app_name = cluster_params["app_type"]
     raft_uuid = cluster_params["raft_uuid"]
 
-    log_file = "%s/%s/%s_docker_log.txt" % (base_dir, raft_uuid, app_name)
+    log_file = "%s/%s/%s_docker_log.txt" % (
+        base_dir,
+        raft_uuid,
+        app_name,
+    )
+
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     with open(log_file, "a") as logf:
@@ -228,17 +288,24 @@ def docker_teardown(cluster_params):
             stdout=logf,
             stderr=logf,
         )
+
         down_rc = down_proc.wait()
+
         if down_rc != 0:
             raise AnsibleError(
                 "docker compose down failed. Check log: %s" % log_file
             )
 
-        logf.write("\nDOCKER STACK STOPPED AND REMOVED\n")
+        tidb_data_dir = _cleanup_docker_tidb_data(logf)
+
+        logf.write(
+            "\nDOCKER STACK STOPPED AND TIDB DATA REMOVED\n"
+        )
 
     return {
         "status": "docker_teardown_done",
         "log_file": log_file,
+        "tidb_data_dir": tidb_data_dir,
     }
 
 # =========================================================
