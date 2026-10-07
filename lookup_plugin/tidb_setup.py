@@ -61,6 +61,7 @@ import subprocess
 import requests
 import time
 import shutil
+from urllib.parse import urlparse
 
 # =========================================================
 # Shared logging helpers
@@ -380,6 +381,7 @@ def manual_setup(cluster_params):
         "mysql_user": mysql_user,
         "mysql_password": mysql_password,
         "base_url": base_url,
+        "server_env": cluster_params.get("server_env", {}),
         "disable_auth": cluster_params.get("disable_auth", False),
         "jwt_secret": cluster_params.get("jwt_secret"),
         "tenant_admin_username": cluster_params.get("tenant_admin_username"),
@@ -1983,23 +1985,91 @@ def _tail_file(path, max_lines=80):
     except Exception as exc:
         return "<unable to read %s: %s>" % (path, exc)
 
+def _mdsvc_listen_addr(base_url):
+    """Convert an API URL such as http://localhost:8081 to :8081."""
+    parsed = urlparse(str(base_url))
+
+    if parsed.port:
+        return ":%d" % parsed.port
+
+    if parsed.scheme == "https":
+        return ":443"
+
+    return ":80"
+
+
+def _mdsvc_dsn(params):
+    """Build the DSN expected by mdsvc-api from the supplied MySQL settings."""
+    mysql_host = str(params["mysql_host"])
+    mysql_port = str(params["mysql_port"])
+    mysql_user = str(params.get("mysql_user", "root"))
+    mysql_password = str(params.get("mysql_password", ""))
+
+    credentials = mysql_user
+    if mysql_password:
+        credentials += ":" + mysql_password
+
+    return "%s@tcp(%s:%s)/" % (
+        credentials,
+        mysql_host,
+        mysql_port,
+    )
+
+
 def start_server(params):
-    """Launch mdsvc-api as a detached background process and detect early exit."""
+    """
+    Build and launch mdsvc-api as a detached background process.
+
+    The default path intentionally builds the server first instead of using
+    `go run`. This prevents the tracked PID from being the Go toolchain wrapper
+    and makes compile/startup failures immediately visible in mdsvc.log.
+    """
     server_path = params["server_path"]
     pid_file = params["pid_file"]
 
     if not os.path.isdir(server_path):
-        raise AnsibleError("mdsvc server_path does not exist: %s" % server_path)
-    if not os.path.exists(os.path.join(server_path, "go.mod")):
-        raise AnsibleError("mdsvc server_path has no go.mod: %s" % server_path)
+        raise AnsibleError(
+            "mdsvc server_path does not exist: %s" % server_path
+        )
+
+    go_mod = os.path.join(server_path, "go.mod")
+    if not os.path.exists(go_mod):
+        raise AnsibleError(
+            "mdsvc server_path has no go.mod: %s" % server_path
+        )
+
+    pid_dir = os.path.dirname(pid_file)
+    os.makedirs(pid_dir, exist_ok=True)
+
+    # Remove a stale PID file, or stop a server left by an earlier failed run.
+    if os.path.exists(pid_file):
+        old_pid = _read_pid_file(pid_file)
+        if old_pid and _pid_exists(old_pid):
+            try:
+                os.killpg(os.getpgid(old_pid), signal.SIGTERM)
+                _wait_pid_exit(old_pid, timeout=10)
+            except ProcessLookupError:
+                pass
+            except Exception as exc:
+                raise AnsibleError(
+                    "Unable to stop existing mdsvc-api process pid=%s: %s"
+                    % (old_pid, exc)
+                )
+
+        if os.path.exists(pid_file):
+            os.remove(pid_file)
 
     log_file = os.path.join(server_path, "mdsvc.log")
-    fp = open(log_file, "a")
 
-    # Preserve the original mdsvc startup behavior.  The Playground cleanup
-    # logic must not override the application's DSN/listen/Serf configuration.
     env = os.environ.copy()
+
+    #
+    # Set the environment variables actually consumed by mdsvc-api.
+    # Keep the older individual MySQL variables too for compatibility.
+    #
     env.update({
+        "MDSVC_DSN": _mdsvc_dsn(params),
+        "MDSVC_LISTEN": _mdsvc_listen_addr(params["base_url"]),
         "MDSVC_MYSQL_HOST": str(params["mysql_host"]),
         "MDSVC_MYSQL_PORT": str(params["mysql_port"]),
         "MDSVC_MYSQL_USER": str(params["mysql_user"]),
@@ -2007,8 +2077,6 @@ def start_server(params):
         "MDSVC_API_URL": str(params["base_url"]),
     })
 
-    # Keep optional environment forwarding available for callers that
-    # explicitly need it, but do not inject new defaults here.
     extra_env = params.get("server_env") or {}
     if not isinstance(extra_env, dict):
         raise AnsibleError("server_env must be a dictionary")
@@ -2020,69 +2088,161 @@ def start_server(params):
 
     if params.get("disable_auth"):
         env["DISABLE_AUTH"] = "true"
+    else:
+        env.setdefault("DISABLE_AUTH", "false")
+
     if params.get("jwt_secret"):
         env["JWT_SECRET"] = str(params["jwt_secret"])
+
     if params.get("tenant_admin_username"):
-        env["TENANT_ADMIN_USERNAME"] = str(params["tenant_admin_username"])
+        env["TENANT_ADMIN_USERNAME"] = str(
+            params["tenant_admin_username"]
+        )
+
     if params.get("tenant_admin_password"):
-        env["TENANT_ADMIN_PASSWORD"] = str(params["tenant_admin_password"])
+        env["TENANT_ADMIN_PASSWORD"] = str(
+            params["tenant_admin_password"]
+        )
+
     if params.get("admin_default_username"):
-        env["ADMIN_DEFAULT_USERNAME"] = str(params["admin_default_username"])
+        env["ADMIN_DEFAULT_USERNAME"] = str(
+            params["admin_default_username"]
+        )
+
     if params.get("admin_default_password"):
-        env["ADMIN_DEFAULT_PASSWORD"] = str(params["admin_default_password"])
-
-    command = params.get("server_command") or ["go", "run", "./cmd/server"]
-    if isinstance(command, str):
-        command = command.split()
-
-    fp.write("\n==== STARTING MDSVC-API ====\n")
-    fp.write("cwd=%s\n" % server_path)
-    fp.write("command=%s\n" % " ".join(command))
-    fp.write(
-        "mysql=%s:%s user=%s api=%s disable_auth=%s\n"
-        % (
-            params["mysql_host"],
-            params["mysql_port"],
-            params["mysql_user"],
-            params["base_url"],
-            bool(params.get("disable_auth")),
-        )
-    )
-    fp.flush()
-
-    proc = subprocess.Popen(
-        command,
-        cwd=server_path,
-        stdout=fp,
-        stderr=fp,
-        env=env,
-        start_new_session=True,
-    )
-
-    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
-    with open(pid_file, "w") as pidf:
-        pidf.write(str(proc.pid))
-
-    fp.write("mdsvc-api launcher pid=%d\n" % proc.pid)
-    fp.flush()
-
-    time.sleep(float(params.get("server_early_exit_check", 2)))
-    rc = proc.poll()
-    if rc is not None:
-        fp.close()
-        if os.path.exists(pid_file):
-            os.remove(pid_file)
-        raise AnsibleError(
-            "mdsvc-api exited before becoming ready (rc=%s). Log: %s\n"
-            "---- mdsvc.log tail ----\n%s"
-            % (rc, log_file, _tail_file(log_file))
+        env["ADMIN_DEFAULT_PASSWORD"] = str(
+            params["admin_default_password"]
         )
 
-    fp.close()
+    #
+    # Preserve explicit caller commands. Otherwise build a real binary first,
+    # then track that binary's PID rather than the `go run` wrapper.
+    #
+    command = params.get("server_command")
+    binary_path = None
+
+    with open(log_file, "a") as fp:
+        fp.write("\n==== STARTING MDSVC-API ====\n")
+        fp.write("cwd=%s\n" % server_path)
+        fp.write(
+            "mysql=%s:%s user=%s api=%s listen=%s disable_auth=%s\n"
+            % (
+                params["mysql_host"],
+                params["mysql_port"],
+                params["mysql_user"],
+                params["base_url"],
+                env["MDSVC_LISTEN"],
+                env.get("DISABLE_AUTH", ""),
+            )
+        )
+        fp.write(
+            "MDSVC_SERF_ENABLED=%s\n"
+            % env.get("MDSVC_SERF_ENABLED", "<inherited/default>")
+        )
+        fp.flush()
+
+        if command is None:
+            binary_path = os.path.join(pid_dir, "mdsvc-api")
+
+            build_cmd = [
+                "go",
+                "build",
+                "-o",
+                binary_path,
+                "./cmd/server",
+            ]
+
+            fp.write("build_command=%s\n" % " ".join(build_cmd))
+            fp.flush()
+
+            try:
+                build_result = subprocess.run(
+                    build_cmd,
+                    cwd=server_path,
+                    stdout=fp,
+                    stderr=fp,
+                    env=env,
+                    timeout=int(params.get("server_build_timeout", 300)),
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                raise AnsibleError(
+                    "Timed out building mdsvc-api. Log: %s\n"
+                    "---- mdsvc.log tail ----\n%s"
+                    % (log_file, _tail_file(log_file))
+                )
+
+            if build_result.returncode != 0:
+                raise AnsibleError(
+                    "Failed to build mdsvc-api (rc=%s). Log: %s\n"
+                    "---- mdsvc.log tail ----\n%s"
+                    % (
+                        build_result.returncode,
+                        log_file,
+                        _tail_file(log_file),
+                    )
+                )
+
+            if not os.path.isfile(binary_path):
+                raise AnsibleError(
+                    "mdsvc-api build reported success but binary is missing: %s"
+                    % binary_path
+                )
+
+            command = [binary_path]
+
+        elif isinstance(command, str):
+            command = command.split()
+
+        fp.write("command=%s\n" % " ".join(command))
+        fp.flush()
+
+        try:
+            proc = subprocess.Popen(
+                command,
+                cwd=server_path,
+                stdout=fp,
+                stderr=fp,
+                env=env,
+                start_new_session=True,
+            )
+        except Exception as exc:
+            raise AnsibleError(
+                "Failed to launch mdsvc-api: %s. Log: %s"
+                % (exc, log_file)
+            )
+
+        with open(pid_file, "w") as pidf:
+            pidf.write(str(proc.pid))
+
+        fp.write("mdsvc-api pid=%d\n" % proc.pid)
+        fp.flush()
+
+        early_exit_check = float(
+            params.get("server_early_exit_check", 2)
+        )
+        time.sleep(early_exit_check)
+
+        rc = proc.poll()
+        if rc is not None:
+            if os.path.exists(pid_file):
+                os.remove(pid_file)
+
+            raise AnsibleError(
+                "mdsvc-api exited before becoming ready (rc=%s). Log: %s\n"
+                "---- mdsvc.log tail ----\n%s"
+                % (
+                    rc,
+                    log_file,
+                    _tail_file(log_file),
+                )
+            )
+
     return {
         "status": "server_started",
         "pid": proc.pid,
         "log_file": log_file,
+        "binary_path": binary_path,
     }
 
 def stop_server(params):
