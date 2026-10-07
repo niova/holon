@@ -65,9 +65,6 @@
                       'mysql_port': '4000',
                       'api_base_url': api_base_url,
                       'server_timeout': 300,
-                      'server_env': {
-                        'MDSVC_SERF_ENABLED': 'false'
-                      }
                     },
                     recursive=true
                   )
