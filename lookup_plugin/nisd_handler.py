@@ -51,13 +51,6 @@ def set_nisd_environ_variables(minio_config_path):
     print("NIOVA_BLOCK_AWS_OPTS =", os.environ["NIOVA_BLOCK_AWS_OPTS"])
     print("NIOVA_BLOCK_AWS_AUTH =", os.environ["NIOVA_BLOCK_AWS_AUTH"])
 
-def get_nisd_ctl_output_dir(nisd_uuid):
-    return os.path.join(
-        "/tmp/.niova",
-        str(nisd_uuid),
-        "output",
-    )
-
 def run_nisd_command(cluster_params, input_values):
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']

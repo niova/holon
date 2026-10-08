@@ -5,32 +5,24 @@
 
   vars:
     recipe_name: "tidb_nisd_async_event_callback_idempotency"
-
     api_base_url: "http://localhost:8081"
     cp_username: "admin"
     cp_password: "admin"
-
     infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
     vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
-
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
     nisd_device_path: "/nisd-async-event-idempotency.device"
     nisd_device_size: "10G"
-
     nisd_peer_port: "13000"
     nisd_client_port: "13001"
-
     nisd_secret: >-
       {{
         lookup('env', 'NIOVA_NISD_SECRET')
         | default('Nisd-secret', true)
       }}
-
     lookout_uuid: ""
-
     ncp_event_ping_key: "/ncp_event/0/ping_enabled"
     ncp_event_sno_key: "/ncp_event/0/event_sno"
-
     # ----------------------------------------------------------------
     # REQUIRED TEST-SPECIFIC VALUES
     # ----------------------------------------------------------------
@@ -45,10 +37,8 @@
     # durably recorded its intent but BEFORE ncp_event persists event_sno.
     #
     async_event_add_path: "/api/test/event"
-
     async_event_timeout_retries: 90
     async_event_poll_delay: 1
-
     snapshot_name: "async-idempotency-{{ lookup('pipe', 'date +%s%N') }}"
 
   tasks:
