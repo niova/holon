@@ -1,0 +1,715 @@
+---
+- name: "tidb_nisd_async_event_auth_recovery.yml"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    recipe_name: "tidb_nisd_async_event_auth_recovery"
+
+    api_base_url: "http://localhost:8081"
+    cp_username: "admin"
+    cp_password: "admin"
+
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+    nisd_device_path: "/nisd-async-event-auth-recovery.device"
+    nisd_device_size: "10G"
+
+    nisd_peer_port: "13000"
+    nisd_client_port: "13001"
+
+    # Correct service secret accepted by the CP.
+    correct_nisd_secret: >-
+      {{
+        lookup('env', 'NIOVA_NISD_SECRET')
+        | default('Nisd-secret', true)
+      }}
+
+    # Deliberately incorrect NISD-side secret.
+    wrong_nisd_secret: "definitely-wrong-nisd-secret"
+
+    # ----------------------------------------------------------------
+    # CP authentication configuration
+    # ----------------------------------------------------------------
+    #
+    # The exact mdsvc-tidb environment variable carrying the accepted
+    # service secret is branch/config dependent and is therefore explicit.
+    #
+    # Override this dictionary if the branch uses a different key:
+    #
+    #   -e '{"cp_auth_server_env":{"<actual-key>":"Nisd-secret"}}'
+    #
+    cp_auth_server_env:
+      MDSVC_NISD_SECRET: "{{ correct_nisd_secret }}"
+      DISABLE_AUTH: "false"
+
+    lookout_uuid: ""
+
+    ncp_event_ping_key: "/ncp_event/0/ping_enabled"
+    ncp_event_sno_key: "/ncp_event/0/event_sno"
+
+    async_event_action: 250
+    async_event_add_path: "/api/test/event"
+
+    async_event_timeout_retries: 90
+    async_event_poll_delay: 1
+
+    event_marker: "auth-recovery-test-event"
+
+    # ----------------------------------------------------------------
+    # CP-side heartbeat capture
+    # ----------------------------------------------------------------
+    #
+    # Required to prove the HTTP status seen at the Control Plane boundary.
+    # Expected JSONL shape per line:
+    #
+    # {
+    #   "request": {
+    #     "EntityID": "...",
+    #     "AckEventSerialNo": 0,
+    #     "EventLimit": 2
+    #   },
+    #   "http_status": 401
+    # }
+    #
+    # A successful heartbeat uses http_status=200.
+    #
+    heartbeat_capture_file: >-
+      {{
+        lookup('env', 'MDSVC_HEARTBEAT_CAPTURE_FILE')
+        | default('/tmp/mdsvc-heartbeat-capture.jsonl', true)
+      }}
+
+    # Number of post-restart seconds to watch for new auth/heartbeat errors.
+    post_restart_error_watch_seconds: 35
+
+    post_restart_error_regex: >-
+      401|unauthori[sz]ed|authentication.*fail|auth.*fail|heartbeat.*fail|cmi_ping_cp.*rc=
+
+  tasks:
+    - block:
+
+        # ============================================================
+        # 0. Preconditions
+        # ============================================================
+        - name: "{{ recipe_name }}: Validate configuration."
+          ansible.builtin.assert:
+            that:
+              - app_type == "tidb"
+              - correct_nisd_secret | length > 0
+              - wrong_nisd_secret | length > 0
+              - wrong_nisd_secret != correct_nisd_secret
+              - cp_auth_server_env | length > 0
+
+        # ============================================================
+        # 1. Start authenticated Control Plane
+        # ============================================================
+        - name: "{{ recipe_name }}: Start mdsvc-tidb with auth enabled."
+          ansible.builtin.set_fact:
+            setup_status: >-
+              {{
+                lookup(
+                  'tidb_setup',
+                  'docker_setup',
+                  server_env=cp_auth_server_env
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Wait for Control Plane."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+            timeout: 10
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        - name: "{{ recipe_name }}: Login."
+          ansible.builtin.set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username=cp_username,
+                  password=cp_password
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          ansible.builtin.set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=infra_payload
+                )
+              }}
+
+        # ============================================================
+        # 2. Prepare fresh NISD backing storage
+        # ============================================================
+        - name: "{{ recipe_name }}: Create NISD backing file."
+          ansible.builtin.command:
+            argv:
+              - truncate
+              - -s
+              - "{{ nisd_device_size }}"
+              - "{{ nisd_device_path }}"
+          changed_when: true
+
+        - name: "{{ recipe_name }}: Initialize NISD."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+          ansible.builtin.debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run-niova-block-ctl',
+                  input_param
+                )
+              }}
+
+        # ============================================================
+        # 3. Capture initial CP event state
+        # ============================================================
+        #
+        # event_sno=0 on the fresh device is the ACK the NISD will attempt
+        # to send. Because a 401 request is rejected before heartbeat
+        # handling, CP must not accept/reap anything based on that request.
+        #
+        - name: "{{ recipe_name }}: Record initial unexpired event row count."
+          ansible.builtin.shell: |
+            mysql \
+              --host=127.0.0.1 \
+              --port=4000 \
+              --user=root \
+              --database=mdsvc \
+              --batch --skip-column-names \
+              -e "SELECT COUNT(*) FROM nisd_event WHERE expire_at IS NULL;"
+          args:
+            executable: /bin/bash
+          register: initial_unexpired_events
+          changed_when: false
+
+        # ============================================================
+        # 4. Start NISD with WRONG secret
+        # ============================================================
+        - name: "{{ recipe_name }}: Start NISD with wrong secret."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "{{ nisd_peer_port }}"
+              client_port: "{{ nisd_client_port }}"
+              enable_auth: 1
+              enable_cp_event_handler: 1
+              nisd_secret: "{{ wrong_nisd_secret }}"
+          ansible.builtin.debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run_nisd',
+                  input_param
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Resolve NISD log path."
+          ansible.builtin.set_fact:
+            nisd_log_file: >-
+              {{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/nisd_{{ nisd_uuid }}.log
+
+        - name: "{{ recipe_name }}: Wait for NISD process."
+          ansible.builtin.shell: "pgrep -x nisd | head -n1"
+          args:
+            executable: /bin/bash
+          register: wrong_secret_pid
+          retries: 20
+          delay: 1
+          until: wrong_secret_pid.stdout | length > 0
+          changed_when: false
+
+        # ============================================================
+        # 5. Verify CP returns HTTP 401
+        # ============================================================
+        - name: "{{ recipe_name }}: Wait for CP heartbeat capture."
+          ansible.builtin.stat:
+            path: "{{ heartbeat_capture_file }}"
+          register: heartbeat_capture_stat
+          retries: 30
+          delay: 1
+          until:
+            - heartbeat_capture_stat.stat.exists
+            - heartbeat_capture_stat.stat.size | default(0) | int > 0
+
+        - name: "{{ recipe_name }}: Find rejected heartbeat for this NISD."
+          ansible.builtin.shell: |
+            python3 - "{{ heartbeat_capture_file }}" "{{ nisd_uuid }}" <<'PY'
+            import json
+            import sys
+
+            path, entity = sys.argv[1], sys.argv[2]
+
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        item = json.loads(line)
+                    except Exception:
+                        continue
+
+                    request = item.get("request", item)
+
+                    if (
+                        str(request.get("EntityID", "")) == entity
+                        and int(item.get("http_status", item.get("status_code", 0))) == 401
+                    ):
+                        print(json.dumps(item))
+                        raise SystemExit(0)
+
+            raise SystemExit(1)
+            PY
+          args:
+            executable: /bin/bash
+          register: wrong_secret_heartbeat
+          changed_when: false
+          retries: 45
+          delay: 1
+          until:
+            - wrong_secret_heartbeat.rc == 0
+            - wrong_secret_heartbeat.stdout | length > 0
+
+        - name: "{{ recipe_name }}: Verify rejected heartbeat status."
+          ansible.builtin.set_fact:
+            rejected_heartbeat: "{{ wrong_secret_heartbeat.stdout | from_json }}"
+
+        - name: "{{ recipe_name }}: Assert HTTP 401."
+          ansible.builtin.assert:
+            that:
+              - >-
+                (
+                  rejected_heartbeat.http_status
+                  | default(rejected_heartbeat.status_code)
+                  | int
+                ) == 401
+            fail_msg: >-
+              Wrong NISD secret did not produce HTTP 401.
+              Capture={{ rejected_heartbeat }}
+
+        # ============================================================
+        # 6. Verify rejected heartbeat did not advance accepted ACK state
+        # ============================================================
+        - name: "{{ recipe_name }}: Read event_sno with wrong secret."
+          vars:
+            stage: "wrong_secret_event_sno"
+            wrong_secret_state: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  nisd_uuid,
+                  ncp_event_sno_key,
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          ansible.builtin.set_fact:
+            event_sno_wrong_secret: "{{ wrong_secret_state['/0/event_sno'] | int }}"
+
+        - name: "{{ recipe_name }}: Verify local durable ACK did not advance."
+          ansible.builtin.assert:
+            that:
+              - event_sno_wrong_secret | int == 0
+            fail_msg: >-
+              event_sno advanced even though heartbeats were rejected.
+              event_sno={{ event_sno_wrong_secret }}
+
+        - name: "{{ recipe_name }}: Verify CP event retention unchanged."
+          ansible.builtin.shell: |
+            mysql \
+              --host=127.0.0.1 \
+              --port=4000 \
+              --user=root \
+              --database=mdsvc \
+              --batch --skip-column-names \
+              -e "SELECT COUNT(*) FROM nisd_event WHERE expire_at IS NULL;"
+          args:
+            executable: /bin/bash
+          register: wrong_secret_unexpired_events
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Assert unauthenticated heartbeat changed no CP ACK state."
+          ansible.builtin.assert:
+            that:
+              - >-
+                wrong_secret_unexpired_events.stdout | int
+                ==
+                initial_unexpired_events.stdout | int
+            fail_msg: >-
+              Unauthenticated heartbeat changed CP event retention state.
+
+        # ============================================================
+        # 7. Stop wrong-secret NISD
+        # ============================================================
+        - name: "{{ recipe_name }}: Stop wrong-secret NISD."
+          ansible.builtin.shell: |
+            set -e
+            pid="{{ wrong_secret_pid.stdout }}"
+
+            kill -TERM "$pid"
+
+            for _ in $(seq 1 20); do
+              if ! kill -0 "$pid" 2>/dev/null; then
+                exit 0
+              fi
+              sleep 1
+            done
+
+            kill -KILL "$pid"
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        - name: "{{ recipe_name }}: Confirm wrong-secret NISD exited."
+          ansible.builtin.shell: |
+            if kill -0 "{{ wrong_secret_pid.stdout }}" 2>/dev/null; then
+              exit 1
+            fi
+            exit 0
+          args:
+            executable: /bin/bash
+          register: wrong_secret_nisd_stopped
+          changed_when: false
+          retries: 10
+          delay: 1
+          until: wrong_secret_nisd_stopped.rc == 0
+
+        # ============================================================
+        # 8. Mark restart log boundary
+        # ============================================================
+        - name: "{{ recipe_name }}: Record NISD log line before restart."
+          ansible.builtin.shell: |
+            if [ -f "{{ nisd_log_file }}" ]; then
+              wc -l < "{{ nisd_log_file }}"
+            else
+              echo 0
+            fi
+          args:
+            executable: /bin/bash
+          register: restart_log_boundary
+          changed_when: false
+
+        # ============================================================
+        # 9. Restart same NISD with CORRECT secret
+        # ============================================================
+        - name: "{{ recipe_name }}: Restart NISD with correct secret."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "{{ nisd_peer_port }}"
+              client_port: "{{ nisd_client_port }}"
+              enable_auth: 1
+              enable_cp_event_handler: 1
+              nisd_secret: "{{ correct_nisd_secret }}"
+          ansible.builtin.debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run_nisd',
+                  input_param
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Wait for async handler after restart."
+          vars:
+            stage: "correct_secret_ping_enabled"
+          ansible.builtin.debug:
+            msg: "Waiting for ping_enabled=true"
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+          until: >-
+            (
+              lookup(
+                'niova_ctlrequest',
+                'lookup',
+                nisd_uuid,
+                ncp_event_ping_key,
+                'nisd',
+                lookout_uuid
+              )['/0/ping_enabled']
+              | string
+              | lower
+            ) in ['1', 'true']
+
+        # ============================================================
+        # 10. Prove successful authenticated heartbeat at CP
+        # ============================================================
+        - name: "{{ recipe_name }}: Find successful post-restart heartbeat."
+          ansible.builtin.shell: |
+            python3 - "{{ heartbeat_capture_file }}" "{{ nisd_uuid }}" <<'PY'
+            import json
+            import sys
+
+            path, entity = sys.argv[1], sys.argv[2]
+
+            matches = []
+
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        item = json.loads(line)
+                    except Exception:
+                        continue
+
+                    request = item.get("request", item)
+                    status = int(item.get("http_status", item.get("status_code", 0)))
+
+                    if str(request.get("EntityID", "")) == entity and status == 200:
+                        matches.append(item)
+
+            if not matches:
+                raise SystemExit(1)
+
+            print(json.dumps(matches[-1]))
+            PY
+          args:
+            executable: /bin/bash
+          register: successful_heartbeat
+          changed_when: false
+          retries: 45
+          delay: 1
+          until:
+            - successful_heartbeat.rc == 0
+            - successful_heartbeat.stdout | length > 0
+
+        # ============================================================
+        # 11. Inject TEST event
+        # ============================================================
+        - name: "{{ recipe_name }}: Read initial event_sno after recovery."
+          vars:
+            stage: "recovery_initial_event_sno"
+            recovery_initial_state: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  nisd_uuid,
+                  ncp_event_sno_key,
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          ansible.builtin.set_fact:
+            recovery_initial_event_sno: >-
+              {{ recovery_initial_state['/0/event_sno'] | int }}
+
+        - name: "{{ recipe_name }}: Set expected event_sno."
+          ansible.builtin.set_fact:
+            expected_event_sno: "{{ recovery_initial_event_sno | int + 1 }}"
+
+        - name: "{{ recipe_name }}: Add TEST event."
+          ansible.builtin.set_fact:
+            add_event_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'custom_request',
+                  async_event_add_path,
+                  method='POST',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  body={
+                    'EntityID': nisd_uuid,
+                    'Action': async_event_action,
+                    'Params': {
+                      'marker': event_marker
+                    }
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Wait for TEST event processing."
+          vars:
+            stage: "wait_for_recovery_event"
+          ansible.builtin.debug:
+            msg: "Waiting for event_sno={{ expected_event_sno }}"
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+          until: >-
+            (
+              lookup(
+                'niova_ctlrequest',
+                'lookup',
+                nisd_uuid,
+                ncp_event_sno_key,
+                'nisd',
+                lookout_uuid
+              )['/0/event_sno']
+              | int
+            ) >= expected_event_sno | int
+
+        - name: "{{ recipe_name }}: Read final event_sno."
+          vars:
+            stage: "final_event_sno"
+            final_state: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  nisd_uuid,
+                  ncp_event_sno_key,
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          ansible.builtin.set_fact:
+            final_event_sno: "{{ final_state['/0/event_sno'] | int }}"
+
+        - name: "{{ recipe_name }}: Verify TEST event processed."
+          ansible.builtin.assert:
+            that:
+              - final_event_sno | int == expected_event_sno | int
+
+        # ============================================================
+        # 12. Verify CP received acknowledgement
+        # ============================================================
+        - name: "{{ recipe_name }}: Find successful ACK heartbeat at CP."
+          ansible.builtin.shell: |
+            python3 - \
+              "{{ heartbeat_capture_file }}" \
+              "{{ nisd_uuid }}" \
+              "{{ expected_event_sno }}" <<'PY'
+            import json
+            import sys
+
+            path, entity, expected_ack = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        item = json.loads(line)
+                    except Exception:
+                        continue
+
+                    request = item.get("request", item)
+                    status = int(item.get("http_status", item.get("status_code", 0)))
+
+                    try:
+                        ack = int(request.get("AckEventSerialNo", -1))
+                    except Exception:
+                        ack = -1
+
+                    if (
+                        str(request.get("EntityID", "")) == entity
+                        and status == 200
+                        and ack == expected_ack
+                    ):
+                        print(json.dumps(item))
+                        raise SystemExit(0)
+
+            raise SystemExit(1)
+            PY
+          args:
+            executable: /bin/bash
+          register: ack_heartbeat
+          changed_when: false
+          retries: 45
+          delay: 1
+          until:
+            - ack_heartbeat.rc == 0
+            - ack_heartbeat.stdout | length > 0
+
+        # ============================================================
+        # 13. Verify callback
+        # ============================================================
+        - name: "{{ recipe_name }}: Verify TEST callback after restart."
+          ansible.builtin.shell: |
+            start=$(( {{ restart_log_boundary.stdout | int }} + 1 ))
+
+            sed -n "${start},\$p" "{{ nisd_log_file }}" |
+              grep -Ei "ncp_event_test|test.*event|event.*callback|{{ event_marker }}"
+          args:
+            executable: /bin/bash
+          register: callback_check
+          changed_when: false
+          retries: 30
+          delay: 1
+          until: callback_check.rc == 0
+
+        # ============================================================
+        # 14. Watch ONLY post-restart logs for new auth/heartbeat errors
+        # ============================================================
+        - name: "{{ recipe_name }}: Wait through several healthy heartbeats."
+          ansible.builtin.pause:
+            seconds: "{{ post_restart_error_watch_seconds }}"
+
+        - name: "{{ recipe_name }}: Read only post-restart log section."
+          ansible.builtin.shell: |
+            start=$(( {{ restart_log_boundary.stdout | int }} + 1 ))
+            sed -n "${start},\$p" "{{ nisd_log_file }}"
+          args:
+            executable: /bin/bash
+          register: post_restart_log
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Check for new auth/heartbeat errors."
+          ansible.builtin.shell: |
+            printf '%s\n' "{{ post_restart_log.stdout | replace("'", "'\\''") }}" |
+              grep -Ei "{{ post_restart_error_regex }}" || true
+          args:
+            executable: /bin/bash
+          register: post_restart_auth_errors
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Verify no new related errors after recovery."
+          ansible.builtin.assert:
+            that:
+              - post_restart_auth_errors.stdout | trim | length == 0
+            fail_msg: >-
+              New authentication/heartbeat errors occurred after restart with
+              the correct secret:
+              {{ post_restart_auth_errors.stdout }}
+            success_msg: >-
+              No new authentication or heartbeat errors occurred during the
+              bounded post-restart observation window.
+
+        # ============================================================
+        # Result
+        # ============================================================
+        - name: "{{ recipe_name }}: Test passed."
+          ansible.builtin.debug:
+            msg:
+              - "Wrong-secret authentication recovery test passed."
+              - "Wrong secret produced HTTP 401."
+              - "Rejected heartbeat did not advance event_sno."
+              - "Rejected heartbeat did not alter CP event retention state."
+              - "Wrong-secret NISD exited cleanly."
+              - "Correct-secret restart produced HTTP 200 heartbeats."
+              - "TEST event processed successfully."
+              - "CP received AckEventSerialNo={{ expected_event_sno }}."
+              - "No new auth/heartbeat errors appeared after restart."
+
+      always:
+        - name: "{{ recipe_name }}: Remove test backing file."
+          ansible.builtin.file:
+            path: "{{ nisd_device_path }}"
+            state: absent
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Tear down mdsvc-tidb."
+          ansible.builtin.debug:
+            msg: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+          ignore_errors: true
