@@ -1,0 +1,444 @@
+---
+- name: "tidb_nisd_async_event_cluster_uuid.yml"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    recipe_name: "tidb_nisd_async_event_cluster_uuid"
+
+    api_base_url: "http://localhost:8081"
+    cp_username: "admin"
+    cp_password: "admin"
+
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+    nisd_device_path: "/nisd-async-event-cluster-uuid.device"
+    nisd_device_size: "10G"
+
+    nisd_peer_port: "13000"
+    nisd_client_port: "13001"
+
+    nisd_secret: >-
+      {{
+        lookup('env', 'NIOVA_NISD_SECRET')
+        | default('Nisd-secret', true)
+      }}
+
+    lookout_uuid: ""
+
+    ncp_event_ping_key: "/ncp_event/0/ping_enabled"
+    ncp_event_sno_key: "/ncp_event/0/event_sno"
+
+    async_event_action: 250
+    async_event_add_path: "/api/test/event"
+
+    async_event_timeout_retries: 90
+    async_event_poll_delay: 1
+
+    # Implementation mapping:
+    #
+    # NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID
+    #       -> cmi_tenant_uuid_init()
+    #       -> heartbeat JSON "TenantUUID"
+    #
+    # The NISD-side variable is named cluster UUID, while the wire field is
+    # TenantUUID. This recipe verifies the value received by CP.
+    non_default_cluster_uuid: "22222222-2222-4222-8222-222222222222"
+    expected_heartbeat_tenant_uuid: "{{ non_default_cluster_uuid }}"
+
+    # Configure the corresponding non-default CP tenant identity.
+    cp_server_env:
+      MDSVC_TENANT_MANAGER_ID: "{{ expected_heartbeat_tenant_uuid }}"
+
+    # CP-side capture produced by the branch/test harness.
+    # Each matching line must be the received heartbeat JSON object.
+    heartbeat_capture_file: >-
+      {{
+        lookup('env', 'MDSVC_HEARTBEAT_CAPTURE_FILE')
+        | default('/tmp/mdsvc-heartbeat-capture.jsonl', true)
+      }}
+
+    event_marker: "cluster-uuid-test-event"
+
+  tasks:
+    - block:
+
+        - name: "{{ recipe_name }}: Validate identity mapping."
+          ansible.builtin.assert:
+            that:
+              - app_type == "tidb"
+              - non_default_cluster_uuid | length == 36
+              - expected_heartbeat_tenant_uuid | length == 36
+              - non_default_cluster_uuid == expected_heartbeat_tenant_uuid
+            fail_msg: >-
+              Current implementation maps NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID
+              to heartbeat TenantUUID. Configure the corresponding CP tenant
+              with the same UUID value.
+
+        # ------------------------------------------------------------
+        # 1. Start CP with the non-default tenant
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Start mdsvc-tidb with non-default tenant."
+          ansible.builtin.set_fact:
+            setup_status: >-
+              {{
+                lookup(
+                  'tidb_setup',
+                  'docker_setup',
+                  server_env=cp_server_env
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Wait for Control Plane."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+            timeout: 10
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        - name: "{{ recipe_name }}: Login."
+          ansible.builtin.set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username=cp_username,
+                  password=cp_password
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          ansible.builtin.set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=infra_payload
+                )
+              }}
+
+        # ------------------------------------------------------------
+        # 2. Prepare NISD
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Create NISD backing file."
+          ansible.builtin.command:
+            argv:
+              - truncate
+              - -s
+              - "{{ nisd_device_size }}"
+              - "{{ nisd_device_path }}"
+          changed_when: true
+
+        - name: "{{ recipe_name }}: Initialize NISD backing storage."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+          ansible.builtin.debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run-niova-block-ctl',
+                  input_param
+                )
+              }}
+
+        # ------------------------------------------------------------
+        # 3. Start NISD with explicit cluster UUID
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Start NISD with non-default cluster UUID."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "{{ nisd_peer_port }}"
+              client_port: "{{ nisd_client_port }}"
+              enable_auth: 1
+              enable_cp_event_handler: 1
+              nisd_secret: "{{ nisd_secret }}"
+              cp_cluster_uuid: "{{ non_default_cluster_uuid }}"
+          ansible.builtin.debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run_nisd',
+                  input_param
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Wait for ping_enabled=true."
+          vars:
+            stage: "wait_for_ping"
+          ansible.builtin.debug:
+            msg: "Waiting for async-event heartbeat"
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+          until: >-
+            (
+              lookup(
+                'niova_ctlrequest',
+                'lookup',
+                nisd_uuid,
+                ncp_event_ping_key,
+                'nisd',
+                lookout_uuid
+              )['/0/ping_enabled']
+              | string
+              | lower
+            ) in ['1', 'true']
+
+        # ------------------------------------------------------------
+        # 4. Verify heartbeat received by CP
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Wait for CP heartbeat capture."
+          ansible.builtin.stat:
+            path: "{{ heartbeat_capture_file }}"
+          register: heartbeat_capture_stat
+          retries: 30
+          delay: 1
+          until:
+            - heartbeat_capture_stat.stat.exists
+            - heartbeat_capture_stat.stat.size | default(0) | int > 0
+
+        - name: "{{ recipe_name }}: Read first NISD heartbeat received by CP."
+          ansible.builtin.shell: |
+            set -o pipefail
+            grep -F '"EntityID":"{{ nisd_uuid }}"' \
+              "{{ heartbeat_capture_file }}" | head -n1
+          args:
+            executable: /bin/bash
+          register: first_heartbeat_capture
+          changed_when: false
+          retries: 30
+          delay: 1
+          until:
+            - first_heartbeat_capture.rc == 0
+            - first_heartbeat_capture.stdout | length > 0
+
+        - name: "{{ recipe_name }}: Parse first heartbeat."
+          ansible.builtin.set_fact:
+            first_heartbeat: "{{ first_heartbeat_capture.stdout | from_json }}"
+
+        - name: "{{ recipe_name }}: Verify first heartbeat identity."
+          ansible.builtin.assert:
+            that:
+              - first_heartbeat.EntityID == nisd_uuid
+              - first_heartbeat.TenantUUID is defined
+              - first_heartbeat.TenantUUID == expected_heartbeat_tenant_uuid
+            fail_msg: >-
+              CP received an incorrect tenant identity.
+              Expected={{ expected_heartbeat_tenant_uuid }}
+              Received={{ first_heartbeat }}
+            success_msg: >-
+              CP received TenantUUID={{ first_heartbeat.TenantUUID }}.
+
+        # ------------------------------------------------------------
+        # 5. Verify identity is retained on a subsequent heartbeat
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Wait for two NISD heartbeats."
+          ansible.builtin.shell: |
+            set -o pipefail
+            grep -F '"EntityID":"{{ nisd_uuid }}"' \
+              "{{ heartbeat_capture_file }}" | wc -l
+          args:
+            executable: /bin/bash
+          register: heartbeat_count
+          changed_when: false
+          retries: 30
+          delay: 1
+          until: heartbeat_count.stdout | int >= 2
+
+        - name: "{{ recipe_name }}: Read second NISD heartbeat."
+          ansible.builtin.shell: |
+            set -o pipefail
+            grep -F '"EntityID":"{{ nisd_uuid }}"' \
+              "{{ heartbeat_capture_file }}" | sed -n '2p'
+          args:
+            executable: /bin/bash
+          register: second_heartbeat_capture
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Parse second heartbeat."
+          ansible.builtin.set_fact:
+            second_heartbeat: "{{ second_heartbeat_capture.stdout | from_json }}"
+
+        - name: "{{ recipe_name }}: Verify subsequent heartbeat identity."
+          ansible.builtin.assert:
+            that:
+              - second_heartbeat.EntityID == nisd_uuid
+              - second_heartbeat.TenantUUID == expected_heartbeat_tenant_uuid
+              - second_heartbeat.TenantUUID == first_heartbeat.TenantUUID
+            fail_msg: >-
+              TenantUUID changed between heartbeats.
+              First={{ first_heartbeat }}
+              Second={{ second_heartbeat }}
+
+        # ------------------------------------------------------------
+        # 6. Read initial event progress
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Read initial event_sno."
+          vars:
+            stage: "initial_event_sno"
+            initial_state: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  nisd_uuid,
+                  ncp_event_sno_key,
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          ansible.builtin.set_fact:
+            initial_event_sno: "{{ initial_state['/0/event_sno'] | int }}"
+
+        - name: "{{ recipe_name }}: Set expected event_sno."
+          ansible.builtin.set_fact:
+            expected_event_sno: "{{ (initial_event_sno | int) + 1 }}"
+
+        # ------------------------------------------------------------
+        # 7. Inject TEST event for this tenant/NISD
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Add TEST async event."
+          ansible.builtin.set_fact:
+            add_event_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'custom_request',
+                  async_event_add_path,
+                  method='POST',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  body={
+                    'EntityID': nisd_uuid,
+                    'TenantUUID': expected_heartbeat_tenant_uuid,
+                    'Action': async_event_action,
+                    'Params': {
+                      'marker': event_marker
+                    }
+                  }
+                )
+              }}
+
+        # ------------------------------------------------------------
+        # 8. Verify event processing
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Wait for event processing."
+          vars:
+            stage: "wait_for_event"
+          ansible.builtin.debug:
+            msg: "Waiting for event_sno={{ expected_event_sno }}"
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+          until: >-
+            (
+              lookup(
+                'niova_ctlrequest',
+                'lookup',
+                nisd_uuid,
+                ncp_event_sno_key,
+                'nisd',
+                lookout_uuid
+              )['/0/event_sno']
+              | int
+            ) >= (expected_event_sno | int)
+
+        - name: "{{ recipe_name }}: Read final event_sno."
+          vars:
+            stage: "final_event_sno"
+            final_state: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  nisd_uuid,
+                  ncp_event_sno_key,
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          ansible.builtin.set_fact:
+            final_event_sno: "{{ final_state['/0/event_sno'] | int }}"
+
+        - name: "{{ recipe_name }}: Verify TEST event processed exactly once."
+          ansible.builtin.assert:
+            that:
+              - final_event_sno | int == expected_event_sno | int
+            fail_msg: >-
+              Async event failed under non-default tenant identity.
+              Initial={{ initial_event_sno }}
+              Final={{ final_event_sno }}.
+
+        # ------------------------------------------------------------
+        # 9. Verify acknowledgement heartbeat received by CP
+        # ------------------------------------------------------------
+        - name: "{{ recipe_name }}: Wait for ACK heartbeat."
+          ansible.builtin.shell: |
+            set -o pipefail
+            grep -F '"EntityID":"{{ nisd_uuid }}"' "{{ heartbeat_capture_file }}" |
+              grep -F '"TenantUUID":"{{ expected_heartbeat_tenant_uuid }}"' |
+              grep -F '"AckEventSerialNo":{{ expected_event_sno }}' |
+              tail -n1
+          args:
+            executable: /bin/bash
+          register: ack_heartbeat_capture
+          changed_when: false
+          retries: 30
+          delay: 1
+          until:
+            - ack_heartbeat_capture.rc == 0
+            - ack_heartbeat_capture.stdout | length > 0
+
+        - name: "{{ recipe_name }}: Parse ACK heartbeat."
+          ansible.builtin.set_fact:
+            ack_heartbeat: "{{ ack_heartbeat_capture.stdout | from_json }}"
+
+        - name: "{{ recipe_name }}: Verify ACK heartbeat identity and serial."
+          ansible.builtin.assert:
+            that:
+              - ack_heartbeat.EntityID == nisd_uuid
+              - ack_heartbeat.TenantUUID == expected_heartbeat_tenant_uuid
+              - ack_heartbeat.AckEventSerialNo | int == expected_event_sno | int
+            fail_msg: >-
+              ACK heartbeat did not retain the configured tenant identity.
+              Received={{ ack_heartbeat }}
+            success_msg: >-
+              CP received AckEventSerialNo={{ expected_event_sno }}
+              with TenantUUID={{ expected_heartbeat_tenant_uuid }}.
+
+        - name: "{{ recipe_name }}: Test passed."
+          ansible.builtin.debug:
+            msg:
+              - "Non-default cluster UUID heartbeat test passed."
+              - "NISD cluster UUID={{ non_default_cluster_uuid }}"
+              - "CP heartbeat TenantUUID={{ expected_heartbeat_tenant_uuid }}"
+              - "Identity retained across subsequent heartbeats."
+              - "TEST event processed successfully."
+              - "Final event_sno={{ final_event_sno }}"
+
+      always:
+        - name: "{{ recipe_name }}: Remove NISD backing file."
+          ansible.builtin.file:
+            path: "{{ nisd_device_path }}"
+            state: absent
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Tear down mdsvc-tidb."
+          ansible.builtin.debug:
+            msg: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+          ignore_errors: true
