@@ -190,13 +190,38 @@ def login(base_url, username, password, log_file, timeout):
 
     return token
 
-def make_headers(token=None, extra_headers=None):
+def make_headers(token=None,service_secret=None,auth_mode="user",extra_headers=None):
+    """
+    Build request headers.
+
+    auth_mode:
+      user    -> Authorization: Bearer <JWT>
+      service -> Authorization: Service <NISD secret>
+      none    -> no Authorization header
+    """
+
     headers = {
         "Content-Type": "application/json",
     }
 
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    if auth_mode == "service":
+        if not service_secret:
+            raise AnsibleError(
+                "Service authentication requires 'service_secret'"
+            )
+
+        headers["Authorization"] = (
+            f"Service {service_secret}"
+        )
+
+    elif auth_mode == "user":
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+    elif auth_mode != "none":
+        raise AnsibleError(
+            f"Unsupported auth_mode: {auth_mode}"
+        )
 
     if extra_headers:
         headers.update(extra_headers)
@@ -216,7 +241,7 @@ def perform_request(
         response = requests.request(
             method=method,
             url=url,
-            json=payload if method in ["POST", "PUT", "DELETE"] else None,
+            json=payload if method in ["POST","PUT","PATCH","DELETE"] else None,
             params=params,
             headers=headers,
             timeout=timeout,
@@ -595,6 +620,23 @@ class LookupModule(LookupBase):
 
         token = kwargs.get("token")
 
+        service_secret = kwargs.get(
+            "service_secret",
+            os.getenv("NIOVA_NISD_SECRET"),
+        )
+
+        auth_mode = kwargs.get("auth_mode")
+
+        if auth_mode is None:
+            if action == "heartbeat":
+                auth_mode = "service"
+            elif disable_auth:
+                auth_mode = "none"
+            else:
+                auth_mode = "user"
+
+        auth_mode = str(auth_mode).lower()
+
         workspace_dir = os.getenv("NIOVA_WORKSPACE")
 
         if workspace_dir:
@@ -667,6 +709,9 @@ class LookupModule(LookupBase):
             "get_snapshot": ("GET", "/api/snapshot"),
             "get_snapshot_name": ("GET", "/api/snapshot/name"),
 
+            # NISD async event APIs
+            "heartbeat": ("POST", "/api/heartbeat"),
+
             "get_chunk": ("GET", "/api/chunk"),
             "get_chunks": ("GET", "/api/chunks"),
 
@@ -688,16 +733,45 @@ class LookupModule(LookupBase):
             "proxy_func": ("GET", "/func"),
         }
 
-        if action not in endpoint_map:
-            raise AnsibleError(f"Unsupported action: {action}")
+        if action == "custom_request":
+            method = str(
+                kwargs.get("method", "GET")
+            ).upper()
 
-        method, path = endpoint_map[action]
+            if len(terms) >= 2:
+                path = terms[1]
+            else:
+                path = kwargs.get("path")
 
-        if len(terms) >= 2:
-            path = terms[1]
+            if not path:
+                raise AnsibleError(
+                    "custom_request requires an API path"
+                )
 
-        if not disable_auth and not token and path.startswith("/api/"):
-            token = login(base_url, username, password, log_file, timeout)
+            if method not in (
+                "GET",
+                "POST",
+                "PUT",
+                "DELETE",
+                "PATCH",
+            ):
+                raise AnsibleError(
+                    f"Unsupported HTTP method: {method}"
+                )
+
+        else:
+            if action not in endpoint_map:
+                raise AnsibleError(
+                    f"Unsupported action: {action}"
+                )
+
+            method, path = endpoint_map[action]
+
+            if len(terms) >= 2:
+                path = terms[1]
+
+        if (auth_mode == "user" and not disable_auth and not token and path.startswith("/api/")):
+            token = login(base_url,username,password,log_file,timeout,)
 
         payload = load_payload(
             kwargs.get("file"),
@@ -706,6 +780,8 @@ class LookupModule(LookupBase):
 
         headers = make_headers(
             token=token,
+            service_secret=service_secret,
+            auth_mode=auth_mode,
             extra_headers=kwargs.get("headers"),
         )
 
