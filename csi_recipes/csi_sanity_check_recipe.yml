@@ -9,7 +9,23 @@
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
 
   tasks:
+    - name: "{{ recipe_name }}: Start mdsvc-tidb."
+      set_fact:
+        setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
 
+    - name: "{{ recipe_name }}: Debug setup status."
+      debug:
+        msg: "{{ setup_status }}"
+
+    - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
+      uri:
+        url: "{{ api_base_url }}/swagger/"
+        method: GET
+        status_code: [200, 301, 302]
+      register: api_health
+      retries: 90
+      delay: 3
+      until: api_health.status in [200, 301, 302]
     # ----------------------------------------
     # 1. Login
     # ----------------------------------------
