@@ -1,9 +1,9 @@
-- name: "csi_santy_check.yml"
+- name: "csi_sanity_check_recipe.yml"
   hosts: localhost
   connection: local
 
   vars:
-    recipe_name: "csi_sanity_check"
+    recipe_name: "csi_sanity_check_recipe"
     api_base_url: "http://localhost:8081"
     infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
     nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
