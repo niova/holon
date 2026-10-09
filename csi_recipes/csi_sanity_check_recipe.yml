@@ -10,19 +10,6 @@
 
   tasks:
 
-    # ----------------------------------------
-    # 1. Check app type
-    # ----------------------------------------
-
-    - name: "{{ recipe_name }}: Check if app_type is tidb."
-      debug:
-        msg: "app_type is: {{ app_type }}"
-      failed_when: app_type != "tidb"
-
-    # ----------------------------------------
-    # 2. Start mdsvc-tidb Docker stack
-    # ----------------------------------------
-
     - name: "{{ recipe_name }}: Start mdsvc-tidb."
       set_fact:
         setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
