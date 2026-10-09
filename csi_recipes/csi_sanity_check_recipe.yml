@@ -10,26 +10,8 @@
 
   tasks:
 
-    - name: "{{ recipe_name }}: Start mdsvc-tidb."
-      set_fact:
-        setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
-
-    - name: "{{ recipe_name }}: Debug setup status."
-      debug:
-        msg: "{{ setup_status }}"
-
-    - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
-      uri:
-        url: "{{ api_base_url }}/swagger/"
-        method: GET
-        status_code: [200, 301, 302]
-      register: api_health
-      retries: 90
-      delay: 3
-      until: api_health.status in [200, 301, 302]
-
     # ----------------------------------------
-    # 3. Login
+    # 1. Login
     # ----------------------------------------
 
     - name: "{{ recipe_name }}: Login to mdsvc-api."
@@ -50,7 +32,7 @@
         msg: "Login successful"
 
     # ----------------------------------------
-    # 4. Create Infra
+    # 2. Create Infra
     # ----------------------------------------
 
     - name: "{{ recipe_name }}: Create infra."
@@ -71,7 +53,7 @@
         var: infra_result
 
     # ----------------------------------------
-    # 5. Create local NISD backing device
+    # 3. Create local NISD backing device
     # 10 GiB = 64M * 160
     # ----------------------------------------
 
@@ -90,7 +72,7 @@
         msg: "{{ nisd_dev_path.msg[0] }}"
 
     # ----------------------------------------
-    # 6. Start niova-block-ctl
+    # 4. Start niova-block-ctl
     # ----------------------------------------
 
     - name: "{{ recipe_name }}: Start niova-block-ctl process."
@@ -102,7 +84,7 @@
         msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
 
     # ----------------------------------------
-    # 7. Start NISD
+    # 5. Start NISD
     # ----------------------------------------
 
     - name: "{{ recipe_name }}: Start NISD."
@@ -118,7 +100,7 @@
           - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
 
     # ----------------------------------------
-    # 8. Export kubeconfig
+    # 6. Export kubeconfig
     # ----------------------------------------
 
     - name: "{{ recipe_name }}: Export kubeconfig."
