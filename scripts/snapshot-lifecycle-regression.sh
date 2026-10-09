@@ -83,17 +83,68 @@ wait_applied(){
   die "snapshot did not become applied within ${POLL_TIMEOUT}s"
 }
 
-wait_deleted(){
-  local deadline=$((SECONDS+POLL_TIMEOUT)) response n=0
-  while ((SECONDS < deadline)); do
-    n=$((n+1))
-    if ! response="$(cp_lookup 2>"$ITER_DIR/cp-delete-lookup-${n}.err")"; then return 0; fi
-    printf '%s\n' "$response" >>"$ITER_DIR/control-plane-delete-lookups.jsonl"
-    state="$(printf %s "$response" | json_field state || true)"
-    [[ "$state" == deleted || "$state" == not_found ]] && return 0
-    sleep .5
-  done
-  die "snapshot still exists after ${POLL_TIMEOUT}s"
+wait_deleted() {
+    local deadline=$((SECONDS + POLL_TIMEOUT))
+    local response status body state n=0
+
+    while ((SECONDS < deadline)); do
+        n=$((n + 1))
+
+        response="$(
+            timeout "${OP_TIMEOUT}s" \
+            curl --max-time "$OP_TIMEOUT" \
+                --silent --show-error \
+                -H "Authorization: Bearer $CP_TOKEN" \
+                --get \
+                --data-urlencode "vdev_id=$VDEV_UUID" \
+                --data-urlencode "name=$SNAPSHOT_NAME" \
+                -w $'\n%{http_code}' \
+                "$MDSVC_API_URL/api/snapshot"
+        )" || {
+            log "CP lookup transport failure; retrying"
+            sleep 0.5
+            continue
+        }
+
+        status="${response##*$'\n'}"
+        body="${response%$'\n'*}"
+
+        case "$status" in
+            404)
+                log "Snapshot deletion confirmed (HTTP 404)"
+                return 0
+                ;;
+            401)
+                log "CP token rejected; refreshing"
+                cp_login
+                ;;
+            200)
+                printf '%s\n' "$body" \
+                    >> "$ITER_DIR/control-plane-delete-lookups.jsonl"
+
+                state="$(printf '%s' "$body" |
+                    json_field state || true)"
+
+                if [[ "$state" == "deleted" ||
+                      "$state" == "not_found" ]]; then
+                    return 0
+                fi
+                ;;
+            403)
+                die "Snapshot lookup forbidden (HTTP 403)"
+                ;;
+            5??)
+                log "CP returned HTTP $status; retrying"
+                ;;
+            *)
+                die "Unexpected CP response: HTTP $status"
+                ;;
+        esac
+
+        sleep 0.5
+    done
+
+    die "Snapshot deletion not confirmed within ${POLL_TIMEOUT}s"
 }
 
 list_ublk(){ shopt -s nullglob; local d=(/dev/ublkb*); shopt -u nullglob; printf '%s\n' "${d[@]}"; }

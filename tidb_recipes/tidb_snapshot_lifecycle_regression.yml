@@ -72,8 +72,9 @@
               - snapshot_live_device is defined
               - snapshot_live_device | length > 0
 
-              - snapshot_live_ublk_uuid is defined
-              - snapshot_live_ublk_uuid | length > 0
+              - live_ublk_uuid is defined
+              - live_ublk_uuid is mapping
+              - live_ublk_uuid | length > 0
 
               - snapshot_nisd_device_path is defined
               - snapshot_nisd_device_path | length > 0

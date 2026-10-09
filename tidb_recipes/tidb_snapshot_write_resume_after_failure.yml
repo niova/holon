@@ -277,7 +277,10 @@
         # 9. Restart SAME NISD using SAME backing storage
         # IMPORTANT:
         #   - Do NOT rerun niova-block-ctl
-        #   - Do NOT restart the live ublk client
+        #   - Reuse the existing NISD backing storage
+        #   - Stop the old live ublk after NISD recovery
+        #   - Remount the SAME VDEV using a new ublk client
+        #   - Verify that the failed snapshot becomes abandoned
         # ------------------------------------------------------------
         - name: "{{ recipe_name }}: Restart NISD on existing backing storage."
           vars:
@@ -516,7 +519,7 @@
               - "snapshot_state=abandoned"
               - "old_nisd_pid={{ old_nisd_pid }}"
               - "new_nisd_pid={{ new_nisd_pid }}"
-              - "same_live_device={{ snapshot_live_device }}"
+              - "remounted_live_device={{ snapshot_live_device }}"
               - "same_backing_storage={{ snapshot_nisd_device_path }}"
               - "post-failure write/read=success"
 
