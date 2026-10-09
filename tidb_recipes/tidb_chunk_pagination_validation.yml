@@ -138,10 +138,12 @@
           assert:
             that:
               - infra_result.status_code | int in [200, 201]
+              - infra_result.status | int == 0
             success_msg: "Infrastructure created successfully."
             fail_msg: >-
               Infrastructure creation failed.
-              Status: {{ infra_result.status_code | default('missing') }}
+              HTTP status: {{ infra_result.status_code | default('missing') }}
+              API status: {{ infra_result.status | default('missing') }}
               Response: {{ infra_result.data | default({}) }}
 
         # =====================================================

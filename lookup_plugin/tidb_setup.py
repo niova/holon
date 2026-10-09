@@ -46,9 +46,9 @@ Optional persistent playground tag:
 
   playground_tag: my-test-cluster
 
-If a tag is omitted, normal TiUP Playground cleanup semantics apply when the
-playground supervisor exits. A tag should only be used when persistence across
-full playground restarts is explicitly required.
+If a tag is omitted, the lookup plugin records the TiUP Playground data
+directory and explicitly removes it during teardown. A tag should only be used
+when persistence across full playground restarts is explicitly required.
 """
 
 from ansible.plugins.lookup import LookupBase
@@ -60,6 +60,8 @@ import signal
 import subprocess
 import requests
 import time
+import shutil
+from urllib.parse import urlparse
 
 # =========================================================
 # Shared logging helpers
@@ -119,6 +121,55 @@ def _tidb_backend(cluster_params):
 # Docker Setup
 # =========================================================
 
+def _docker_tidb_data_dir():
+    """Return the host directory bind-mounted as TiDB's /tmp/tidb."""
+    return os.path.realpath(
+        os.getenv("TIDB_DATA_DIR", "/local/tejus/docker-tidb-local")
+    )
+
+def _cleanup_docker_tidb_data(logf):
+    """Remove persisted TiDB Unistore data used by Docker test runs."""
+    data_dir = _docker_tidb_data_dir()
+
+    # Safety checks before sudo rm -rf.
+    unsafe_paths = {
+        "/",
+        "/tmp",
+        "/var",
+        "/home",
+        "/local",
+    }
+
+    if data_dir in unsafe_paths or len(data_dir) < 10:
+        raise AnsibleError(
+            "Refusing to remove unsafe TiDB data directory: %s" % data_dir
+        )
+
+    logf.write(
+        "\nREMOVING PERSISTED TIDB DATA: %s\n" % data_dir
+    )
+    logf.flush()
+
+    proc = subprocess.Popen(
+        ["sudo", "rm", "-rf", data_dir],
+        stdout=logf,
+        stderr=logf,
+    )
+
+    rc = proc.wait()
+
+    if rc != 0:
+        raise AnsibleError(
+            "Failed to remove TiDB data directory %s" % data_dir
+        )
+
+    logf.write(
+        "TIDB DATA DIRECTORY CLEANED: %s\n" % data_dir
+    )
+    logf.flush()
+
+    return data_dir
+
 def docker_setup(cluster_params):
     """Tear down existing stack, start Docker stack, and wait for API health."""
 
@@ -150,6 +201,11 @@ def docker_setup(cluster_params):
             raise AnsibleError(
                 "docker compose down failed. Check log: %s" % log_file
             )
+
+        # docker compose down -v does not remove the host bind-mounted
+        # TiDB Unistore directory. Explicitly clean it so every recipe
+        # starts with an empty database.
+        tidb_data_dir = _cleanup_docker_tidb_data(logf)
 
         logf.write("\nDOCKER STACK CLEANED UP\n")
 
@@ -203,10 +259,11 @@ def docker_setup(cluster_params):
         "log_file": log_file,
         "docker_container_log": docker_container_log,
         "base_url": base_url,
+        "tidb_data_dir": tidb_data_dir,
     }
 
 def docker_teardown(cluster_params):
-    """Stop and remove the mdsvc-tidb Docker stack and its volumes."""
+    """Stop/remove mdsvc-tidb Docker stack and persisted TiDB test data."""
 
     workspace_dir = os.getenv("NIOVA_WORKSPACE")
     repo_path = "%s/mdsvc-tidb" % workspace_dir
@@ -215,7 +272,12 @@ def docker_teardown(cluster_params):
     app_name = cluster_params["app_type"]
     raft_uuid = cluster_params["raft_uuid"]
 
-    log_file = "%s/%s/%s_docker_log.txt" % (base_dir, raft_uuid, app_name)
+    log_file = "%s/%s/%s_docker_log.txt" % (
+        base_dir,
+        raft_uuid,
+        app_name,
+    )
+
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     with open(log_file, "a") as logf:
@@ -227,17 +289,24 @@ def docker_teardown(cluster_params):
             stdout=logf,
             stderr=logf,
         )
+
         down_rc = down_proc.wait()
+
         if down_rc != 0:
             raise AnsibleError(
                 "docker compose down failed. Check log: %s" % log_file
             )
 
-        logf.write("\nDOCKER STACK STOPPED AND REMOVED\n")
+        tidb_data_dir = _cleanup_docker_tidb_data(logf)
+
+        logf.write(
+            "\nDOCKER STACK STOPPED AND TIDB DATA REMOVED\n"
+        )
 
     return {
         "status": "docker_teardown_done",
         "log_file": log_file,
+        "tidb_data_dir": tidb_data_dir,
     }
 
 # =========================================================
@@ -312,6 +381,7 @@ def manual_setup(cluster_params):
         "mysql_user": mysql_user,
         "mysql_password": mysql_password,
         "base_url": base_url,
+        "server_env": cluster_params.get("server_env", {}),
         "disable_auth": cluster_params.get("disable_auth", False),
         "jwt_secret": cluster_params.get("jwt_secret"),
         "tenant_admin_username": cluster_params.get("tenant_admin_username"),
@@ -458,6 +528,114 @@ def _save_playground_state(cluster_params, state):
     with open(tmp_file, "w") as fp:
         json.dump(state, fp, indent=2, sort_keys=True)
     os.replace(tmp_file, state_file)
+
+def _discover_playground_data_dir(cluster_params):
+    """
+    Discover the root data directory for the current TiUP Playground.
+
+    Example:
+      --data-dir=/home/runner/.tiup/data/VXGEY4L/tikv-1/data
+
+    Returns:
+      /home/runner/.tiup/data/VXGEY4L
+    """
+    processes = _playground_component_processes(cluster_params)
+
+    for proc in processes:
+        cmd = proc.get("cmd") or []
+
+        for arg in cmd:
+            if not arg.startswith("--data-dir="):
+                continue
+
+            component_data_dir = arg.split("=", 1)[1]
+
+            component_dir = os.path.dirname(
+                os.path.realpath(component_data_dir)
+            )
+
+            playground_dir = os.path.dirname(component_dir)
+
+            return playground_dir
+
+    return None
+
+def _wait_for_playground_data_dir(cluster_params, timeout=120):
+    """
+    Wait until a Playground component exposes its data directory.
+    """
+    deadline = time.time() + timeout
+    last_error = None
+
+    while time.time() < deadline:
+        try:
+            data_dir = _discover_playground_data_dir(cluster_params)
+            if data_dir:
+                return data_dir
+        except Exception as exc:
+            last_error = str(exc)
+
+        time.sleep(1)
+
+    raise AnsibleError(
+        "Unable to determine TiUP Playground data directory within %ss. "
+        "Last error: %s"
+        % (timeout, last_error or "data directory not found")
+    )
+
+def _cleanup_playground_data(cluster_params):
+    """
+    Remove data for an ephemeral TiUP Playground.
+
+    Tagged playgrounds are intentionally preserved.
+    """
+
+    tag = cluster_params.get("playground_tag")
+
+    if tag:
+        return {
+            "status": "playground_data_preserved",
+            "tag": tag,
+        }
+
+    state = _load_playground_state(cluster_params)
+    playground_state = state.get("playground", {})
+
+    data_dir = playground_state.get("data_dir")
+
+    if not data_dir:
+        return {
+            "status": "playground_data_dir_unknown",
+        }
+
+    data_dir = os.path.realpath(data_dir)
+
+    tiup_data_root = os.path.realpath(
+        os.path.expanduser("~/.tiup/data")
+    )
+
+    # Only permit deletion of a child directory of ~/.tiup/data.
+    if (
+        data_dir == tiup_data_root
+        or not data_dir.startswith(tiup_data_root + os.sep)
+    ):
+        raise AnsibleError(
+            "Refusing to remove unsafe TiUP Playground directory: %s"
+            % data_dir
+        )
+
+    if not os.path.exists(data_dir):
+        return {
+            "status": "playground_data_already_removed",
+            "data_dir": data_dir,
+        }
+
+    shutil.rmtree(data_dir)
+
+    return {
+        "status": "playground_data_removed",
+        "data_dir": data_dir,
+    }
 
 def _component_role_from_cmd(cmd):
     joined = " ".join(cmd)
@@ -826,23 +1004,28 @@ def _wait_for_mysql_ready(cluster_params, logf):
 
 def playground_setup(cluster_params):
     """Start a local multi-node cluster with `tiup playground`."""
+
     base_dir = cluster_params["base_dir"]
     raft_uuid = cluster_params["raft_uuid"]
+
     log_file = _playground_log_file(cluster_params)
     pid_file = _playground_pid_file(cluster_params)
     state_file = _playground_state_file(cluster_params)
 
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
-    # Clean up a playground left by a previous failed recipe invocation.
     old_pid = _read_pid_file(pid_file)
+
     if old_pid and _pid_exists(old_pid):
         raise AnsibleError(
             "A TiUP playground is already running for this recipe context "
-            "(pid=%d). Run teardown first. PID file: %s" % (old_pid, pid_file)
+            "(pid=%d). Run teardown first. PID file: %s"
+            % (old_pid, pid_file)
         )
+
     if os.path.exists(pid_file):
         os.remove(pid_file)
+
     if os.path.exists(state_file):
         os.remove(state_file)
 
@@ -851,12 +1034,15 @@ def playground_setup(cluster_params):
     with open(log_file, "a") as logf:
         logf.write("\nSTARTING TIUP PLAYGROUND\n")
         logf.write("$ %s\n" % " ".join(cmd))
+
         if cluster_params.get("topo_file"):
             logf.write(
                 "NOTE: topo_file=%s is ignored by TiUP Playground. Use "
                 "playground_pd/playground_kv/playground_db and component "
-                "*.config parameters instead.\n" % cluster_params.get("topo_file")
+                "*.config parameters instead.\n"
+                % cluster_params.get("topo_file")
             )
+
         logf.flush()
 
         playground_proc = subprocess.Popen(
@@ -869,47 +1055,108 @@ def playground_setup(cluster_params):
         with open(pid_file, "w") as fp:
             fp.write(str(playground_proc.pid))
 
-        logf.write("TiUP Playground launcher pid=%d\n" % playground_proc.pid)
+        logf.write(
+            "TiUP Playground launcher pid=%d\n"
+            % playground_proc.pid
+        )
         logf.flush()
 
     try:
-        # If TiUP exits immediately, fail early with the playground log path.
         time.sleep(2)
+
         if playground_proc.poll() is not None:
             raise AnsibleError(
                 "tiup playground exited early (rc=%s). Check log: %s"
                 % (playground_proc.returncode, log_file)
             )
 
+        #
+        # Record the Playground directory before the full cluster
+        # initialization completes, so failed setup can still clean it.
+        #
+        playground_data_dir = _wait_for_playground_data_dir(
+            cluster_params,
+            timeout=120,
+        )
+
+        state = _load_playground_state(cluster_params)
+
+        state["playground"] = {
+            "pid": playground_proc.pid,
+            "tag": cluster_params.get("playground_tag"),
+            "data_dir": playground_data_dir,
+        }
+
+        _save_playground_state(cluster_params, state)
+
         with open(log_file, "a") as logf:
+            logf.write(
+                "Recorded TiUP Playground data directory: %s\n"
+                % playground_data_dir
+            )
+            logf.flush()
+
             _wait_for_pd_ready(cluster_params, logf)
             _wait_for_tikv_quorum_ready(cluster_params, logf)
             _wait_for_mysql_ready(cluster_params, logf)
 
         workspace_dir = os.getenv("NIOVA_WORKSPACE")
         repo_path = "%s/mdsvc-tidb" % workspace_dir
-        base_url = cluster_params.get("api_base_url", "http://localhost:8081")
-        server_timeout = int(cluster_params.get("server_timeout", 120))
 
-        mysql_host = cluster_params.get("mysql_host", "127.0.0.1")
-        mysql_port = str(cluster_params.get("mysql_port", "4000"))
-        mysql_user = cluster_params.get("mysql_user", "root")
-        mysql_password = cluster_params.get("mysql_password", "")
+        base_url = cluster_params.get(
+            "api_base_url",
+            "http://localhost:8081",
+        )
+
+        server_timeout = int(
+            cluster_params.get("server_timeout", 120)
+        )
+
+        mysql_host = cluster_params.get(
+            "mysql_host",
+            "127.0.0.1",
+        )
+        mysql_port = str(
+            cluster_params.get("mysql_port", "4000")
+        )
+        mysql_user = cluster_params.get(
+            "mysql_user",
+            "root",
+        )
+        mysql_password = cluster_params.get(
+            "mysql_password",
+            "",
+        )
 
         server_result = start_server({
             "server_path": repo_path,
-            "pid_file": "%s/%s/mdsvc_server.pid" % (base_dir, raft_uuid),
+            "pid_file": "%s/%s/mdsvc_server.pid"
+            % (base_dir, raft_uuid),
             "mysql_host": mysql_host,
             "mysql_port": mysql_port,
             "mysql_user": mysql_user,
             "mysql_password": mysql_password,
             "base_url": base_url,
-            "disable_auth": cluster_params.get("disable_auth", False),
-            "jwt_secret": cluster_params.get("jwt_secret"),
-            "tenant_admin_username": cluster_params.get("tenant_admin_username"),
-            "tenant_admin_password": cluster_params.get("tenant_admin_password"),
-            "admin_default_username": cluster_params.get("admin_default_username"),
-            "admin_default_password": cluster_params.get("admin_default_password"),
+            "disable_auth": cluster_params.get(
+                "disable_auth",
+                False,
+            ),
+            "server_env": cluster_params.get("server_env", {}),
+            "jwt_secret": cluster_params.get(
+                "jwt_secret"
+            ),
+            "tenant_admin_username": cluster_params.get(
+                "tenant_admin_username"
+            ),
+            "tenant_admin_password": cluster_params.get(
+                "tenant_admin_password"
+            ),
+            "admin_default_username": cluster_params.get(
+                "admin_default_username"
+            ),
+            "admin_default_password": cluster_params.get(
+                "admin_default_password"
+            ),
         })
 
         wait_for_server({
@@ -923,27 +1170,59 @@ def playground_setup(cluster_params):
         return {
             "status": "playground_setup_done",
             "playground_pid": playground_proc.pid,
-            "playground_tag": cluster_params.get("playground_tag"),
+            "playground_tag": cluster_params.get(
+                "playground_tag"
+            ),
+            "playground_data_dir": playground_data_dir,
             "server_pid": server_result["pid"],
             "log_file": log_file,
             "server_log_file": server_result["log_file"],
             "base_url": base_url,
-            "pd_count": int(cluster_params.get("playground_pd", 1)),
-            "tikv_count": int(cluster_params.get("playground_kv", 3)),
-            "tidb_count": int(cluster_params.get("playground_db", 1)),
+            "pd_count": int(
+                cluster_params.get("playground_pd", 1)
+            ),
+            "tikv_count": int(
+                cluster_params.get("playground_kv", 3)
+            ),
+            "tidb_count": int(
+                cluster_params.get("playground_db", 1)
+            ),
         }
 
     except Exception:
         try:
             stop_server({
-                "pid_file": "%s/%s/mdsvc_server.pid" % (base_dir, raft_uuid)
+                "pid_file": "%s/%s/mdsvc_server.pid"
+                % (base_dir, raft_uuid)
             })
         except Exception:
             pass
+
         try:
-            _stop_playground_process(cluster_params, force=True)
+            _stop_playground_process(
+                cluster_params,
+                force=True,
+            )
         except Exception:
             pass
+
+        #
+        # Important: setup failure must also clean the Playground
+        # directory, otherwise cluster_setup_done remains false and
+        # the recipe's normal teardown will never execute.
+        #
+        if not cluster_params.get("playground_tag"):
+            try:
+                _cleanup_playground_data(cluster_params)
+            except Exception:
+                pass
+
+        if os.path.exists(state_file):
+            try:
+                os.remove(state_file)
+            except OSError:
+                pass
+
         raise
 
 def _stop_tracked_restarted_nodes(cluster_params, logf):
@@ -978,6 +1257,14 @@ def _stop_tracked_restarted_nodes(cluster_params, logf):
             os.kill(int(pid), signal.SIGTERM)
             if not _wait_pid_exit(int(pid), timeout=10):
                 os.kill(int(pid), signal.SIGKILL)
+
+                if not _wait_pid_exit(int(pid), timeout=5):
+                    raise AnsibleError(
+                        "Restarted Playground node %s pid=%s "
+                        "did not exit after SIGKILL"
+                        % (node_id, pid)
+                    )
+                
         except ProcessLookupError:
             pass
         except Exception as exc:
@@ -989,68 +1276,134 @@ def _stop_tracked_restarted_nodes(cluster_params, logf):
 def _stop_playground_process(cluster_params, force=False):
     pid_file = _playground_pid_file(cluster_params)
     pid = _read_pid_file(pid_file)
+
     log_file = _playground_log_file(cluster_params)
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
 
     if not pid or not _pid_exists(pid):
         if os.path.exists(pid_file):
             os.remove(pid_file)
-        return {"status": "playground_not_running"}
+
+        return {
+            "status": "playground_not_running",
+        }
 
     with open(log_file, "a") as logf:
-        _stop_tracked_restarted_nodes(cluster_params, logf)
+        _stop_tracked_restarted_nodes(
+            cluster_params,
+            logf,
+        )
 
         try:
             pgid = os.getpgid(pid)
+
             logf.write(
-                "Stopping TiUP Playground pid=%d pgid=%d\n" % (pid, pgid)
+                "Stopping TiUP Playground pid=%d pgid=%d\n"
+                % (pid, pgid)
             )
-            os.killpg(pgid, signal.SIGTERM)
+            logf.flush()
+
+            os.killpg(
+                pgid,
+                signal.SIGTERM,
+            )
 
             if not _wait_pid_exit(pid, timeout=20):
-                if force:
-                    logf.write(
-                        "Playground did not stop after SIGTERM; sending SIGKILL.\n"
-                    )
-                    os.killpg(pgid, signal.SIGKILL)
-                    _wait_pid_exit(pid, timeout=5)
-                else:
+                if not force:
                     raise AnsibleError(
-                        "TiUP playground pid=%d did not stop within timeout" % pid
+                        "TiUP Playground pid=%d did not stop "
+                        "within timeout"
+                        % pid
                     )
+
+                logf.write(
+                    "Playground did not stop after SIGTERM; "
+                    "sending SIGKILL.\n"
+                )
+                logf.flush()
+
+                os.killpg(
+                    pgid,
+                    signal.SIGKILL,
+                )
+
+                if not _wait_pid_exit(pid, timeout=5):
+                    raise AnsibleError(
+                        "TiUP Playground pid=%d did not exit "
+                        "after SIGKILL"
+                        % pid
+                    )
+
         except ProcessLookupError:
             pass
-        finally:
-            if os.path.exists(pid_file):
-                os.remove(pid_file)
 
-    return {"status": "playground_stopped", "pid": pid}
+    if os.path.exists(pid_file):
+        os.remove(pid_file)
 
+    return {
+        "status": "playground_stopped",
+        "pid": pid,
+    }
 
 def playground_teardown(cluster_params):
-    """Stop mdsvc-api and the TiUP Playground supervisor/process tree."""
+    """
+    Stop mdsvc-api, Playground processes,
+    and ephemeral Playground data.
+    """
+
     base_dir = cluster_params["base_dir"]
     raft_uuid = cluster_params["raft_uuid"]
-    pid_dir = "%s/%s" % (base_dir, raft_uuid)
-    log_file = _playground_log_file(cluster_params)
 
-    server_status = stop_server({"pid_file": "%s/mdsvc_server.pid" % pid_dir})
-    playground_status = _stop_playground_process(cluster_params, force=True)
+    pid_dir = "%s/%s" % (
+        base_dir,
+        raft_uuid,
+    )
 
-    # Do not silently delete tagged TiUP data. A tag is explicitly a request
-    # for persistence. Recipes that need a fresh cluster should omit the tag.
+    server_status = stop_server({
+        "pid_file": "%s/mdsvc_server.pid"
+        % pid_dir
+    })
+
+    playground_status = _stop_playground_process(
+        cluster_params,
+        force=True,
+    )
+
     tag = cluster_params.get("playground_tag")
+
     if tag:
-        with open(log_file, "a") as logf:
-            logf.write(
-                "Playground tag %s was used; tagged TiUP data is intentionally "
-                "left in place.\n" % tag
+        data_status = {
+            "status": "playground_data_preserved",
+            "tag": tag,
+        }
+
+    else:
+        data_status = _cleanup_playground_data(
+            cluster_params
+        )
+
+        if data_status["status"] not in (
+            "playground_data_removed",
+            "playground_data_already_removed",
+        ):
+            raise AnsibleError(
+                "TiUP Playground stopped but "
+                "data cleanup failed: %s"
+                % data_status
             )
+
+    state_file = _playground_state_file(
+        cluster_params
+    )
+
+    if os.path.exists(state_file):
+        os.remove(state_file)
 
     return {
         "status": "playground_teardown_done",
         "server": server_status,
         "playground": playground_status,
+        "data_cleanup": data_status,
         "playground_tag": tag,
     }
 
@@ -1632,21 +1985,91 @@ def _tail_file(path, max_lines=80):
     except Exception as exc:
         return "<unable to read %s: %s>" % (path, exc)
 
+def _mdsvc_listen_addr(base_url):
+    """Convert an API URL such as http://localhost:8081 to :8081."""
+    parsed = urlparse(str(base_url))
+
+    if parsed.port:
+        return ":%d" % parsed.port
+
+    if parsed.scheme == "https":
+        return ":443"
+
+    return ":80"
+
+
+def _mdsvc_dsn(params):
+    """Build the DSN expected by mdsvc-api from the supplied MySQL settings."""
+    mysql_host = str(params["mysql_host"])
+    mysql_port = str(params["mysql_port"])
+    mysql_user = str(params.get("mysql_user", "root"))
+    mysql_password = str(params.get("mysql_password", ""))
+
+    credentials = mysql_user
+    if mysql_password:
+        credentials += ":" + mysql_password
+
+    return "%s@tcp(%s:%s)/" % (
+        credentials,
+        mysql_host,
+        mysql_port,
+    )
+
+
 def start_server(params):
-    """Launch mdsvc-api as a detached background process and detect early exit."""
+    """
+    Build and launch mdsvc-api as a detached background process.
+
+    The default path intentionally builds the server first instead of using
+    `go run`. This prevents the tracked PID from being the Go toolchain wrapper
+    and makes compile/startup failures immediately visible in mdsvc.log.
+    """
     server_path = params["server_path"]
     pid_file = params["pid_file"]
 
     if not os.path.isdir(server_path):
-        raise AnsibleError("mdsvc server_path does not exist: %s" % server_path)
-    if not os.path.exists(os.path.join(server_path, "go.mod")):
-        raise AnsibleError("mdsvc server_path has no go.mod: %s" % server_path)
+        raise AnsibleError(
+            "mdsvc server_path does not exist: %s" % server_path
+        )
+
+    go_mod = os.path.join(server_path, "go.mod")
+    if not os.path.exists(go_mod):
+        raise AnsibleError(
+            "mdsvc server_path has no go.mod: %s" % server_path
+        )
+
+    pid_dir = os.path.dirname(pid_file)
+    os.makedirs(pid_dir, exist_ok=True)
+
+    # Remove a stale PID file, or stop a server left by an earlier failed run.
+    if os.path.exists(pid_file):
+        old_pid = _read_pid_file(pid_file)
+        if old_pid and _pid_exists(old_pid):
+            try:
+                os.killpg(os.getpgid(old_pid), signal.SIGTERM)
+                _wait_pid_exit(old_pid, timeout=10)
+            except ProcessLookupError:
+                pass
+            except Exception as exc:
+                raise AnsibleError(
+                    "Unable to stop existing mdsvc-api process pid=%s: %s"
+                    % (old_pid, exc)
+                )
+
+        if os.path.exists(pid_file):
+            os.remove(pid_file)
 
     log_file = os.path.join(server_path, "mdsvc.log")
-    fp = open(log_file, "a")
 
     env = os.environ.copy()
+
+    #
+    # Set the environment variables actually consumed by mdsvc-api.
+    # Keep the older individual MySQL variables too for compatibility.
+    #
     env.update({
+        "MDSVC_DSN": _mdsvc_dsn(params),
+        "MDSVC_LISTEN": _mdsvc_listen_addr(params["base_url"]),
         "MDSVC_MYSQL_HOST": str(params["mysql_host"]),
         "MDSVC_MYSQL_PORT": str(params["mysql_port"]),
         "MDSVC_MYSQL_USER": str(params["mysql_user"]),
@@ -1654,71 +2077,172 @@ def start_server(params):
         "MDSVC_API_URL": str(params["base_url"]),
     })
 
+    extra_env = params.get("server_env") or {}
+    if not isinstance(extra_env, dict):
+        raise AnsibleError("server_env must be a dictionary")
+
+    for key, value in extra_env.items():
+        if value is None:
+            continue
+        env[str(key)] = str(value)
+
     if params.get("disable_auth"):
         env["DISABLE_AUTH"] = "true"
+    else:
+        env.setdefault("DISABLE_AUTH", "false")
+
     if params.get("jwt_secret"):
         env["JWT_SECRET"] = str(params["jwt_secret"])
+
     if params.get("tenant_admin_username"):
-        env["TENANT_ADMIN_USERNAME"] = str(params["tenant_admin_username"])
+        env["TENANT_ADMIN_USERNAME"] = str(
+            params["tenant_admin_username"]
+        )
+
     if params.get("tenant_admin_password"):
-        env["TENANT_ADMIN_PASSWORD"] = str(params["tenant_admin_password"])
+        env["TENANT_ADMIN_PASSWORD"] = str(
+            params["tenant_admin_password"]
+        )
+
     if params.get("admin_default_username"):
-        env["ADMIN_DEFAULT_USERNAME"] = str(params["admin_default_username"])
+        env["ADMIN_DEFAULT_USERNAME"] = str(
+            params["admin_default_username"]
+        )
+
     if params.get("admin_default_password"):
-        env["ADMIN_DEFAULT_PASSWORD"] = str(params["admin_default_password"])
-
-    command = params.get("server_command") or ["go", "run", "./cmd/server"]
-    if isinstance(command, str):
-        command = command.split()
-
-    fp.write("\n==== STARTING MDSVC-API ====\n")
-    fp.write("cwd=%s\n" % server_path)
-    fp.write("command=%s\n" % " ".join(command))
-    fp.write(
-        "mysql=%s:%s user=%s api=%s disable_auth=%s\n"
-        % (
-            params["mysql_host"],
-            params["mysql_port"],
-            params["mysql_user"],
-            params["base_url"],
-            bool(params.get("disable_auth")),
-        )
-    )
-    fp.flush()
-
-    proc = subprocess.Popen(
-        command,
-        cwd=server_path,
-        stdout=fp,
-        stderr=fp,
-        env=env,
-        preexec_fn=os.setsid,
-    )
-
-    os.makedirs(os.path.dirname(pid_file), exist_ok=True)
-    with open(pid_file, "w") as pidf:
-        pidf.write(str(proc.pid))
-
-    fp.write("mdsvc-api launcher pid=%d\n" % proc.pid)
-    fp.flush()
-
-    time.sleep(float(params.get("server_early_exit_check", 2)))
-    rc = proc.poll()
-    if rc is not None:
-        fp.close()
-        if os.path.exists(pid_file):
-            os.remove(pid_file)
-        raise AnsibleError(
-            "mdsvc-api exited before becoming ready (rc=%s). Log: %s\n"
-            "---- mdsvc.log tail ----\n%s"
-            % (rc, log_file, _tail_file(log_file))
+        env["ADMIN_DEFAULT_PASSWORD"] = str(
+            params["admin_default_password"]
         )
 
-    fp.close()
+    #
+    # Preserve explicit caller commands. Otherwise build a real binary first,
+    # then track that binary's PID rather than the `go run` wrapper.
+    #
+    command = params.get("server_command")
+    binary_path = None
+
+    with open(log_file, "a") as fp:
+        fp.write("\n==== STARTING MDSVC-API ====\n")
+        fp.write("cwd=%s\n" % server_path)
+        fp.write(
+            "mysql=%s:%s user=%s api=%s listen=%s disable_auth=%s\n"
+            % (
+                params["mysql_host"],
+                params["mysql_port"],
+                params["mysql_user"],
+                params["base_url"],
+                env["MDSVC_LISTEN"],
+                env.get("DISABLE_AUTH", ""),
+            )
+        )
+        fp.write(
+            "MDSVC_SERF_ENABLED=%s\n"
+            % env.get("MDSVC_SERF_ENABLED", "<inherited/default>")
+        )
+        fp.flush()
+
+        if command is None:
+            binary_path = os.path.join(pid_dir, "mdsvc-api")
+
+            build_cmd = [
+                "go",
+                "build",
+                "-o",
+                binary_path,
+                "./cmd/server",
+            ]
+
+            fp.write("build_command=%s\n" % " ".join(build_cmd))
+            fp.flush()
+
+            try:
+                build_result = subprocess.run(
+                    build_cmd,
+                    cwd=server_path,
+                    stdout=fp,
+                    stderr=fp,
+                    env=env,
+                    timeout=int(params.get("server_build_timeout", 300)),
+                    check=False,
+                )
+            except subprocess.TimeoutExpired:
+                raise AnsibleError(
+                    "Timed out building mdsvc-api. Log: %s\n"
+                    "---- mdsvc.log tail ----\n%s"
+                    % (log_file, _tail_file(log_file))
+                )
+
+            if build_result.returncode != 0:
+                raise AnsibleError(
+                    "Failed to build mdsvc-api (rc=%s). Log: %s\n"
+                    "---- mdsvc.log tail ----\n%s"
+                    % (
+                        build_result.returncode,
+                        log_file,
+                        _tail_file(log_file),
+                    )
+                )
+
+            if not os.path.isfile(binary_path):
+                raise AnsibleError(
+                    "mdsvc-api build reported success but binary is missing: %s"
+                    % binary_path
+                )
+
+            command = [binary_path]
+
+        elif isinstance(command, str):
+            command = command.split()
+
+        fp.write("command=%s\n" % " ".join(command))
+        fp.flush()
+
+        try:
+            proc = subprocess.Popen(
+                command,
+                cwd=server_path,
+                stdout=fp,
+                stderr=fp,
+                env=env,
+                start_new_session=True,
+            )
+        except Exception as exc:
+            raise AnsibleError(
+                "Failed to launch mdsvc-api: %s. Log: %s"
+                % (exc, log_file)
+            )
+
+        with open(pid_file, "w") as pidf:
+            pidf.write(str(proc.pid))
+
+        fp.write("mdsvc-api pid=%d\n" % proc.pid)
+        fp.flush()
+
+        early_exit_check = float(
+            params.get("server_early_exit_check", 2)
+        )
+        time.sleep(early_exit_check)
+
+        rc = proc.poll()
+        if rc is not None:
+            if os.path.exists(pid_file):
+                os.remove(pid_file)
+
+            raise AnsibleError(
+                "mdsvc-api exited before becoming ready (rc=%s). Log: %s\n"
+                "---- mdsvc.log tail ----\n%s"
+                % (
+                    rc,
+                    log_file,
+                    _tail_file(log_file),
+                )
+            )
+
     return {
         "status": "server_started",
         "pid": proc.pid,
         "log_file": log_file,
+        "binary_path": binary_path,
     }
 
 def stop_server(params):
