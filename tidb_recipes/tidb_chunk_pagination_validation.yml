@@ -138,10 +138,12 @@
           assert:
             that:
               - infra_result.status_code | int in [200, 201]
+              - infra_result.status | int in [0, 200, 201]
             success_msg: "Infrastructure created successfully."
             fail_msg: >-
               Infrastructure creation failed.
-              Status: {{ infra_result.status_code | default('missing') }}
+              HTTP status: {{ infra_result.status_code | default('missing') }}
+              API status: {{ infra_result.status | default('missing') }}
               Response: {{ infra_result.data | default({}) }}
 
         # =====================================================
@@ -164,6 +166,22 @@
         - name: "{{ recipe_name }}: Print VDEV response."
           debug:
             var: vdev_result
+
+        - name: "{{ recipe_name }}: Verify VDEV creation."
+          assert:
+            that:
+              - vdev_result.status_code | int in [200, 201]
+              - vdev_result.status | int in [0, 200, 201]
+              - vdev_result.vdev_id is defined
+              - vdev_result.vdev_id | length > 0
+              - vdev_result.chunk_cnt is defined
+              - vdev_result.chunk_cnt | int > 0
+            success_msg: "VDEV created successfully."
+            fail_msg: >-
+              VDEV creation failed.
+              HTTP status: {{ vdev_result.status_code | default('missing') }}
+              API status: {{ vdev_result.status | default('missing') }}
+              Response: {{ vdev_result.data | default({}) }}
 
         - name: Store VDEV information
           set_fact:
