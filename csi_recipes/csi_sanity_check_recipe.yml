@@ -125,19 +125,6 @@
         echo "KUBECONFIG=$KUBECONFIG"
       args:
         executable: /bin/bash
-    - name: Build CSI sanity
-      set_fact:
-        csi_sanity_binary: >-
-          {{
-            lookup(
-              'csi_handler',
-              'build_csi_sanity',
-              {
-                'workspace': '/tmp/csi',
-                'branch': 'master'
-              }
-            )
-          }}
     - name: Run CSI sanity Node Service
       set_fact:
         csi_sanity_node_result: >-
@@ -146,8 +133,6 @@
               'csi_handler',
                 'run_csi_sanity_node',
               {
-                'workspace': '/tmp/csi',
-                'binary': csi_sanity_binary[0],
                 'endpoint': 'unix:///var/lib/kubelet/plugins/csi.niova.com/custom.sock'
               }
             )
@@ -161,8 +146,6 @@
               'csi_handler',
              'run_csi_sanity_controller',
               {
-                'workspace': '/tmp/csi',
-                'binary': csi_sanity_binary[0],
                 'endpoint': 'unix:///var/lib/kubelet/plugins/csi.niova.com/custom.sock'
               }
             )

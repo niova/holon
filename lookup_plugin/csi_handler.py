@@ -11,7 +11,7 @@ import subprocess
 
 
 CSI_SANITY_REPO = "https://github.com/kubernetes-csi/csi-test.git"
-CSI_SANITY_DIR = "csi-test"
+CSI_SANITY_DIR = "csi-test/cmd/"
 
 
 def initialize_logger(log_file):
@@ -276,26 +276,17 @@ def run_csi_sanity(
         "default"
     )
 
-    workspace = input_values.get(
-        "workspace",
-        os.path.join(
-            base_dir,
-            raft_uuid
-        )
-    )
+    workspace = os.getenv("NIOVA_WORKSPACE")
 
     #
     # Binary can either be supplied by the recipe
     # or derived from the workspace.
     #
-    binary_path = input_values.get(
-        "binary",
-        os.path.join(
+    binary_path = os.path.join(
             workspace,
             CSI_SANITY_DIR,
             "csi-sanity"
         )
-    )
 
     endpoint = input_values.get(
         "endpoint",
