@@ -179,7 +179,17 @@ def build_csi_sanity(cluster_params, input_values):
             clone_command,
             logger
         )
+        
+        list_command = [
+            "ls",
+            "-la",
+            "/tmp/csi/csi-test",
+        ]
 
+        run_command(
+            list_command,
+            logger
+        )
         #
         # Build csi-sanity
         #
