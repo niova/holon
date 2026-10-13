@@ -1,0 +1,96 @@
+# Dedicated test runner only. VDEV and NISDs require enough storage/failure domains
+# for a 3-data/2-parity e-chunk layout; adjust infra JSON and nodes for your cluster.
+- name: tidb_rchunk_rollback_setup.yml
+  hosts: localhost
+  connection: local
+  vars:
+    recipe_name: "tidb_rchunk_rollback_setup"
+    api_url: http://127.0.0.1:8081
+    admin_user: "{{ lookup('env', 'INTEGRATION_ADMIN_USERNAME') | default('admin', true) }}"
+    admin_password: "{{ lookup('env', 'INTEGRATION_ADMIN_PASSWORD') | default('admin', true) }}"
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    rchunk_vdev_body:
+      size_bytes: 17179869184
+      redundancy: 1
+      data_blk_cnt: 3
+      parity_blk_cnt: 2
+    rchunk_nisds:
+      - {uuid: '7caa1d9b-7481-4d1a-b68b-531e820d1001', peer_port: '13000', client_port: '13001'}
+      - {uuid: '7caa1d9b-7481-4d1a-b68b-531e820d1002', peer_port: '13002', client_port: '13003'}
+      - {uuid: '7caa1d9b-7481-4d1a-b68b-531e820d1003', peer_port: '13004', client_port: '13005'}
+      - {uuid: '7caa1d9b-7481-4d1a-b68b-531e820d1004', peer_port: '13006', client_port: '13007'}
+      - {uuid: '7caa1d9b-7481-4d1a-b68b-531e820d1005', peer_port: '13008', client_port: '13009'}
+    rchunk_device_dir: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/rchunk-nisd-devices"
+    rchunk_backing_device_bytes: 21474836480
+    
+  tasks:
+    - name: "{{ recipe_name }}: Validate cluster configuration."
+      ansible.builtin.assert:
+        that:
+          - app_type == 'tidb'
+          - rchunk_nisds | length >= 5
+          - rchunk_nisds | map(attribute='uuid') | unique | list | length == rchunk_nisds | length
+
+    - name: "{{ recipe_name }}: Start fresh mdsvc TiDB stack."
+      ansible.builtin.set_fact:
+        rchunk_setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+
+    - name: "{{ recipe_name }}: Wait for control plane."
+      ansible.builtin.uri:
+        url: "{{ rchunk_api_url }}/swagger/"
+        status_code: [200, 301, 302]
+      register: rchunk_ready
+      retries: 90
+      delay: 2
+      until: rchunk_ready.status in [200, 301, 302]
+
+    - name: "{{ recipe_name }}: Authenticate."
+      ansible.builtin.set_fact:
+        rchunk_login: "{{ lookup('tidb_api', 'login', base_url=rchunk_api_url, username=rchunk_admin_user, password=rchunk_admin_password) }}"
+      no_log: true
+
+    - name: "{{ recipe_name }}: Create infrastructure."
+      ansible.builtin.set_fact:
+        rchunk_infra: "{{ lookup('tidb_api', 'create_infra', base_url=rchunk_api_url, token=rchunk_login.access_token, file=rchunk_infra_payload) }}"
+
+    - name: "{{ recipe_name }}: Create NISD backing directory."
+      ansible.builtin.file:
+        path: "{{ rchunk_device_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: "{{ recipe_name }}: Create sparse NISD backing devices."
+      ansible.builtin.command:
+        argv: [truncate, -s, "{{ rchunk_backing_device_bytes }}", "{{ rchunk_device_dir }}/{{ item.uuid }}.device"]
+      loop: "{{ rchunk_nisds }}"
+
+    - name: "{{ recipe_name }}: Initialize NISDs."
+      ansible.builtin.set_fact:
+        rchunk_nisd_init: >-
+          {{ lookup('nisd_handler', 'run-niova-block-ctl',
+            {'nisd_uuid': item.uuid, 'nisd_device_path': rchunk_device_dir ~ '/' ~ item.uuid ~ '.device'}) }}
+      loop: "{{ rchunk_nisds }}"
+
+    - name: "{{ recipe_name }}: Start NISDs."
+      ansible.builtin.debug:
+        msg: >-
+          {{ lookup('nisd_handler', 'run_nisd',
+            {'nisd_uuid': item.uuid,
+             'nisd_device_path': rchunk_device_dir ~ '/' ~ item.uuid ~ '.device',
+             'peer_port': item.peer_port, 'client_port': item.client_port,
+             'enable_auth': 1}) }}
+      loop: "{{ rchunk_nisds }}"
+
+    - name: "{{ recipe_name }}: Create E-chunk VDEV."
+      ansible.builtin.set_fact:
+        rchunk_vdev: "{{ lookup('tidb_api', 'create_vdev', base_url=rchunk_api_url, token=rchunk_login.access_token, body=rchunk_vdev_body) }}"
+
+    - name: "{{ recipe_name }}: Capture VDEV ID."
+      ansible.builtin.set_fact:
+        rchunk_vdev_uuid: "{{ rchunk_vdev.vdev_id | default(rchunk_vdev.uuid | default('')) }}"
+
+    - name: "{{ recipe_name }}: Confirm VDEV creation."
+      ansible.builtin.assert:
+        that:
+          - rchunk_vdev_uuid | length > 0
+        fail_msg: 'Could not create E-chunk VDEV. Check NISD allocation, infra payload, and cluster capacity.'
