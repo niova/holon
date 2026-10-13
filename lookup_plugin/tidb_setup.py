@@ -233,6 +233,38 @@ def docker_teardown(cluster_params):
                 "docker compose down failed. Check log: %s" % log_file
             )
 
+        # TiDB data is stored in a host bind mount, so `docker compose down -v`
+        # does not remove it. Delete the bind-mounted data explicitly.
+        tidb_data_dir = os.path.realpath(
+            os.getenv("TIDB_DATA_DIR", "/local/tejus/docker-tidb-local")
+        )
+
+        unsafe_paths = {"/", "/tmp", "/var", "/home", "/local"}
+        if tidb_data_dir in unsafe_paths or len(tidb_data_dir) < 10:
+            raise AnsibleError(
+                "Refusing to remove unsafe TiDB data directory: %s"
+                % tidb_data_dir
+            )
+
+        logf.write(
+            "\nREMOVING PERSISTED TIDB DATA: %s\n"
+            % tidb_data_dir
+        )
+        logf.flush()
+
+        cleanup_proc = subprocess.Popen(
+            ["sudo", "rm", "-rf", tidb_data_dir],
+            stdout=logf,
+            stderr=logf,
+        )
+        cleanup_rc = cleanup_proc.wait()
+
+        if cleanup_rc != 0:
+            raise AnsibleError(
+                "Failed to remove TiDB data directory: %s"
+                % tidb_data_dir
+            )
+
         logf.write("\nDOCKER STACK STOPPED AND REMOVED\n")
 
     return {
