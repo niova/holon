@@ -151,6 +151,36 @@ def docker_setup(cluster_params):
                 "docker compose down failed. Check log: %s" % log_file
             )
 
+        # Only for a dedicated disposable CI data directory.
+        tidb_data_dir = os.path.realpath(
+            os.environ["TIDB_DATA_DIR"]
+        )
+
+        # Validate the path is within the CI-owned storage root.
+        ci_data_root = os.path.realpath(
+            cluster_params["ci_tidb_data_root"]
+        )
+
+        if (
+            tidb_data_dir == ci_data_root
+            or os.path.commonpath([tidb_data_dir, ci_data_root])
+            != ci_data_root
+        ):
+            raise AnsibleError(
+                "Unsafe TiDB data directory: %s" % tidb_data_dir
+            )
+
+        cleanup_proc = subprocess.run(
+            ["sudo", "rm", "-rf", "--", tidb_data_dir],
+            stdout=logf,
+            stderr=logf,
+        )
+
+        if cleanup_proc.returncode != 0:
+            raise AnsibleError(
+                "Failed to reset TiDB data: %s" % tidb_data_dir
+            )
+
         logf.write("\nDOCKER STACK CLEANED UP\n")
 
         up_proc = subprocess.Popen(
