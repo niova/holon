@@ -166,7 +166,7 @@
       debug:
         msg: "Compare TTL"
       failed_when: >
-        (rd_ttl >= wr_ttl)
+        ((rd_ttl | int) >= (wr_ttl | int))
 
     - name: Generate new client
       shell: "/usr/bin/uuid"

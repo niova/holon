@@ -262,7 +262,7 @@
         raft_key: "/raft_root_entry/0/commit-idx"
       debug:
         msg: "Wait until commit-idx gets incremented"
-      until: lookup('niova_ctlrequest', 'lookup', getPeersExceptServer4[item], raft_key)['/0/commit-idx'] == (get_values_from_all[0][item]['/0/commit-idx'] + num_writes)
+      until: lookup('niova_ctlrequest', 'lookup', getPeersExceptServer4[item], raft_key)['/0/commit-idx'] == (get_values_from_all[item]['/0/commit-idx'] + num_writes)
       retries: 100
       delay: 1
       loop: "{{ range(0, getPeersExceptServer4 | length) | list }}"
@@ -290,9 +290,9 @@
       debug:
         msg: "Verify values for all peers excluding server 4"
       failed_when: >
-          (curr_val[item]['item']['/0/leader-uuid'] != get_values_from_all[0][item]['/0/leader-uuid']) or
-          (curr_val[item]['item']['/0/term'] != get_values_from_all[0][item]['/0/term']) or
-          (curr_val[item]['item']['/0/commit-idx'] != get_values_from_all[0][item]['/0/commit-idx'] + num_writes)
+          (curr_val[item]['item']['/0/leader-uuid'] | int != get_values_from_all[item]['/0/leader-uuid'] | int) or
+          (curr_val[item]['item']['/0/term'] | int != get_values_from_all[item]['/0/term'] | int) or
+          (curr_val[item]['item']['/0/commit-idx'] | int != get_values_from_all[item]['/0/commit-idx'] + num_writes | int)
       loop: "{{ range(0, getPeersExceptServer4 | length) | list }}"
 
     - name: "{{ recipe_name }}: Verify the write operation should not happen to server 4."
@@ -371,9 +371,9 @@
       debug:
         msg: "Verify values for all running peers."
       failed_when: >
-          (getAllPeerVal['results'][item]['item']['/0/leader-uuid'] != get_values_from_all[0][item]['/0/leader-uuid']) or
-          (getAllPeerVal['results'][item]['item']['/0/term'] != get_values_from_all[0][item]['/0/term']) or
-          (getAllPeerVal['results'][item]['item']['/0/commit-idx'] != (get_values_from_all[0][item]['/0/commit-idx'] + num_writes)) or
+          (getAllPeerVal['results'][item]['item']['/0/leader-uuid'] != get_values_from_all[item]['/0/leader-uuid']) or
+          (getAllPeerVal['results'][item]['item']['/0/term'] != get_values_from_all[item]['/0/term']) or
+          (getAllPeerVal['results'][item]['item']['/0/commit-idx'] != (get_values_from_all[item]['/0/commit-idx'] + num_writes)) or
           ((getAllPeerVal['results'][item]['item']['/0/state'] != "leader") and
           (getAllPeerVal['results'][item]['item']['/0/state'] != "follower"))
       loop: "{{ range(0, NRunningPeers | length) | list }}"
