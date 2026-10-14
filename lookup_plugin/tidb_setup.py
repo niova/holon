@@ -1748,12 +1748,24 @@ def start_server(params):
     fp = open(log_file, "a")
 
     env = os.environ.copy()
+
+    mysql_host = str(params["mysql_host"])
+    mysql_port = str(params["mysql_port"])
+    mysql_user = str(params["mysql_user"])
+    mysql_password = str(params["mysql_password"])
+
     env.update({
-        "MDSVC_MYSQL_HOST": str(params["mysql_host"]),
-        "MDSVC_MYSQL_PORT": str(params["mysql_port"]),
-        "MDSVC_MYSQL_USER": str(params["mysql_user"]),
-        "MDSVC_MYSQL_PASSWORD": str(params["mysql_password"]),
+        "MDSVC_MYSQL_HOST": mysql_host,
+        "MDSVC_MYSQL_PORT": mysql_port,
+        "MDSVC_MYSQL_USER": mysql_user,
+        "MDSVC_MYSQL_PASSWORD": mysql_password,
         "MDSVC_API_URL": str(params["base_url"]),
+        "MDSVC_DSN": (
+            f"{mysql_user}:{mysql_password}@tcp({mysql_host}:{mysql_port})/"
+            if mysql_password
+            else f"{mysql_user}@tcp({mysql_host}:{mysql_port})/"
+        ),
+        "MDSVC_LISTEN": ":8081",
     })
 
     if params.get("disable_auth"):
@@ -1769,7 +1781,16 @@ def start_server(params):
     if params.get("admin_default_password"):
         env["ADMIN_DEFAULT_PASSWORD"] = str(params["admin_default_password"])
 
-    command = params.get("server_command") or ["go", "run", "./cmd/server"]
+    command = params.get("server_command")
+
+    if not command:
+        built_server = os.path.join(server_path, "server")
+
+        if os.path.isfile(built_server) and os.access(built_server, os.X_OK):
+            command = [built_server]
+        else:
+            command = ["go", "run", "./cmd/server"]
+
     if isinstance(command, str):
         command = command.split()
 
@@ -1856,6 +1877,7 @@ def stop_server(params):
 def wait_for_server(params):
     """Poll base_url while detecting an mdsvc process that exits early."""
     base_url = params["base_url"]
+    health_url = base_url.rstrip("/") + "/swagger/"
     timeout = int(params["server_timeout"])
     log_file = _get_log_file(params)
     server_pid = params.get("server_pid")
@@ -1878,12 +1900,15 @@ def wait_for_server(params):
             )
 
         try:
-            resp = requests.get(base_url, timeout=5)
-            if resp.status_code < 500:
+            resp = requests.get(health_url, timeout=5)
+
+            if resp.status_code in (200, 301, 302):
                 with open(log_file, "a") as logf:
                     _write_log_header(logf, "SERVER BECAME READY")
                 return
+
             last_err = "HTTP %s" % resp.status_code
+
         except Exception as exc:
             last_err = str(exc)
 
