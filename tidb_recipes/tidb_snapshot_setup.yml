@@ -135,6 +135,20 @@
         msg:
           - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
 
+    - name: "snapshot_setup: Wait for NISD registration."
+      ansible.builtin.uri:
+        url: "{{ snapshot_api_base_url }}/api/resource?type=nisd"
+        method: GET
+        headers:
+          Authorization: "Bearer {{ snapshot_login_result.access_token }}"
+        status_code: 200
+        return_content: true
+      register: nisd_resources
+      retries: 30
+      delay: 2
+      until: snapshot_nisd_uuid in (nisd_resources.content | default(''))
+      no_log: true
+
     # ------------------------------------------------------------
     # Create VDEV
     # ------------------------------------------------------------
