@@ -303,7 +303,7 @@ def docker_teardown(cluster_params):
 # Manual Setup Helpers
 # =========================================================
 
-def manual_setup(cluster_params):
+def _manual_setup_external(cluster_params):
     """Verify pre-existing TiDB and start mdsvc-api against it."""
 
     workspace_dir = os.getenv("NIOVA_WORKSPACE")
@@ -395,7 +395,33 @@ def manual_setup(cluster_params):
         "base_url": base_url,
     }
 
-def manual_teardown(cluster_params):
+def manual_setup(cluster_params):
+    """
+    Start a fresh TiDB + mdsvc-api environment for each recipe.
+
+    By default, manage TiDB through the existing TiUP Playground
+    lifecycle. Allow externally managed TiDB when explicitly requested.
+    """
+    manage_tidb = cluster_params.get("manual_manage_tidb", True)
+
+    if not manage_tidb:
+        return _manual_setup_external(cluster_params)
+
+    if cluster_params.get("playground_tag"):
+        raise AnsibleError(
+            "A persistent playground_tag is incompatible with "
+            "fresh TiDB setup for every recipe."
+        )
+
+    result = playground_setup(cluster_params)
+
+    return {
+        **result,
+        "status": "manual_setup_done",
+        "tidb_managed": True,
+    }
+
+def _manual_teardown_external(cluster_params):
     """Stop mdsvc-api only; manual mode never started TiDB."""
     base_dir = cluster_params["base_dir"]
     raft_uuid = cluster_params["raft_uuid"]
@@ -406,6 +432,23 @@ def manual_teardown(cluster_params):
     return {
         "status": "manual_teardown_done",
         "server": server_status,
+    }
+
+def manual_teardown(cluster_params):
+    """
+    Stop mdsvc-api and the TiDB instance managed by manual_setup.
+    """
+    manage_tidb = cluster_params.get("manual_manage_tidb", True)
+
+    if not manage_tidb:
+        return _manual_teardown_external(cluster_params)
+
+    result = playground_teardown(cluster_params)
+
+    return {
+        **result,
+        "status": "manual_teardown_done",
+        "tidb_managed": True,
     }
 
 # =========================================================
