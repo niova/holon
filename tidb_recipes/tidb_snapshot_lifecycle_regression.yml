@@ -192,7 +192,7 @@
         # ------------------------------------------------------------
         - name: "{{ recipe_name }}: Clean up after successful run."
           ansible.builtin.set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
           when:
             - not (regression_failed | default(false))
             - regression_result is defined

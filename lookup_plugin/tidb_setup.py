@@ -119,6 +119,30 @@ def _tidb_backend(cluster_params):
 # Docker Setup
 # =========================================================
 
+def _docker_tidb_data_dir():
+    """Resolve a disposable CI-owned bind mount, never a shared default."""
+    configured_path = os.environ.get("TIDB_DATA_DIR")
+    configured_root = os.environ.get("CI_TIDB_DATA_ROOT")
+    if not configured_path or not configured_root:
+        raise AnsibleError(
+            "TIDB_DATA_DIR and CI_TIDB_DATA_ROOT must be set for Docker tests"
+        )
+
+    path = os.path.realpath(configured_path)
+    root = os.path.realpath(configured_root)
+    if root in ("/", "/tmp", "/var", "/home", "/local"):
+        raise AnsibleError("Unsafe CI_TIDB_DATA_ROOT: %s" % root)
+    if path == root or os.path.commonpath([path, root]) != root:
+        raise AnsibleError("Unsafe TiDB data directory: %s" % path)
+    return path
+
+
+def _docker_compose_cmd(data_dir, *args):
+    # Preserve TIDB_DATA_DIR even when sudo strips the caller's environment.
+    return ["sudo", "env", "TIDB_DATA_DIR=%s" % data_dir,
+            "docker", "compose", *args]
+
+
 def docker_setup(cluster_params):
     """Tear down existing stack, start Docker stack, and wait for API health."""
 
@@ -135,12 +159,13 @@ def docker_setup(cluster_params):
     container_name = "mdsvc-tidb"
     base_url = cluster_params.get("api_base_url", "http://localhost:8081")
     server_timeout = int(cluster_params.get("server_timeout", 120))
+    tidb_data_dir = _docker_tidb_data_dir()
 
     with open(log_file, "a") as logf:
         logf.write("\nSTARTING MDSVC-TIDB DOCKER SETUP\n")
 
         down_proc = subprocess.Popen(
-            ["sudo", "docker", "compose", "down", "-v"],
+            _docker_compose_cmd(tidb_data_dir, "down", "-v"),
             cwd=repo_path,
             stdout=logf,
             stderr=logf,
@@ -151,31 +176,13 @@ def docker_setup(cluster_params):
                 "docker compose down failed. Check log: %s" % log_file
             )
 
-        # Only for a dedicated disposable CI data directory.
-        tidb_data_dir = os.path.realpath(
-            os.environ["TIDB_DATA_DIR"]
-        )
-
-        # Validate the path is within the CI-owned storage root.
-        ci_data_root = os.path.realpath(
-            cluster_params["ci_tidb_data_root"]
-        )
-
-        if (
-            tidb_data_dir == ci_data_root
-            or os.path.commonpath([tidb_data_dir, ci_data_root])
-            != ci_data_root
-        ):
-            raise AnsibleError(
-                "Unsafe TiDB data directory: %s" % tidb_data_dir
-            )
-
+        logf.write("\nRESETTING TIDB DATA: %s\n" % tidb_data_dir)
+        logf.flush()
         cleanup_proc = subprocess.run(
             ["sudo", "rm", "-rf", "--", tidb_data_dir],
             stdout=logf,
             stderr=logf,
         )
-
         if cleanup_proc.returncode != 0:
             raise AnsibleError(
                 "Failed to reset TiDB data: %s" % tidb_data_dir
@@ -184,7 +191,7 @@ def docker_setup(cluster_params):
         logf.write("\nDOCKER STACK CLEANED UP\n")
 
         up_proc = subprocess.Popen(
-            ["sudo", "docker", "compose", "up", "-d", "--build"],
+            _docker_compose_cmd(tidb_data_dir, "up", "-d", "--build"),
             cwd=repo_path,
             stdout=logf,
             stderr=logf,
@@ -247,12 +254,13 @@ def docker_teardown(cluster_params):
 
     log_file = "%s/%s/%s_docker_log.txt" % (base_dir, raft_uuid, app_name)
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    tidb_data_dir = _docker_tidb_data_dir()
 
     with open(log_file, "a") as logf:
         logf.write("\nSTARTING MDSVC-TIDB DOCKER TEARDOWN\n")
 
         down_proc = subprocess.Popen(
-            ["sudo", "docker", "compose", "down", "-v"],
+            _docker_compose_cmd(tidb_data_dir, "down", "-v"),
             cwd=repo_path,
             stdout=logf,
             stderr=logf,
@@ -265,17 +273,6 @@ def docker_teardown(cluster_params):
 
         # TiDB data is stored in a host bind mount, so `docker compose down -v`
         # does not remove it. Delete the bind-mounted data explicitly.
-        tidb_data_dir = os.path.realpath(
-            os.getenv("TIDB_DATA_DIR", "/local/tejus/docker-tidb-local")
-        )
-
-        unsafe_paths = {"/", "/tmp", "/var", "/home", "/local"}
-        if tidb_data_dir in unsafe_paths or len(tidb_data_dir) < 10:
-            raise AnsibleError(
-                "Refusing to remove unsafe TiDB data directory: %s"
-                % tidb_data_dir
-            )
-
         logf.write(
             "\nREMOVING PERSISTED TIDB DATA: %s\n"
             % tidb_data_dir
@@ -283,7 +280,7 @@ def docker_teardown(cluster_params):
         logf.flush()
 
         cleanup_proc = subprocess.Popen(
-            ["sudo", "rm", "-rf", tidb_data_dir],
+            ["sudo", "rm", "-rf", "--", tidb_data_dir],
             stdout=logf,
             stderr=logf,
         )

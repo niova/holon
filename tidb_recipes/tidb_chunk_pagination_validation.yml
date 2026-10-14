@@ -38,7 +38,7 @@
 
         - name: "{{ recipe_name }}: Start configured TiDB backend."
           set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+            setup_status: "{{ lookup('tidb_setup', 'manual_setup') }}"
 
         - name: "{{ recipe_name }}: Print setup result."
           debug:
@@ -399,7 +399,7 @@
 
         - name: "{{ recipe_name }}: Tear down configured TiDB backend."
           set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
           when:
             tidb_setup_attempted | default(false) | bool
           ignore_errors: true

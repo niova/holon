@@ -529,9 +529,9 @@
         # Cleanup
         # The failed snapshot is intentionally not deleted through
         # normal snapshot delete because delete is defined for applied
-        # snapshots. Docker teardown removes the isolated environment.
+        # snapshots.
         # ------------------------------------------------------------
         - name: "{{ recipe_name }}: Stop mdsvc-api and TiDB stack."
           ansible.builtin.set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
           failed_when: false

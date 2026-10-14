@@ -253,5 +253,5 @@
 
         - name: "{{ recipe_name }}: Stop mdsvc-api and TiDB stack."
           ansible.builtin.set_fact:
-            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+            teardown_status: "{{ lookup('tidb_setup', 'manual_teardown') }}"
           failed_when: false
