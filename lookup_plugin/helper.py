@@ -214,30 +214,30 @@ class helper:
         }
 
     def create_fallocate_file(self, filename, size_str):
-    """Creates a sparse/pre-allocated file using fallocate instead of dd.
+        """Creates a sparse/pre-allocated file using fallocate instead of dd.
 
-    :param filename: Relative path or name of the file to create
-    :param size_str: Size string formatted for fallocate (e.g., '100G', '512M',
-    '10G')
-    """
-    # Normalize filename to avoid leading /
-    safe_filename = filename.lstrip(os.sep)
-    full_path = os.path.normpath(os.path.join(self.base_path, safe_filename))
+        :param filename: Relative path or name of the file to create
+        :param size_str: Size string formatted for fallocate (e.g., '100G', '512M',
+        '10G')
+        """
+        # Normalize filename to avoid leading /
+        safe_filename = filename.lstrip(os.sep)
+        full_path = os.path.normpath(os.path.join(self.base_path, safe_filename))
 
-    rc = 0
+        rc = 0
 
-    try:
-        # Ensure parent directory exists
-        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+        try:
+            # Ensure parent directory exists
+            os.makedirs(os.path.dirname(full_path), exist_ok=True)
 
-        # Build fallocate command using -l (length)
-        fallocate_cmd = f"fallocate -l {size_str} {full_path}"
+            # Build fallocate command using -l (length)
+            fallocate_cmd = f"fallocate -l {size_str} {full_path}"
+    
+            subprocess.run(fallocate_cmd, check=True, shell=True)
+        except subprocess.CalledProcessError as e:
+            rc = e.returncode
 
-        subprocess.run(fallocate_cmd, check=True, shell=True)
-    except subprocess.CalledProcessError as e:
-        rc = e.returncode
-
-    return {"path": full_path, "rc": rc}
+        return {"path": full_path, "rc": rc}
         
     def create_gc_partition(self, dir, total_blocks):
         dir_name_abs = os.path.join(self.base_path, dir)
