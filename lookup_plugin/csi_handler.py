@@ -11,7 +11,7 @@ import subprocess
 
 
 CSI_SANITY_REPO = "https://github.com/kubernetes-csi/csi-test.git"
-CSI_SANITY_DIR = "csi-test/cmd/"
+CSI_SANITY_DIR = "csi-test/cmd/csi-sanity"
 
 
 def initialize_logger(log_file):
