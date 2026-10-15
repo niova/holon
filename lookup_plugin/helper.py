@@ -212,6 +212,32 @@ class helper:
             "path": full_path,
             "rc": rc
         }
+
+    def create_fallocate_file(self, filename, size_str):
+    """Creates a sparse/pre-allocated file using fallocate instead of dd.
+
+    :param filename: Relative path or name of the file to create
+    :param size_str: Size string formatted for fallocate (e.g., '100G', '512M',
+    '10G')
+    """
+    # Normalize filename to avoid leading /
+    safe_filename = filename.lstrip(os.sep)
+    full_path = os.path.normpath(os.path.join(self.base_path, safe_filename))
+
+    rc = 0
+
+    try:
+        # Ensure parent directory exists
+        os.makedirs(os.path.dirname(full_path), exist_ok=True)
+
+        # Build fallocate command using -l (length)
+        fallocate_cmd = f"fallocate -l {size_str} {full_path}"
+
+        subprocess.run(fallocate_cmd, check=True, shell=True)
+    except subprocess.CalledProcessError as e:
+        rc = e.returncode
+
+    return {"path": full_path, "rc": rc}
         
     def create_gc_partition(self, dir, total_blocks):
         dir_name_abs = os.path.join(self.base_path, dir)
@@ -446,6 +472,12 @@ class LookupModule(LookupBase):
             bs = terms[2]
             count = terms[3]
             result = help.create_dd_file(img_dir, bs, count)
+            return [result["path"]]
+
+        elif operation == "create_fallocate_file":
+            img_dir = terms[1]
+            size_str = terms[2]  # e.g., '100G', '512M'
+            result = help.create_fallocate_file(img_dir, size_str)
             return [result["path"]]
 
         elif operation == "delete_dir":
