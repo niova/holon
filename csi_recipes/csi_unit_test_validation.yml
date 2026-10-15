@@ -33,6 +33,17 @@
           Set NIOVA_CSI_PATH to the absolute path of the
           niova-block-csi repository.
 
+    - name: "{{ recipe_name }}: Delete existing StorageClass by name"
+      ansible.builtin.command:
+        cmd: kubectl delete storageclass niova-csi-sc --ignore-not-found=true
+      register: delete_sc_result
+      changed_when: "'deleted' in delete_sc_result.stdout"
+
+    - name: "{{ recipe_name }}: Apply StorageClass"
+      ansible.builtin.command:
+        cmd: kubectl apply -f "{{ csi_repo_path }}/deploy/niova-block-storageclass.yaml"
+      changed_when: true
+
     # ---------------------------------------------------------
     # 2. Run CSI Go/Ginkgo tests
     # ---------------------------------------------------------
@@ -47,7 +58,6 @@
           output_file: "csi_integrity_test"
           timeout: "{{ csi_test_timeout }}"
           env:
-            KUBECONFIG: "/etc/rancher/k3s/k3s.yaml"
             NIOVA_BLOCK_UBLK_UNIFIED: "0"
             NIOVA_LOG_LEVEL: "0"
             NIOVA_GOSSIP_PATH: "/etc/niova/gossipNodes"
@@ -55,7 +65,6 @@
             NIOVA_GOSSIP_KEY: "dummy"
             NIOVA_BLOCK_CP_AUTH_USERNAME: "admin"
             NIOVA_BLOCK_CP_AUTH_SECRET: "admin"
-            LD_LIBRARY_PATH: "/home/niova/shirisha/nb-bin/lib"
       ansible.builtin.set_fact:
         csi_test_result: "{{ lookup('csi_handler', 'run_csi_ginkgo', input_param) }}"
 
