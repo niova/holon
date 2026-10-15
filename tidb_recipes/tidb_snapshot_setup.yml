@@ -27,7 +27,7 @@
     # ------------------------------------------------------------
     - name: "snapshot_setup: Start mdsvc-tidb."
       ansible.builtin.set_fact:
-        setup_status: "{{ lookup('tidb_setup', 'manual_setup') }}"
+        setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
 
     - name: "snapshot_setup: Wait for mdsvc-api."
       ansible.builtin.uri:
