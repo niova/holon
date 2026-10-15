@@ -1,0 +1,79 @@
+---
+- name: "csi_unit_test_validation.yml"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    recipe_name: "csi_unit_test_validation"
+    api_base_url: "http://localhost:8081"
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+
+    # CSI Go test configuration
+    csi_test_dir: "./test/e2e/lifecycle"
+    csi_test_name: "Block volume mode"
+    csi_test_timeout: 1000
+
+  tasks:
+
+    # ---------------------------------------------------------
+    # 1. Read CSI repository path
+    # ---------------------------------------------------------
+
+    - name: "{{ recipe_name }}: Read CSI repository path"
+      ansible.builtin.set_fact:
+        csi_repo_path: "{{ lookup('env', 'NIOVA_CSI_PATH') }}"
+
+    - name: "{{ recipe_name }}: Validate CSI repository path"
+      ansible.builtin.assert:
+        that:
+          - csi_repo_path | length > 0
+        fail_msg: >-
+          Set NIOVA_CSI_PATH to the absolute path of the
+          niova-block-csi repository.
+
+    # ---------------------------------------------------------
+    # 2. Run CSI Go/Ginkgo tests
+    # ---------------------------------------------------------
+
+    - name: "{{ recipe_name }}: Run CSI Go tests"
+      vars:
+        input_param:
+          test_path: "{{ csi_repo_path }}"
+          test_dir: "{{ csi_test_dir }}"
+          test_name: "{{ csi_test_name }}"
+          focus: "{{ csi_test_name }}"
+          output_file: "csi_integrity_test"
+          timeout: "{{ csi_test_timeout }}"
+          env:
+            KUBECONFIG: "/etc/rancher/k3s/k3s.yaml"
+            NIOVA_BLOCK_UBLK_UNIFIED: "0"
+            NIOVA_LOG_LEVEL: "0"
+            NIOVA_GOSSIP_PATH: "/etc/niova/gossipNodes"
+            NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
+            NIOVA_GOSSIP_KEY: "dummy"
+            NIOVA_BLOCK_CP_AUTH_USERNAME: "admin"
+            NIOVA_BLOCK_CP_AUTH_SECRET: "admin"
+            LD_LIBRARY_PATH: "/home/niova/shirisha/nb-bin/lib"
+      ansible.builtin.set_fact:
+        csi_test_result: "{{ lookup('csi_handler', 'run_csi_ginkgo', input_param) }}"
+
+    - name: "{{ recipe_name }}: Print CSI test result"
+      ansible.builtin.debug:
+        var: csi_test_result
+
+    # ---------------------------------------------------------
+    # 3. Verify CSI test result
+    # ---------------------------------------------------------
+
+    - name: "{{ recipe_name }}: Verify CSI tests passed"
+      ansible.builtin.assert:
+        that:
+          - (csi_test_result.return_code | default(1) | int) == 0
+          - not (csi_test_result.timed_out | default(false) | bool)
+        fail_msg: >-
+          CSI Go/Ginkgo tests failed or timed out.
+          Return code={{ csi_test_result.return_code | default('unknown') }},
+          log={{ csi_test_result.log_file | default('unknown') }}
+        success_msg: "CSI Go/Ginkgo tests completed successfully."
