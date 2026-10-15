@@ -65,20 +65,15 @@
               - snapshot_login_result is defined
               - snapshot_login_result.access_token is defined
               - snapshot_login_result.access_token | length > 0
-
               - snapshot_vdev_uuid is defined
               - snapshot_vdev_uuid | length > 0
-
               - snapshot_live_device is defined
               - snapshot_live_device | length > 0
-
               - live_ublk_uuid is defined
               - live_ublk_uuid is mapping
               - live_ublk_uuid | length > 0
-
               - snapshot_nisd_device_path is defined
               - snapshot_nisd_device_path | length > 0
-
             fail_msg: >-
               tidb_snapshot_setup.yml did not provide all required
               snapshot setup values.
@@ -124,7 +119,6 @@
             bash {{ regression_script | quote }}
           args:
             executable: /bin/bash
-
           environment:
             VDEV_UUID: "{{ snapshot_vdev_uuid }}"
             LIVE_DEVICE: "{{ snapshot_live_device }}"

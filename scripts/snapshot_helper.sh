@@ -301,7 +301,7 @@ wait_for_snapshot_applied()
 
             state="$(printf '%s' "${response}" | json_get_field state || true)"
             cp_id="$(printf '%s' "${response}" | json_get_field snapshot_id || true)"
-            cp_name="$(printf '%s' "${response}" | json_get_field name || true)"
+            cp_name="$(printf '%s' "${response}" | json_get_field snapshot_name || true)"
             cp_vdev="$(printf '%s' "${response}" | json_get_field vdev_id || true)"
 
             log "CP snapshot lookup: name=${snapshot_name} id=${cp_id:-unknown} state=${state:-unknown}"
@@ -310,8 +310,8 @@ wait_for_snapshot_applied()
                 applied)
                     [[ "${cp_id}" =~ ^[1-9][0-9]*$ ]] ||
                         fail "CP returned applied snapshot with invalid snapshot_id='${cp_id}'"
-                    [[ -z "${cp_name}" || "${cp_name}" == "${snapshot_name}" ]] ||
-                        fail "snapshot name mismatch: expected ${snapshot_name}, got ${cp_name}"
+                    [[ "${cp_name}" == "${snapshot_name}" ]] ||
+                        fail "snapshot name mismatch: expected ${snapshot_name}, got ${cp_name:-missing}"
                     [[ -z "${cp_vdev}" || "${cp_vdev}" == "${VDEV_UUID}" ]] ||
                         fail "snapshot vdev mismatch: expected ${VDEV_UUID}, got ${cp_vdev}"
                     [[ -z "${expected_id}" || "${cp_id}" == "${expected_id}" ]] ||

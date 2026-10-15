@@ -235,7 +235,7 @@ wait_for_snapshot_pending()
 
             state="$(printf '%s' "${response}" | json_get_field state || true)"
             cp_id="$(printf '%s' "${response}" | json_get_field snapshot_id || true)"
-            cp_name="$(printf '%s' "${response}" | json_get_field name || true)"
+            cp_name="$(printf '%s' "${response}" | json_get_field snapshot_name || true)"
             cp_vdev="$(printf '%s' "${response}" | json_get_field vdev_id || true)"
 
             log "CP lookup after create failure: id=${cp_id:-unknown} state=${state:-unknown}"
@@ -248,8 +248,8 @@ wait_for_snapshot_pending()
                 [[ "${cp_id}" =~ ^[1-9][0-9]*$ ]] ||
                     fail "pending snapshot has invalid snapshot ID '${cp_id}'"
 
-                [[ -z "${cp_name}" || "${cp_name}" == "${SNAPSHOT_NAME}" ]] ||
-                    fail "snapshot name mismatch"
+                [[ "${cp_name}" == "${SNAPSHOT_NAME}" ]] ||
+                    fail "snapshot name mismatch: expected=${SNAPSHOT_NAME}, got=${cp_name:-missing}"
 
                 [[ -z "${cp_vdev}" || "${cp_vdev}" == "${VDEV_UUID}" ]] ||
                     fail "snapshot vdev mismatch"
@@ -267,7 +267,7 @@ wait_for_snapshot_pending()
 
 wait_for_snapshot_abandoned()
 {
-    local deadline response state cp_id
+    local deadline response state cp_id cp_name cp_vdev
 
     cp_login
     deadline=$((SECONDS + SNAPSHOT_TIMEOUT))
@@ -281,6 +281,8 @@ wait_for_snapshot_abandoned()
 
             state="$(printf '%s' "${response}" | json_get_field state || true)"
             cp_id="$(printf '%s' "${response}" | json_get_field snapshot_id || true)"
+            cp_name="$(printf '%s' "${response}" | json_get_field snapshot_name || true)"
+            cp_vdev="$(printf '%s' "${response}" | json_get_field vdev_id || true)"
 
             log "CP lookup after VDEV remount: id=${cp_id:-unknown} state=${state:-unknown}"
 
@@ -291,6 +293,12 @@ wait_for_snapshot_abandoned()
             if [[ "${state}" == "abandoned" ]]; then
                 [[ "${cp_id}" == "${FAILED_SNAPSHOT_ID}" ]] ||
                     fail "snapshot ID changed after VDEV remount"
+
+                [[ "${cp_name}" == "${SNAPSHOT_NAME}" ]] ||
+                    fail "snapshot name changed after VDEV remount"
+
+                [[ "${cp_vdev}" == "${VDEV_UUID}" ]] ||
+                    fail "snapshot VDEV changed after remount"
 
                 return 0
             fi

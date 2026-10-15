@@ -193,7 +193,8 @@
               - snapshot1_info.snapshot_id is defined
               - snapshot1_info.snapshot_id | int > 0
               - snapshot1_info.vdev_id == snapshot_vdev_uuid
-              - snapshot1_info.name == snapshot1_name
+              - snapshot1_info.snapshot_name is defined
+              - snapshot1_info.snapshot_name == snapshot1_name
             fail_msg: >-
               Snapshot 1 CP validation failed:
               {{ snapshot1_info }}
@@ -225,14 +226,12 @@
               - snapshot2_info.snapshot_id is defined
               - snapshot2_info.snapshot_id | int > 0
               - snapshot2_info.vdev_id == snapshot_vdev_uuid
-              - snapshot2_info.name == snapshot2_name
-
+              - snapshot2_info.snapshot_name is defined
+              - snapshot2_info.snapshot_name == snapshot2_name
               - snapshot2_info.snapshot_id | int !=
                 snapshot1_info.snapshot_id | int
-
               - snapshot2_info.snapshot_id | int >
                 snapshot1_info.snapshot_id | int
-
             fail_msg: >-
               Snapshot 2 CP validation / ID ordering failed.
               snap1={{ snapshot1_info }}

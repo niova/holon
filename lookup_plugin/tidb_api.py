@@ -257,6 +257,7 @@ def extract_fields(data):
 
         # Snapshot fields
         "snapshot_id",
+        "snapshot_name",
         "name",
         "state",
         "created_at",

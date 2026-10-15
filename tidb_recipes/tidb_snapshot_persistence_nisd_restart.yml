@@ -86,13 +86,10 @@
               - snapshot_login_result is defined
               - snapshot_login_result.access_token is defined
               - snapshot_login_result.access_token | length > 0
-
               - snapshot_vdev_uuid is defined
               - snapshot_vdev_uuid | length > 0
-
               - snapshot_live_device is defined
               - snapshot_live_device | length > 0
-
               - snapshot_nisd_device_path is defined
               - snapshot_nisd_device_path | length > 0
             fail_msg: >-
@@ -209,7 +206,8 @@
               - snapshot_before.state == "applied"
               - snapshot_before.snapshot_id | int > 0
               - snapshot_before.vdev_id == snapshot_vdev_uuid
-              - snapshot_before.name == snapshot_name
+              - snapshot_before.snapshot_name is defined
+              - snapshot_before.snapshot_name == snapshot_name
 
         # ------------------------------------------------------------
         # 7. Capture current NISD PID
@@ -434,7 +432,8 @@
               - snapshot_after.state == "applied"
               - snapshot_after.snapshot_id | int == snapshot_before.snapshot_id | int
               - snapshot_after.vdev_id == snapshot_vdev_uuid
-              - snapshot_after.name == snapshot_name
+              - snapshot_after.snapshot_name is defined
+              - snapshot_after.snapshot_name == snapshot_name
             fail_msg: >-
               Snapshot CP metadata changed or disappeared after NISD restart.
 

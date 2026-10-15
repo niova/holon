@@ -268,7 +268,8 @@
               - failed_snapshot_before_restart.state == "pending"
               - failed_snapshot_before_restart.snapshot_id | int > 0
               - failed_snapshot_before_restart.vdev_id == snapshot_vdev_uuid
-              - failed_snapshot_before_restart.name == snapshot_name
+              - failed_snapshot_before_restart.snapshot_name is defined
+              - failed_snapshot_before_restart.snapshot_name == snapshot_name
             fail_msg: >-
               Snapshot did not remain pending before VDEV remount:
               {{ failed_snapshot_before_restart }}
@@ -377,7 +378,7 @@
           args:
             executable: /bin/bash
           register: ublk_before_remount
-          changed_when: 
+          changed_when: false
           
         - name: "{{ recipe_name }}: Remount VDEV after NISD recovery."
           vars:
@@ -450,7 +451,8 @@
               - snapshot_after_remount.snapshot_id | int ==
                 failed_snapshot_before_restart.snapshot_id | int
               - snapshot_after_remount.vdev_id == snapshot_vdev_uuid
-              - snapshot_after_remount.name == snapshot_name
+              - snapshot_after_remount.snapshot_name is defined
+              - snapshot_after_remount.snapshot_name == snapshot_name
             fail_msg: >-
               Snapshot did not transition to abandoned after VDEV remount:
               {{ snapshot_after_remount }}
@@ -503,7 +505,8 @@
               - failed_snapshot_after_restart.snapshot_id | int ==
                 failed_snapshot_before_restart.snapshot_id | int
               - failed_snapshot_after_restart.vdev_id == snapshot_vdev_uuid
-              - failed_snapshot_after_restart.name == snapshot_name
+              - failed_snapshot_after_restart.snapshot_name is defined
+              - failed_snapshot_after_restart.snapshot_name == snapshot_name
             fail_msg: >-
               Abandoned snapshot state changed after NISD restart.
               before={{ failed_snapshot_before_restart }}

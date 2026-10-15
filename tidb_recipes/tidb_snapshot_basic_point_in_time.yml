@@ -198,7 +198,8 @@
               - snapshot_info.snapshot_id is defined
               - snapshot_info.snapshot_id | int > 0
               - snapshot_info.vdev_id == snapshot_vdev_uuid
-              - snapshot_info.name == snapshot_name
+              - snapshot_info.snapshot_name is defined
+              - snapshot_info.snapshot_name == snapshot_name
             fail_msg: >-
               CP snapshot validation failed.
               Snapshot response: {{ snapshot_info }}
@@ -208,7 +209,6 @@
             msg:
               - "Snapshot basic point-in-time test PASSED"
               - "vdev={{ snapshot_vdev_uuid }}"
-              - "snapshot={{ snapshot_name }}"
               - "snapshot_id={{ snapshot_info.snapshot_id }}"
               - "state={{ snapshot_info.state }}"
               - "live_device={{ snapshot_live_device }}"
