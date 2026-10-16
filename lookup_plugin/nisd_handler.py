@@ -205,14 +205,19 @@ def run_niova_ublk(cluster_params, input_values):
     genericcmdobj = GenericCmds()
     
     # generate ublk uuid if not cp_mode
-    if cp_mode == 0: 
+    if cp_mode == 0:
         ublk_uuid = genericcmdobj.generate_uuid()
+
     elif snapshot_name:
         if not client_uuid:
             client_uuid = genericcmdobj.generate_uuid()
 
         ublk_uuid = client_uuid
+
     else:
+        if not client_uuid:
+            client_uuid = genericcmdobj.generate_uuid()
+
         ublk_uuid = vdev_uuid
 
     # Prepare path for log file.
@@ -235,9 +240,20 @@ def run_niova_ublk(cluster_params, input_values):
     if not os.path.exists(gossip_nodes_path):
         gossip_nodes_path = os.path.join(raft_dir, "gossipNodes")
 
-    os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
+    if cp_mode == 1:
+        # Let niova-ublk create its control interface under:
+        # /tmp/.niova/<client_uuid>/{init,input,output}
+        os.environ.pop("NIOVA_INOTIFY_BASE_PATH", None)
+        os.environ.pop("NIOVA_LOCAL_CTL_SVC_DIR", None)
+    else:
+        os.environ["NIOVA_INOTIFY_BASE_PATH"] = (
+            "%s/%s/nisd-interface" % (base_dir, raft_uuid)
+        )
+        os.environ["NIOVA_LOCAL_CTL_SVC_DIR"] = (
+            "%s/%s/nisd-interface" % (base_dir, raft_uuid)
+        )
+
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}"
-    os.environ['NIOVA_LOCAL_CTL_SVC_DIR'] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
 
     workspace_dir = os.getenv('NIOVA_WORKSPACE')
     gossip_path = "%s/mdsvc-tidb/configs/gossipNodes" % workspace_dir
@@ -282,6 +298,7 @@ def run_niova_ublk(cluster_params, input_values):
                 bin_path,
                 "-t", "cp",
                 "-v", vdev_uuid,
+                "-u", client_uuid,
                 "-q", "128",
                 "-b", "1048576",
                 "-T"
@@ -336,6 +353,11 @@ def run_niova_ublk(cluster_params, input_values):
             before_devices,
             timeout=int(input_values.get("device_timeout", 30))
         )
+        
+        if cp_mode == 1:
+            ctl_input = f"/tmp/.niova/{client_uuid}/input"
+            logger.info(f"Expected ublk ctl-if input directory: {ctl_input}")
+            logger.info(f"ctl-if input exists: {os.path.isdir(ctl_input)}")
 
     except Exception as e:
         logger.error(f"Failed to start niova-ublk: {e}")
@@ -410,33 +432,46 @@ def stop_ublk(cluster_params, input_values):
     info = processes.get(process_key)
 
     if not info:
-        raise RuntimeError(
-            f"No tracked ublk process: {process_key}"
-        )
+        raise RuntimeError(f"No tracked ublk process: {process_key}")
 
     pid = int(info["process_pid"])
 
-    try:
-        proc = psutil.Process(pid)
-    except psutil.NoSuchProcess:
+    # If process is already gone, mark it stopped and return.
+    if not psutil.pid_exists(pid):
         info["process_status"] = "stopped"
         GenericCmds().recipe_json_dump(recipe_conf)
-
         return {
             "process_key": process_key,
             "status": "already-stopped",
         }
 
-    proc.terminate()
+    # niova-ublk was started with sudo, so stop it with sudo too.
+    subprocess.run(
+        ["sudo", "kill", "-TERM", str(pid)],
+        check=True
+    )
 
-    try:
-        proc.wait(timeout=timeout)
-    except psutil.TimeoutExpired:
-        proc.kill()
-        proc.wait(timeout=5)
+    start = time.monotonic()
+
+    while psutil.pid_exists(pid):
+        if time.monotonic() - start >= timeout:
+            subprocess.run(
+                ["sudo", "kill", "-KILL", str(pid)],
+                check=True
+            )
+
+            # wait briefly for SIGKILL to take effect
+            kill_start = time.monotonic()
+            while psutil.pid_exists(pid):
+                if time.monotonic() - kill_start >= 5:
+                    raise RuntimeError(f"Failed to stop ublk process {pid}")
+                time.sleep(0.2)
+
+            break
+
+        time.sleep(0.2)
 
     info["process_status"] = "stopped"
-
     GenericCmds().recipe_json_dump(recipe_conf)
 
     return {
@@ -848,7 +883,7 @@ def start_niova_block_test(cluster_params, input_values):
     if enable_authentication == 1:
         os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
         os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
-        # os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
+        os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
         os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
         os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
 

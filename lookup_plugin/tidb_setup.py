@@ -119,6 +119,30 @@ def _tidb_backend(cluster_params):
 # Docker Setup
 # =========================================================
 
+def _docker_tidb_data_dir():
+    """Resolve a disposable CI-owned bind mount, never a shared default."""
+    configured_path = os.environ.get("TIDB_DATA_DIR")
+    configured_root = os.environ.get("CI_TIDB_DATA_ROOT")
+    if not configured_path or not configured_root:
+        raise AnsibleError(
+            "TIDB_DATA_DIR and CI_TIDB_DATA_ROOT must be set for Docker tests"
+        )
+
+    path = os.path.realpath(configured_path)
+    root = os.path.realpath(configured_root)
+    if root in ("/", "/tmp", "/var", "/home", "/local"):
+        raise AnsibleError("Unsafe CI_TIDB_DATA_ROOT: %s" % root)
+    if path == root or os.path.commonpath([path, root]) != root:
+        raise AnsibleError("Unsafe TiDB data directory: %s" % path)
+    return path
+
+
+def _docker_compose_cmd(data_dir, *args):
+    # Preserve TIDB_DATA_DIR even when sudo strips the caller's environment.
+    return ["sudo", "env", "TIDB_DATA_DIR=%s" % data_dir,
+            "docker", "compose", *args]
+
+
 def docker_setup(cluster_params):
     """Tear down existing stack, start Docker stack, and wait for API health."""
 
@@ -135,12 +159,13 @@ def docker_setup(cluster_params):
     container_name = "mdsvc-tidb"
     base_url = cluster_params.get("api_base_url", "http://localhost:8081")
     server_timeout = int(cluster_params.get("server_timeout", 120))
+    tidb_data_dir = _docker_tidb_data_dir()
 
     with open(log_file, "a") as logf:
         logf.write("\nSTARTING MDSVC-TIDB DOCKER SETUP\n")
 
         down_proc = subprocess.Popen(
-            ["sudo", "docker", "compose", "down", "-v"],
+            _docker_compose_cmd(tidb_data_dir, "down", "-v"),
             cwd=repo_path,
             stdout=logf,
             stderr=logf,
@@ -151,10 +176,22 @@ def docker_setup(cluster_params):
                 "docker compose down failed. Check log: %s" % log_file
             )
 
+        logf.write("\nRESETTING TIDB DATA: %s\n" % tidb_data_dir)
+        logf.flush()
+        cleanup_proc = subprocess.run(
+            ["sudo", "rm", "-rf", "--", tidb_data_dir],
+            stdout=logf,
+            stderr=logf,
+        )
+        if cleanup_proc.returncode != 0:
+            raise AnsibleError(
+                "Failed to reset TiDB data: %s" % tidb_data_dir
+            )
+
         logf.write("\nDOCKER STACK CLEANED UP\n")
 
         up_proc = subprocess.Popen(
-            ["sudo", "docker", "compose", "up", "-d", "--build"],
+            _docker_compose_cmd(tidb_data_dir, "up", "-d", "--build"),
             cwd=repo_path,
             stdout=logf,
             stderr=logf,
@@ -217,12 +254,13 @@ def docker_teardown(cluster_params):
 
     log_file = "%s/%s/%s_docker_log.txt" % (base_dir, raft_uuid, app_name)
     os.makedirs(os.path.dirname(log_file), exist_ok=True)
+    tidb_data_dir = _docker_tidb_data_dir()
 
     with open(log_file, "a") as logf:
         logf.write("\nSTARTING MDSVC-TIDB DOCKER TEARDOWN\n")
 
         down_proc = subprocess.Popen(
-            ["sudo", "docker", "compose", "down", "-v"],
+            _docker_compose_cmd(tidb_data_dir, "down", "-v"),
             cwd=repo_path,
             stdout=logf,
             stderr=logf,
@@ -231,6 +269,27 @@ def docker_teardown(cluster_params):
         if down_rc != 0:
             raise AnsibleError(
                 "docker compose down failed. Check log: %s" % log_file
+            )
+
+        # TiDB data is stored in a host bind mount, so `docker compose down -v`
+        # does not remove it. Delete the bind-mounted data explicitly.
+        logf.write(
+            "\nREMOVING PERSISTED TIDB DATA: %s\n"
+            % tidb_data_dir
+        )
+        logf.flush()
+
+        cleanup_proc = subprocess.Popen(
+            ["sudo", "rm", "-rf", "--", tidb_data_dir],
+            stdout=logf,
+            stderr=logf,
+        )
+        cleanup_rc = cleanup_proc.wait()
+
+        if cleanup_rc != 0:
+            raise AnsibleError(
+                "Failed to remove TiDB data directory: %s"
+                % tidb_data_dir
             )
 
         logf.write("\nDOCKER STACK STOPPED AND REMOVED\n")
@@ -244,7 +303,7 @@ def docker_teardown(cluster_params):
 # Manual Setup Helpers
 # =========================================================
 
-def manual_setup(cluster_params):
+def _manual_setup_external(cluster_params):
     """Verify pre-existing TiDB and start mdsvc-api against it."""
 
     workspace_dir = os.getenv("NIOVA_WORKSPACE")
@@ -336,7 +395,33 @@ def manual_setup(cluster_params):
         "base_url": base_url,
     }
 
-def manual_teardown(cluster_params):
+def manual_setup(cluster_params):
+    """
+    Start a fresh TiDB + mdsvc-api environment for each recipe.
+
+    By default, manage TiDB through the existing TiUP Playground
+    lifecycle. Allow externally managed TiDB when explicitly requested.
+    """
+    manage_tidb = cluster_params.get("manual_manage_tidb", True)
+
+    if not manage_tidb:
+        return _manual_setup_external(cluster_params)
+
+    if cluster_params.get("playground_tag"):
+        raise AnsibleError(
+            "A persistent playground_tag is incompatible with "
+            "fresh TiDB setup for every recipe."
+        )
+
+    result = playground_setup(cluster_params)
+
+    return {
+        **result,
+        "status": "manual_setup_done",
+        "tidb_managed": True,
+    }
+
+def _manual_teardown_external(cluster_params):
     """Stop mdsvc-api only; manual mode never started TiDB."""
     base_dir = cluster_params["base_dir"]
     raft_uuid = cluster_params["raft_uuid"]
@@ -347,6 +432,23 @@ def manual_teardown(cluster_params):
     return {
         "status": "manual_teardown_done",
         "server": server_status,
+    }
+
+def manual_teardown(cluster_params):
+    """
+    Stop mdsvc-api and the TiDB instance managed by manual_setup.
+    """
+    manage_tidb = cluster_params.get("manual_manage_tidb", True)
+
+    if not manage_tidb:
+        return _manual_teardown_external(cluster_params)
+
+    result = playground_teardown(cluster_params)
+
+    return {
+        **result,
+        "status": "manual_teardown_done",
+        "tidb_managed": True,
     }
 
 # =========================================================
@@ -1646,12 +1748,24 @@ def start_server(params):
     fp = open(log_file, "a")
 
     env = os.environ.copy()
+
+    mysql_host = str(params["mysql_host"])
+    mysql_port = str(params["mysql_port"])
+    mysql_user = str(params["mysql_user"])
+    mysql_password = str(params["mysql_password"])
+
     env.update({
-        "MDSVC_MYSQL_HOST": str(params["mysql_host"]),
-        "MDSVC_MYSQL_PORT": str(params["mysql_port"]),
-        "MDSVC_MYSQL_USER": str(params["mysql_user"]),
-        "MDSVC_MYSQL_PASSWORD": str(params["mysql_password"]),
+        "MDSVC_MYSQL_HOST": mysql_host,
+        "MDSVC_MYSQL_PORT": mysql_port,
+        "MDSVC_MYSQL_USER": mysql_user,
+        "MDSVC_MYSQL_PASSWORD": mysql_password,
         "MDSVC_API_URL": str(params["base_url"]),
+        "MDSVC_DSN": (
+            f"{mysql_user}:{mysql_password}@tcp({mysql_host}:{mysql_port})/"
+            if mysql_password
+            else f"{mysql_user}@tcp({mysql_host}:{mysql_port})/"
+        ),
+        "MDSVC_LISTEN": ":8081",
     })
 
     if params.get("disable_auth"):
@@ -1667,7 +1781,16 @@ def start_server(params):
     if params.get("admin_default_password"):
         env["ADMIN_DEFAULT_PASSWORD"] = str(params["admin_default_password"])
 
-    command = params.get("server_command") or ["go", "run", "./cmd/server"]
+    command = params.get("server_command")
+
+    if not command:
+        built_server = os.path.join(server_path, "server")
+
+        if os.path.isfile(built_server) and os.access(built_server, os.X_OK):
+            command = [built_server]
+        else:
+            command = ["go", "run", "./cmd/server"]
+
     if isinstance(command, str):
         command = command.split()
 
@@ -1754,6 +1877,7 @@ def stop_server(params):
 def wait_for_server(params):
     """Poll base_url while detecting an mdsvc process that exits early."""
     base_url = params["base_url"]
+    health_url = base_url.rstrip("/") + "/swagger/"
     timeout = int(params["server_timeout"])
     log_file = _get_log_file(params)
     server_pid = params.get("server_pid")
@@ -1776,12 +1900,15 @@ def wait_for_server(params):
             )
 
         try:
-            resp = requests.get(base_url, timeout=5)
-            if resp.status_code < 500:
+            resp = requests.get(health_url, timeout=5)
+
+            if resp.status_code in (200, 301, 302):
                 with open(log_file, "a") as logf:
                     _write_log_header(logf, "SERVER BECAME READY")
                 return
+
             last_err = "HTTP %s" % resp.status_code
+
         except Exception as exc:
             last_err = str(exc)
 

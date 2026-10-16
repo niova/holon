@@ -203,15 +203,7 @@ def make_headers(token=None, extra_headers=None):
 
     return headers
 
-def perform_request(
-    method,
-    url,
-    payload,
-    params,
-    headers,
-    timeout,
-    log_file,
-):
+def perform_request(method,url,payload,params,headers,timeout,log_file):
     try:
         response = requests.request(
             method=method,
@@ -265,6 +257,7 @@ def extract_fields(data):
 
         # Snapshot fields
         "snapshot_id",
+        "snapshot_name",
         "name",
         "state",
         "created_at",
