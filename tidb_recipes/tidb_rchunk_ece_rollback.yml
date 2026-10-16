@@ -1,0 +1,59 @@
+- import_playbook: tidb_rchunk_rollback_setup.yml
+
+- name: tidb_rchunk_ece_rollback.yml
+  hosts: localhost
+  connection: local
+  vars:
+    recipe_name: tidb_rchunk_ece_rollback
+    rchunk_test_logdir: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/rchunk-ece-rollback"
+    rchunk_test_script: "{{ playbook_dir }}/../scripts/rchunk_rollback.py"
+    rchunk_ublk_bin: "{{ lookup('env', 'NIOVA_BIN_PATH') }}/bin/niova-ublk"
+    rchunk_gossip_path: "{{ lookup('env', 'NIOVA_WORKSPACE') }}/mdsvc-tidb/configs/gossipNodes"
+    # Fill in later, once the client ctl-interface rollback-cnt path is known.
+    rchunk_rollback_counter_command: ''
+    rchunk_rollback_counter_regex: 'rollback-cnt[^0-9]*([0-9]+)'
+    rchunk_max_attempts: 6
+    rchunk_require_rollback_counter: false
+
+  tasks:
+    - name: Ensure no existing ublk devices are mounted on this dedicated test runner
+      ansible.builtin.shell: 'compgen -G "/dev/ublkb*" >/dev/null && exit 1 || exit 0'
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: Run ECE r-chunk crash and recovery workload
+      ansible.builtin.command:
+        argv:
+          - python3
+          - "{{ rchunk_test_script }}"
+          - --mode
+          - ece
+          - --vdev
+          - "{{ rchunk_vdev_uuid }}"
+          - --binary
+          - "{{ rchunk_ublk_bin }}"
+          - --logdir
+          - "{{ rchunk_test_logdir }}"
+          - --retries
+          - "{{ rchunk_max_attempts | string }}"
+          - --counter-command
+          - "{{ rchunk_rollback_counter_command }}"
+          - --counter-regex
+          - "{{ rchunk_rollback_counter_regex }}"
+      become: true
+      environment:
+        NIOVA_GOSSIP_PATH: "{{ rchunk_gossip_path }}"
+        NIOVA_GOSSIP_KEY: dummy
+        NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ rchunk_admin_user }}"
+        NIOVA_BLOCK_CP_AUTH_SECRET: "{{ rchunk_admin_password }}"
+        NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: '256'
+        NIOVA_BLOCK_PROXY_TAG: mdsvc-tidb
+        NIOVA_BLOCK_UBLK_UNIFIED: '0'
+      register: rchunk_result
+      changed_when: true
+      failed_when: rchunk_result.rc != 0 or (rchunk_require_rollback_counter | bool and 'ROLLBACK_PASS:' not in rchunk_result.stdout)
+
+    - name: Report result (RECOVERY_ONLY is not proof of r-chunk rollback)
+      ansible.builtin.debug:
+        msg: "{{ rchunk_result.stdout_lines }}"
