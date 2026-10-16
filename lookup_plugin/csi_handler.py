@@ -33,44 +33,71 @@ def initialize_logger(log_file):
     return logger
 
 
-def run_command(command, logger, cwd=None):
+def run_command(command, logger, cwd=None, timeout=300):
     """
     Run a command and return its output.
-
     Raises AnsibleError if the command fails.
     """
 
-    logger.info(
-        "Executing command: %s",
-        " ".join(shlex.quote(str(x)) for x in command)
+    cmd_str = " ".join(
+        shlex.quote(str(x)) for x in command
     )
 
-    result = subprocess.run(
-        command,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        check=False,
-    )
+    logger.info("Executing command: %s", cmd_str)
+    logger.info("Command timeout: %s seconds", timeout)
 
-    if result.stdout:
-        logger.info(result.stdout)
+    try: 
+        result = subprocess.run(
+            command,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
 
-    if result.returncode != 0:
-        raise AnsibleError(
-            "Command failed with return code %s: %s"
+        output = result.stdout or ""
+
+        if output:
+            logger.info("Command output:\n%s", output)
+
+        if result.returncode != 0:
+            raise AnsibleError(
+                "Command failed with return code %s: %s\n"
+                "Command output:\n%s"
+                % (
+                    result.returncode,
+                    cmd_str,
+                    output if output else "<no output>",
+                )
+            )
+
+        return output
+    except subprocess.TimeoutExpired as exc:
+        output = exc.stdout or ""
+
+        if isinstance(output, bytes):
+            output = output.decode("utf-8", errors="replace")
+
+        message = (
+            "Command timed out after %s seconds: %s\n"
+            "Command output before timeout:\n%s"
             % (
-                result.returncode,
-                " ".join(
-                    shlex.quote(str(x))
-                    for x in command
-                ),
+                timeout,
+                cmd_str,
+                output if output else "<no output captured>",
             )
         )
 
-    return result.stdout
+        logger.error("%s", message)
+        raise AnsibleError(message) from exc
 
+    except OSError as exc:
+        raise AnsibleError(
+            "Unable to execute command %s: %s"
+            % (cmd_str, exc)
+        ) from exc
 
 def build_csi_sanity(cluster_params, input_values):
     """
@@ -334,7 +361,7 @@ def run_csi_sanity(
         #
         # Select tests to skip
         #
-        if service_type == "node":
+        if service_type == "controller":
 
             skip_tests = (
                 "Node Service|"
@@ -343,7 +370,7 @@ def run_csi_sanity(
                 "Snapshot"
             )
 
-        elif service_type == "controller":
+        elif service_type == "node":
 
             skip_tests = (
                 "Controller Service|"
@@ -366,6 +393,8 @@ def run_csi_sanity(
             binary_path,
             "--csi.endpoint=%s" % endpoint,
             "-ginkgo.skip=%s" % skip_tests,
+            "--ginkgo.v",
+            "--ginkgo.show-node-events",
         ]
 
         logger.info(
@@ -373,14 +402,23 @@ def run_csi_sanity(
             service_type
         )
 
+        logger.info("CSI sanity command: %s", " ".join(command))
+        timeout = int(input_values.get("timeout", 300))
         output = run_command(
             command,
-            logger
+            logger,
+            timeout=timeout,
         )
 
         logger.info(
-            "CSI sanity %s service completed successfully",
-            service_type
+            "CSI sanity %s service output:\n%s",
+            service_type,
+            output,
+        )
+
+        logger.info(
+            "CSI sanity %s service command finished",
+            service_type,
         )
 
         return [
