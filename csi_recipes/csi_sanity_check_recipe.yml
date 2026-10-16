@@ -117,13 +117,10 @@
     - name: Run CSI sanity Node Service
       set_fact:
         csi_sanity_node_result: >-
-          {{
-            lookup(
-              'csi_handler',
-                'run_csi_sanity_node',
+          {{ lookup('csi_handler','run_csi_sanity_node',
               {
                 'endpoint': 'unix:///var/lib/kubelet/plugins/csi.niova.com/custom.sock',
-                'timeout': "600",
+                'timeout': "300",
               }
             )
           }}
@@ -131,13 +128,10 @@
     - name: Run CSI sanity Controller Service
       set_fact:
         csi_sanity_controller_result: >-
-          {{
-              lookup(
-              'csi_handler',
-             'run_csi_sanity_controller',
+          {{ lookup('csi_handler','run_csi_sanity_controller',
               {
                 'endpoint': 'unix:///var/lib/kubelet/plugins/csi.niova.com/custom.sock',
-                'timeout': "600",
+                'timeout': "300",
               }
             )
           }}

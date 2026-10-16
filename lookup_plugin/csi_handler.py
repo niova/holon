@@ -292,6 +292,7 @@ def run_csi_sanity(
         node
         controller
     """
+    print(f"[CSI DEBUG] Starting CSI sanity for service: {service_type}",flush=True)
 
     base_dir = cluster_params.get(
         "base_dir",
@@ -304,7 +305,11 @@ def run_csi_sanity(
     )
 
     workspace = os.getenv("NIOVA_WORKSPACE")
-
+    
+    print(f"[CSI DEBUG] NIOVA_WORKSPACE: {workspace}", flush=True)
+    print(f"[CSI DEBUG] Base directory: {base_dir}", flush=True)
+    print(f"[CSI DEBUG] Raft UUID: {raft_uuid}", flush=True)
+    
     #
     # Binary can either be supplied by the recipe
     # or derived from the workspace.
@@ -319,7 +324,7 @@ def run_csi_sanity(
         "endpoint",
         "unix:///var/lib/kubelet/plugins/csi.niova.com/custom.sock"
     )
-
+    
     log_dir = os.path.join(
         workspace,
         "logs"
@@ -335,28 +340,29 @@ def run_csi_sanity(
         "csi_sanity_%s.log" % service_type
     )
 
-    logger = initialize_logger(
-        log_file
-    )
+    logger = initialize_logger(log_file)
+
+    print(f"[CSI DEBUG] Binary path: {binary_path}", flush=True)
+    print(f"[CSI DEBUG] Endpoint: {endpoint}", flush=True)
+    print(f"[CSI DEBUG] Log file: {log_file}", flush=True)
 
     try:
 
         #
         # Verify binary
         #
+        print("[CSI DEBUG] Checking binary existence...", flush=True)
         if not os.path.exists(binary_path):
             raise AnsibleError(
                 "csi-sanity binary not found: %s"
                 % binary_path
             )
-
+        print("[CSI DEBUG] Binary exists.", flush=True)
         #
         # Make sure it is executable
         #
-        os.chmod(
-            binary_path,
-            0o755
-        )
+        os.chmod(binary_path,0o755)
+        print("[CSI DEBUG] Binary permissions set.", flush=True)
 
         #
         # Select tests to skip
@@ -384,7 +390,7 @@ def run_csi_sanity(
                 "Unsupported CSI sanity service type: %s"
                 % service_type
             )
-
+        print(f"[CSI DEBUG] Skip filter: {skip_tests}", flush=True)
         #
         # Build command
         #
@@ -405,12 +411,23 @@ def run_csi_sanity(
 
         logger.info("CSI sanity command: %s", " ".join(command))
         timeout = int(input_values.get("timeout", 300))
+        print(f"[CSI DEBUG] Timeout: {timeout} seconds", flush=True)
+        print(
+            "[CSI DEBUG] Command: %s"
+            % " ".join(shlex.quote(str(x)) for x in command),
+            flush=True
+        )
+        print("[CSI DEBUG] Launching csi-sanity...", flush=True)
         output = run_command(
             command,
             logger,
             timeout=timeout,
         )
-
+        print(
+            f"[CSI DEBUG] csi-sanity completed successfully for {service_type}.",
+            flush=True
+        )
+        print(f"[CSI DEBUG] Output length: {len(output)} characters", flush=True)
         logger.info(
             "CSI sanity %s service output:\n%s",
             service_type,
@@ -427,9 +444,11 @@ def run_csi_sanity(
         ]
 
     except AnsibleError:
+        print(f"[CSI DEBUG] AnsibleError: {exc}",flush=True)
         raise
 
     except Exception as exc:
+        print(f"[CSI DEBUG] Unexpected error: {type(exc).__name__}: {exc}",flush=True)
         logger.exception(
             "CSI sanity %s service failed",
             service_type
