@@ -1,0 +1,314 @@
+# TiDB Snapshot Test Recipes
+
+## Overview
+
+This document describes the four implemented TiDB-backed snapshot integration recipes in Holon. The tests exercise snapshot correctness, version isolation, persistence across an NISD restart, and recovery after a failed snapshot operation.
+
+The snapshot recipes are orchestrated by **Ansible** under `holon/tidb_recipes/`. Their data-path assertions run through **Bash scripts** under `holon/scripts/`, with shared functions in `snapshot_helper.sh`. They use `mdsvc-tidb` as the control plane (CP), `niova-snapshot` for snapshot operations, and `niova-ublk` for live read/write and snapshot read-only block devices.
+
+## Recipe inventory
+
+| Recipe | Test script | Purpose |
+| --- | --- | --- |
+| `tidb_snapshot_basic_point_in_time.yml` | `snapshot-basic-point-in-time.sh` | Verify that a snapshot preserves generation A after the live device is overwritten with B. |
+| `tidb_snapshot_multiple_versions.yml` | `snapshot-multiple-versions.sh` | Verify snapshot 1 preserves A, snapshot 2 preserves B, and the live device holds C. |
+| `tidb_snapshot_persistence_nisd_restart.yml` | `snapshot-persistence-nisd-restart.sh` | Verify that snapshot A and live B survive stopping and restarting NISD with its original backing storage. |
+| `tidb_snapshot_write_resume_after_failure.yml` | `snapshot-write-resume-after-failure.sh` | Verify that a snapshot attempt during NISD failure remains pending until VDEV remount, becomes abandoned, and does not prevent subsequent I/O. |
+
+`tidb_snapshot_setup.yml` is a **shared setup playbook**, not a fifth test recipe.
+
+## Common setup: `tidb_snapshot_setup.yml`
+
+All four recipe playbooks begin with:
+
+```yaml
+- import_playbook: tidb_snapshot_setup.yml
+```
+
+The common setup performs the following operations:
+
+1. Assert `app_type == "tidb"` and start the `mdsvc-tidb`/TiDB environment using the `tidb_setup` lookup plugin with `docker_setup`.
+2. Poll `http://localhost:8081/swagger/` until the API responds.
+3. Authenticate to the control plane using the configured admin credentials, and create the sample infrastructure using `create_sample_infra.json`.
+4. Create a backing file at `/snapshot-test.device` with `dd` settings `bs=64M`, `count=160` (10 GiB in binary units), then initialize NISD using `run-niova-block-ctl`.
+5. Start NISD with authentication enabled, UUID `1a93c9af-5184-49b4-972b-1c94a2057e74`, peer port `13000`, and client port `13001`.
+6. Wait for the NISD resource to appear through `/api/resource?type=nisd`.
+7. Create the VDEV from `create_sample_vdev.json` and store its UUID.
+8. Stop stale `niova-ublk` processes; delete stale ublk registrations and non-block `/dev/ublkb*` files.
+9. Start a live, authenticated, CP-mode read/write `niova-ublk` client, detect its newly created `/dev/ublkbN` node, and assert that exactly one new block device exists.
+
+### Shared setup outputs
+
+| Variable | Use |
+| --- | --- |
+| `snapshot_login_result.access_token` | Authenticated control-plane API requests |
+| `snapshot_nisd_device_path` | NISD backing file; reused and identity-checked in restart tests |
+| `snapshot_vdev_uuid` | VDEV identifier used by snapshot operations |
+| `snapshot_live_device` | Active live read/write `/dev/ublkbN` device |
+| `live_ublk_uuid` | Return value of `nisd_handler`'s live ublk launch |
+
+The setup modifies local processes and ublk devices. Run on an isolated test host or CI runner, not a host carrying unrelated ublk workloads.
+
+## Shared testing conventions
+
+The shell recipes source `holon/scripts/snapshot_helper.sh`, which provides device checks, deterministic `fio` writes and CRC32C verification, SHA-256 region hashing, snapshot creation/deletion, CP authentication and polling, and read-only snapshot mount handling.
+
+| Setting | Default / behavior |
+| --- | --- |
+| `SNAP_OFFSET` | `1G` |
+| `SNAP_SIZE` | `128M` |
+| `SNAP_BS` | `4k` |
+| `SNAP_IODEPTH` | `32` |
+| `SNAPSHOT_TIMEOUT` | `30` seconds |
+| `UBLK_TIMEOUT` | `30` seconds |
+| `MDSVC_API_URL` | `http://127.0.0.1:8081` |
+| Tested logical range | VBLKs `262144..294911` at the default offset and size with 4-KiB VBLKs |
+
+The test scripts use `fio` with direct `io_uring` I/O, seeded deterministic data generations, CRC32C verification and SHA-256 hashes of the target region. CP `state=applied` is checked for successfully created snapshots. Snapshots are mounted read-only to validate their preserved bytes independently of the live view.
+
+**Required tools:** Ansible and repository lookup plugins; `bash`, `fio`, `curl`, `python3`, `sha256sum`, `dd`, `niova-snapshot`, `niova-ublk`, `sudo`, and the ublk management utilities used by setup. The restart/failure tests additionally use process-management commands and bounded timeouts.
+
+---
+
+## 1. Basic snapshot point-in-time correctness
+
+**Playbook:** `tidb_snapshot_basic_point_in_time.yml`  
+**Script:** `snapshot-basic-point-in-time.sh`
+
+### Objective
+
+Establish that a snapshot taken after writing A preserves A even when the same live VBLKs are overwritten with B.
+
+### Steps
+
+1. Perform common setup and validate the live ublk block device.
+2. Generate a unique snapshot name and configure a recipe-specific log directory.
+3. Write generation **A**, using seed `1001` and pattern `0xAAAAAAAA`, to the fixed test region. Verify it using `fio` CRC32C and record SHA-256 hash `A_HASH`.
+4. Create the snapshot with `niova-snapshot --op create --keep` and poll CP until the snapshot reaches **`applied`**. Validate its positive numeric snapshot ID.
+5. Overwrite the same region with generation **B**, using seed `1002` and pattern `0xBBBBBBBB`. Verify CRC32C and compute `B_HASH`.
+6. Assert `A_HASH != B_HASH` and that the live region hash equals `B_HASH`, not `A_HASH`.
+7. Mount the snapshot read-only, verify generation A with CRC32C, and compute its region hash.
+8. Assert the snapshot hash equals `A_HASH` and differs from `B_HASH`.
+9. Independently query the CP using the `tidb_api` lookup plugin and validate HTTP 200, `state=applied`, positive snapshot ID, matching VDEV UUID and snapshot name.
+
+### Pass criteria
+
+- All `fio` write/verification operations succeed.
+- Live device contains **B**; snapshot contains **A**.
+- Snapshot and control-plane identifiers are valid and CP reports **`applied`**.
+- Script prints `PASS: basic snapshot point-in-time test`.
+
+### Cleanup
+
+The shell script stops its read-only snapshot client. The Ansible recipe keeps the snapshot until independent CP assertions complete, then attempts snapshot deletion and stack teardown in its `always` section. Failures retain logs in the configured test directory.
+
+---
+
+## 2. Multiple snapshot version preservation
+
+**Playbook:** `tidb_snapshot_multiple_versions.yml`  
+**Script:** `snapshot-multiple-versions.sh`
+
+### Objective
+
+Show that two snapshots retain their distinct point-in-time contents after later writes, and creating a newer snapshot does not change an older snapshot.
+
+### Steps
+
+1. Complete common setup and generate two unique snapshot names.
+2. Write and verify generation **A** (seed `1001`, pattern `0xAAAAAAAA`); record `A_HASH`.
+3. Create **snapshot 1** and wait for CP `state=applied`; record its snapshot ID.
+4. Overwrite the region with generation **B** (seed `1002`, pattern `0xBBBBBBBB`); verify and record `B_HASH`.
+5. Create **snapshot 2** and wait for CP `state=applied`; record its snapshot ID.
+6. Assert snapshot IDs are positive, distinct and ordered: **snapshot 2 ID > snapshot 1 ID**.
+7. Overwrite the region with generation **C** (seed `1003`, pattern `0xCCCCCCCC`); verify and record `C_HASH`.
+8. Assert A, B and C are pairwise different and that the live region contains **C**.
+9. Mount snapshot 1 read-only and assert its data and hash equal **A**, not B or C. Stop this mount.
+10. Mount snapshot 2 read-only and assert its data and hash equal **B**, not A or C. Stop this mount.
+11. Mount snapshot 1 again and re-verify **A**, proving its contents did not shift following snapshot 2's creation.
+12. Independently query CP for both snapshots and verify both are **`applied`**, their names/VDEV IDs match, and their IDs are distinct and increasing.
+
+### Pass criteria
+
+| View | Expected data |
+| --- | --- |
+| Snapshot 1 | A |
+| Snapshot 2 | B |
+| Live VDEV | C |
+| Snapshot 1 after re-mount | A, unchanged |
+
+The script prints `PASS: multiple snapshots preserve multiple versions`.
+
+### Cleanup
+
+The shell script unmounts read-only snapshot devices. Ansible keeps snapshots until CP assertions finish, then attempts to delete snapshot 2 and snapshot 1 and tears down the stack through its `always` section.
+
+---
+
+## 3. Snapshot persistence across NISD restart
+
+**Playbook:** `tidb_snapshot_persistence_nisd_restart.yml`  
+**Script:** `snapshot-persistence-nisd-restart.sh`
+
+### Objective
+
+Verify that successful snapshot metadata and data are persistent across an NISD process restart while the original backing storage is retained.
+
+### Steps
+
+**Phase A — prepare, before restart**
+
+1. Complete common setup, verify the live device, and capture the backing file identity using `stat -c '%d:%i:%s'` (device, inode and size).
+2. Generate a unique snapshot name and establish the state/log directory.
+3. Run `snapshot-persistence-nisd-restart.sh prepare`.
+4. Write and verify **A** (seed `1001`), then create the snapshot and wait for CP `state=applied`.
+5. Overwrite the live region with **B** (seed `1002`); verify live hash equals B.
+6. Mount the snapshot read-only, verify its hash equals A, then stop the read-only mount.
+7. Save VDEV UUID, snapshot name, snapshot ID and A/B hashes to `snapshot-persistence-state.json`.
+8. Independently validate the snapshot's CP metadata before restart.
+
+**Phase B — NISD restart, orchestrated by Ansible**
+
+9. Obtain the original NISD PID from the recipe state file and verify the process is running.
+10. Stop the live ublk client, terminate NISD, and restart **the same NISD UUID** on **the same backing storage**.
+11. Assert a new NISD PID exists, differs from the old one, and is running.
+12. Recalculate and compare backing-file identity (device, inode and size), ensuring the file was not replaced or truncated.
+13. Restart the live authenticated CP-mode `niova-ublk` and discover the restarted live block device.
+
+**Phase C — verify after restart**
+
+14. Run `snapshot-persistence-nisd-restart.sh verify-after-restart` using the saved state and restarted live device.
+15. Validate that the CP still reports the **same snapshot ID** in `applied` state.
+16. Verify live data still equals **B** and snapshot read-only data still equals **A**, using both `fio` verification and the saved SHA-256 hashes.
+17. Independently query CP again and assert that state, snapshot ID, VDEV UUID and snapshot name match their pre-restart values.
+
+### Pass criteria
+
+- NISD really restarts (different PID), but its backing file identity remains unchanged.
+- Snapshot stays **`applied`** with the same ID, name and VDEV.
+- Live view remains **B**, and the snapshot remains **A**.
+- Shell phases print `PASS: snapshot persistence pre-restart phase` and `PASS: snapshot persistence across NISD restart`.
+
+### Cleanup
+
+The shell script closes read-only mounts; the Ansible recipe attempts snapshot deletion and tears down the stack. The saved JSON state and log files help diagnose failures.
+
+---
+
+## 4. Writes resume after snapshot failure
+
+**Playbook:** `tidb_snapshot_write_resume_after_failure.yml`  
+**Script:** `snapshot-write-resume-after-failure.sh`
+
+### Objective
+
+Verify that a snapshot attempted while NISD is unavailable does not incorrectly become applied, is marked **`abandoned`** following VDEV remount, and permits subsequent live writes and reads.
+
+### Steps
+
+**Phase A — healthy baseline**
+
+1. Complete common setup and capture the existing NISD backing-file identity using `stat -c '%d:%i:%s'`.
+2. Run the script in `baseline` phase to write and verify baseline generation **A** (seed `5001`, pattern `0xAAAAAAAA`). Persist baseline metadata in the recipe's state JSON file.
+
+**Phase B — inject NISD failure**
+
+3. Retrieve the active NISD PID from the recipe state file, verify the process exists, and kill it with **SIGKILL**. Poll until it exits.
+4. Run the script in `expect-snapshot-failure` phase, attempting snapshot creation while NISD is down.
+5. Require the snapshot command to report a recognizable failure rather than hang; the command is bounded by `SNAPSHOT_FAIL_TIMEOUT` (default `45` seconds).
+6. Poll CP until the failed snapshot is recorded in **`pending`** state, not `applied`. Validate and store its snapshot ID, name, and VDEV identity.
+7. Independently check the CP `pending` state through the Ansible `tidb_api` lookup plugin **before remount**.
+
+**Phase C — recover NISD and remount VDEV**
+
+8. Restart NISD with its original UUID, ports and backing file; assert the new PID is valid and differs from the original.
+9. Stop the old live ublk client and check that the backing-file identity is unchanged.
+10. Remount the VDEV with a new live authenticated `niova-ublk` instance and wait for the new block-device node.
+11. Query CP and assert the original failed snapshot transitions from **`pending`** to **`abandoned`**, retaining its snapshot ID, VDEV UUID and name.
+
+**Phase D — verify I/O recovery**
+
+12. Run `snapshot-write-resume-after-failure.sh verify-writes-resume` against the remounted live device.
+13. Write generation **B** (seed `5002`, pattern `0xBBBBBBBB`) and read/verify it with bounded operations. This detects a write barrier that was not released.
+14. Assert B's hash differs from baseline A, the current live data matches B, and the failed snapshot remains **`abandoned`** rather than becoming `applied`.
+15. Recheck the failed snapshot through CP for stable `abandoned` state and matching identity.
+
+### Expected state progression
+
+```text
+Healthy live I/O
+      |
+      v
+NISD killed (SIGKILL)
+      |
+      v
+Snapshot create fails -> CP state: pending
+      |
+      v
+NISD restarted + VDEV remounted
+      |
+      v
+CP state: abandoned
+      |
+      v
+Bounded live write/read succeeds; state stays abandoned
+```
+
+### Pass criteria
+
+- Snapshot creation reports the expected failure instead of timing out.
+- Failed snapshot is **`pending`** before remount and **`abandoned`** after remount.
+- The failed snapshot never becomes **`applied`**.
+- Snapshot ID, name and VDEV identity remain consistent, with the same NISD backing file reused.
+- Live write/verify completes within configured bounds after remount.
+- Script phases print `PASS: pre-fault baseline`, `PASS: snapshot failure recorded as pending`, and `PASS: writes resume after snapshot failure`.
+
+### Cleanup
+
+The playbook's `always` section performs stack teardown. Diagnostic state and operation logs are retained in the recipe test directory when the run fails.
+
+**Implementation note:** The actual Ansible playbook stops the prior live ublk and **remounts the VDEV** before post-failure verification. A comment in the shell script says the same client instance should be kept; that comment does not match the implemented playbook behavior. This recipe therefore verifies **recovery after remount**, not uninterrupted recovery of the original ublk client.
+
+---
+
+## How to run
+
+From the `holon/` directory, with the repository's normal Ansible environment, lookup plugins, binaries and required environment variables configured:
+
+```bash
+ansible-playbook -i localhost, -c local tidb_recipes/tidb_snapshot_basic_point_in_time.yml -e app_type=tidb
+ansible-playbook -i localhost, -c local tidb_recipes/tidb_snapshot_multiple_versions.yml -e app_type=tidb
+ansible-playbook -i localhost, -c local tidb_recipes/tidb_snapshot_persistence_nisd_restart.yml -e app_type=tidb
+ansible-playbook -i localhost, -c local tidb_recipes/tidb_snapshot_write_resume_after_failure.yml -e app_type=tidb
+```
+
+These are **example invocations**, not a replacement for the repository's normal recipe runner. The playbooks also expect runner-provided context such as `ClusterParams`, `NIOVA_WORKSPACE` and `NIOVA_BIN_PATH` where applicable; invoking them without those dependencies may fail. Run recipes independently because each imports setup and manages common services/devices.
+
+### Relevant files
+
+```text
+holon/
+├── tidb_recipes/
+│   ├── tidb_snapshot_setup.yml
+│   ├── tidb_snapshot_basic_point_in_time.yml
+│   ├── tidb_snapshot_multiple_versions.yml
+│   ├── tidb_snapshot_persistence_nisd_restart.yml
+│   └── tidb_snapshot_write_resume_after_failure.yml
+├── scripts/
+│   ├── snapshot_helper.sh
+│   ├── snapshot-basic-point-in-time.sh
+│   ├── snapshot-multiple-versions.sh
+│   ├── snapshot-persistence-nisd-restart.sh
+│   └── snapshot-write-resume-after-failure.sh
+└── dev-docs/
+    └── tidb_snapshot_recipes.md
+```
+
+## Diagnostics and troubleshooting
+
+- **Setup or API failure:** Check `mdsvc-tidb`, API health at `/swagger/`, CP login and NISD registration.
+- **No live ublk device:** Check for stale `niova-ublk` processes, ublk registrations, `NIOVA_BIN_PATH`, gossip configuration, and authentication environment variables.
+- **Snapshot never reaches `applied`:** Inspect the snapshot CLI log, CP response, and the NISD/live-client logs. CP polling is time-bounded.
+- **CRC32C or SHA-256 mismatch:** Verify that the live and read-only views refer to the expected VDEV and snapshot, and inspect each generation's `fio` logs.
+- **Restart test fails:** Compare old/new NISD PIDs, backing-file `device:inode:size` values, persisted state JSON and restarted ublk device discovery.
+- **Failure/recovery test hangs:** Inspect the bounded snapshot-create output, pending/abandoned CP JSON responses and bounded post-failure I/O logs. A timeout is a test failure, not successful confirmation of snapshot failure.
