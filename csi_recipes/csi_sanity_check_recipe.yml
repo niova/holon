@@ -119,7 +119,7 @@
         csi_sanity_node_result: >-
           {{ lookup('csi_handler','run_csi_sanity_node',
               {
-                'endpoint': 'unix:///var/lib/kubelet/plugins/csi.niova.com/custom.sock',
+                'endpoint': 'unix:///csi/custom.sock',
                 'timeout': "300",
               }
             )
@@ -130,7 +130,7 @@
         csi_sanity_controller_result: >-
           {{ lookup('csi_handler','run_csi_sanity_controller',
               {
-                'endpoint': 'unix:///var/lib/kubelet/plugins/csi.niova.com/custom.sock',
+                'endpoint': 'unix:///csi/custom2.sock',
                 'timeout': "300",
               }
             )
