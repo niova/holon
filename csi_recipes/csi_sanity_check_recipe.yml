@@ -1,0 +1,138 @@
+- name: "csi_sanity_check_recipe.yml"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "csi_sanity_check_recipe"
+    api_base_url: "http://localhost:8081"
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+
+  tasks:
+    - name: "{{ recipe_name }}: Start mdsvc-tidb."
+      set_fact:
+        setup_status: "{{ lookup('tidb_setup', 'docker_setup'| string) }}"
+
+    - name: "{{ recipe_name }}: Debug setup status."
+      debug:
+        msg: "{{ setup_status }}"
+
+    - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
+      uri:
+        url: "{{ api_base_url }}/swagger/"
+        method: GET
+        status_code: [200, 301, 302]
+      register: api_health
+      retries: 90
+      delay: 3
+      until: api_health.status in [200, 301, 302]
+    # ----------------------------------------
+    # 1. Login
+    # ----------------------------------------
+
+    - name: "{{ recipe_name }}: Login to mdsvc-api."
+      set_fact:
+        login_result: >-
+          {{
+            lookup(
+              'tidb_api',
+              'login',
+              base_url=api_base_url,
+              username='admin',
+              password='admin'
+            )
+          }}
+
+    - name: "{{ recipe_name }}: Debug login result."
+      debug:
+        msg: "Login successful"
+
+    # ----------------------------------------
+    # 2. Create Infra
+    # ----------------------------------------
+
+    - name: "{{ recipe_name }}: Create infra."
+      set_fact:
+        infra_result: >-
+          {{
+            lookup(
+              'tidb_api',
+              'create_infra',
+              base_url=api_base_url,
+              token=login_result.access_token,
+              file=infra_payload
+            )
+          }}
+
+    - name: "{{ recipe_name }}: Debug infra response."
+      debug:
+        var: infra_result
+
+    # ----------------------------------------
+    # 3. Create local NISD backing device
+    # 10 GiB = 64M * 160
+    # ----------------------------------------
+
+    - name: "{{ recipe_name }}: Create NISD device file."
+      vars:
+        img_dir: "/sample.device"
+        size: "100G"
+      debug:
+        msg:
+          - "{{ lookup('helper', 'create_fallocate_file', img_dir, size) }}"
+      register: nisd_dev_path
+
+    - name: "{{ recipe_name }}: Print NISD device path."
+      debug:
+        msg: "{{ nisd_dev_path.msg[0] }}"
+
+    # ----------------------------------------
+    # 4. Start niova-block-ctl
+    # ----------------------------------------
+
+    - name: "{{ recipe_name }}: Start niova-block-ctl process."
+      vars:
+        input_param:
+          nisd_device_path: "{{ nisd_dev_path.msg[0] }}"
+          nisd_uuid: "{{ nisd_uuid }}"
+      debug:
+        msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
+
+    # ----------------------------------------
+    # 5. Start NISD
+    # ----------------------------------------
+
+    - name: "{{ recipe_name }}: Start NISD."
+      vars:
+        input_param:
+          nisd_device_path: "{{ nisd_dev_path.msg[0] }}"
+          nisd_uuid: "{{ nisd_uuid }}"
+          peer_port: "13000"
+          client_port: "13001"
+          enable_auth: 0
+      debug:
+        msg:
+          - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
+
+    - name: Run CSI sanity Node Service
+      set_fact:
+        csi_sanity_node_result: >-
+          {{ lookup('csi_handler','run_csi_sanity_node',
+              {
+                'endpoint': 'unix:///csi/custom.sock',
+                'timeout': "300",
+              }
+            )
+          }}
+
+    - name: Run CSI sanity Controller Service
+      set_fact:
+        csi_sanity_controller_result: >-
+          {{ lookup('csi_handler','run_csi_sanity_controller',
+              {
+                'endpoint': 'unix:///csi/custom2.sock',
+                'timeout': "300",
+              }
+            )
+          }}
+
