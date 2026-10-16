@@ -395,6 +395,7 @@ def run_csi_sanity(
             "-ginkgo.skip=%s" % skip_tests,
             "--ginkgo.v",
             "--ginkgo.show-node-events",
+            "--ginkgo.fail-fast",
         ]
 
         logger.info(
