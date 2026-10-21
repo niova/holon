@@ -74,11 +74,16 @@ def run_nisd_command(cluster_params, input_values):
     sock_dir = f"/tmp/.niova/{nisd_uuid}"
     os.makedirs(sock_dir, exist_ok=True)
 
-    # if enable_authentication == 1:
-    #     os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
-    #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
-    # else:
-    #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '0'
+    env = os.environ.copy()
+
+    env["NIOVA_BLOCK_TCP_PEER_PORT"] = str(peer_port)
+    env["NIOVA_BLOCK_TCP_CLIENT_PORT"] = str(client_port)
+
+    if int(enable_authentication) == 1:
+        env["NIOVA_NISD_SECRET"] = "Nisd-secret"
+        env["NIOVA_NISD_DO_TOKEN_VALIDATION"] = "1"
+    else:
+        env["NIOVA_NISD_DO_TOKEN_VALIDATION"] = "0"
 
     os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}" 
@@ -97,7 +102,7 @@ def run_nisd_command(cluster_params, input_values):
     # Open log file in append mode
     with open(log_file_path, 'a') as log_file:
         # Launch the command as a non-blocking subprocess
-        process = subprocess.Popen(command, stdout=log_file, stderr=log_file, text=True, cwd=base_path)
+        process = subprocess.Popen(command, stdout=log_file, stderr=log_file, text=True, cwd=base_path, env=env)
         
         # Log the process ID for reference
         logger.info("NISD command started with PID %d. Logs will be written to %s", process.pid, log_file_path)    
