@@ -159,13 +159,21 @@
           debug:
             msg: "Created VDEV UUID: {{ vdev_uuid }}"
 
+        - name: "{{ recipe_name }}: Extract vdev name."
+          set_fact:
+            vdev_name: "{{ vdev_result.name | default(vdev_result.name) }}"
+
+        - name: "{{ recipe_name }}: Print vdev name."
+          debug:
+            msg: "Created VDEV UUID: {{ vdev_name }}"
+
         - name: "{{ recipe_name }}: Wait before starting niova-block-test."
           pause:
             seconds: 25
 
-        # ----------------------------------------
-        # 8. Start niova-block-test
-        # ----------------------------------------
+        # -------------------------------------------
+        # 8. Start niova-block-test using vdev uuid
+        # -------------------------------------------
 
         - name: "{{ recipe_name }}: Start niova-block-test process."
           vars:
@@ -216,6 +224,41 @@
         - name: "{{ recipe_name }}: Print nisd result."
           debug:
             msg: "{{ nisd_result_1 }}"
+
+        # -------------------------------------------
+        # 9. Start niova-block-test using vdev name
+        # -------------------------------------------
+
+        - name: "{{ recipe_name }}: Start niova-block-test process using vdev name."
+          vars:
+            input_param: {
+                 'enable_auth': 1,
+                 'cp_mode': 1,
+                 'auth_username': 'admin',
+                 'auth_secret': 'admin',
+                 'nisd_uuid_to_write' : 'unix:{{ nisd_uuid }}',
+                 'vdev' : '{{ vdev_name }}',
+                 'client_uuid': '{{ client_id }}',
+                 'rd_op_ratio': '0',
+                 'num_ops': '50',
+                 'random_seed_pt': '123',
+                 'request_size_in_bytes': '1',
+                 'queue_depth' : '0',
+                 'integrity_check': False,
+                 'sequential_writes': False,
+                 'blocking_process': False
+            }    
+          set_fact:
+            nblock_wr: "{{ lookup('nisd_handler', 'niova-block-test', input_param) }}"
+
+        - name: "{{ recipe_name }}: Debug niova-block-test using vdev name result."
+          debug:
+            msg: "{{ nblock_wr }}"
+
+        - name: "{{ recipe_name }}: Validate niova-block-test using vdev name return code."
+          debug:
+            msg: "niova-block-test return code: {{ nblock_wr }}"
+          failed_when: nblock_wr | int != 0
 
         - name: "{{ recipe_name }}: Stop mdsvc-api server and TiDB playground."
           set_fact:
