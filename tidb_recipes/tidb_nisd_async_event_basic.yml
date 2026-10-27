@@ -155,6 +155,15 @@
         # 5. Verify ping_enabled = true
         # ------------------------------------------------------------
 
+        - name: "{{ recipe_name }}: Inspect ncp_event registry."
+          vars:
+            stage: "inspect_ncp_event"
+          ansible.builtin.debug:
+            msg: >-
+              {{
+                lookup('niova_ctlrequest', 'lookup', nisd_uuid, '/ncp_event', 'nisd', lookout_uuid)
+              }}
+
         # The existing niova_ctlrequest lookup interface is:
         # lookup('niova_ctlrequest','lookup',nisd_uuid,lookup_key,'nisd',lookout_uuid)
 
@@ -163,7 +172,7 @@
             stage: "wait_for_async_event_ping"
             ping_state: >-
               {{
-                lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_ping_key,'nisd',lookout_uuid)
+                lookup('niova_ctlrequest','lookup', nisd_uuid, ncp_event_ping_key, 'nisd', lookout_uuid)
               }}
 
           ansible.builtin.debug:
