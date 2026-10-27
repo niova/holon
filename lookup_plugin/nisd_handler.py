@@ -111,6 +111,29 @@ def run_nisd_command(cluster_params, input_values):
     os.environ["NIOVA_BLOCK_TCP_PEER_PORT"] = str(peer_port)
     os.environ["NIOVA_BLOCK_TCP_CLIENT_PORT"] = str(client_port)
 
+    # Configure TiDB Control Plane discovery
+    if app_name == "tidb":
+        workspace_dir = os.getenv("NIOVA_WORKSPACE")
+
+        if not workspace_dir:
+            raise RuntimeError("NIOVA_WORKSPACE is not set")
+
+        gossip_path = os.path.join(
+            workspace_dir,
+            "mdsvc-tidb",
+            "configs",
+            "gossipNodes"
+        )
+
+        if not os.path.isfile(gossip_path):
+            raise RuntimeError(
+                f"TiDB gossipNodes file not found: {gossip_path}"
+            )
+
+        os.environ["NIOVA_GOSSIP_PATH"] = gossip_path
+        os.environ["NIOVA_GOSSIP_KEY"] = "dummy"
+        os.environ["NIOVA_BLOCK_PROXY_TAG"] = "mdsvc-tidb"
+
     env = os.environ.copy()
 
     command = [bin_path, "-u", nisd_uuid, "-d", device_path]
@@ -126,7 +149,19 @@ def run_nisd_command(cluster_params, input_values):
         process = subprocess.Popen(command, stdout=log_file, stderr=log_file, text=True, cwd=base_path, env=env)
         
         # Log the process ID for reference
-        logger.info("NISD command started with PID %d. Logs will be written to %s", process.pid, log_file_path)    
+        logger.info("NISD command started with PID %d. Logs will be written to %s", process.pid, log_file_path)
+
+    time.sleep(1)
+
+    return_code = process.poll()
+
+    if return_code is not None:
+        raise RuntimeError(
+            f"NISD exited during startup. "
+            f"Exit code: {return_code}. "
+            f"Check log: {log_file_path}"
+        )    
+        
     recipe_conf = load_recipe_op_config(cluster_params)
 
     pid = process.pid

@@ -136,15 +136,20 @@
                 lookup('nisd_handler','run_nisd',input_param)
               }}
 
-        - name: "{{ recipe_name }}: Wait for NISD process."
-          ansible.builtin.shell: "pgrep -x nisd"
-          args:
-            executable: /bin/bash
-          register: nisd_process
-          changed_when: false
+        - name: "{{ recipe_name }}: Wait for NISD registration."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/resource?type=nisd"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+          register: nisd_resources
           retries: 30
-          delay: 1
-          until: nisd_process.rc == 0
+          delay: 2
+          until: >-
+            nisd_uuid in (nisd_resources.content | default(''))
+          no_log: true
 
         # ------------------------------------------------------------
         # 5. Verify ping_enabled = true
@@ -343,29 +348,31 @@
         # runs from leaving the process alive on ports 13000/13001.
         - name: "{{ recipe_name }}: Stop NISD if it is still running."
           ansible.builtin.shell: |
-            pkill -TERM -f -- "-u {{ nisd_uuid }}" || true
+            set -euo pipefail
 
-            for _ in $(seq 1 10); do
-              if ! pgrep -f -- "-u {{ nisd_uuid }}" >/dev/null 2>&1; then
-                exit 0
-              fi
-              sleep 1
-            done
+            nisd_pid="{{ (
+              lookup(
+                'pipe',
+                'pgrep -x nisd | head -n 1 || true'
+              )
+            ) }}"
 
-            pkill -KILL -f -- "-u {{ nisd_uuid }}" || true
+            if [[ -n "$nisd_pid" ]]; then
+              kill -TERM "$nisd_pid" 2>/dev/null || true
+
+              for i in $(seq 1 10); do
+                if ! kill -0 "$nisd_pid" 2>/dev/null; then
+                  exit 0
+                fi
+                sleep 1
+              done
+
+              kill -KILL "$nisd_pid" 2>/dev/null || true
+            fi
           args:
             executable: /bin/bash
           changed_when: false
           ignore_errors: true
-
-        - name: "{{ recipe_name }}: Verify NISD is stopped."
-          ansible.builtin.shell: |
-            ! pgrep -f -- "-u {{ nisd_uuid }}"
-          args:
-            executable: /bin/bash
-          register: nisd_stopped
-          changed_when: false
-          failed_when: false
 
         - name: "{{ recipe_name }}: Remove NISD backing file."
           ansible.builtin.file:
