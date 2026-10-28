@@ -172,7 +172,7 @@
           delay: "{{ async_event_poll_delay }}"
           until: >-
             (
-              lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_ping_key,'nisd',lookout_uuid)['/0/ping_enabled']
+              lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_ping_key,'nisd',lookout_uuid)['/ncp_event/ping_enabled']
               | string | lower
             ) in ['1', 'true']
 
@@ -188,7 +188,7 @@
                 lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_sno_key,'nisd',lookout_uuid)
               }}
           ansible.builtin.set_fact:
-            initial_event_sno: "{{ event_state['/0/event_sno'] | int }}"
+            initial_event_sno: "{{ event_state['/ncp_event/event_sno'] | int }}"
 
         - name: "{{ recipe_name }}: Set expected event serial number."
           ansible.builtin.set_fact:
@@ -248,7 +248,7 @@
           delay: "{{ async_event_poll_delay }}"
           until: >-
             (
-              lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_sno_key,'nisd',lookout_uuid)['/0/event_sno']
+              lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_sno_key,'nisd',lookout_uuid)['/ncp_event/event_sno']
               | int
             ) >= (expected_event_sno | int)
 
@@ -271,7 +271,7 @@
                 )
               }}
           ansible.builtin.set_fact:
-            final_event_sno: "{{ final_event_state['/0/event_sno'] | int }}"
+            final_event_sno: "{{ final_event_state['/ncp_event/event_sno'] | int }}"
 
         - name: "{{ recipe_name }}: Verify event_sno advanced once."
           ansible.builtin.assert:
