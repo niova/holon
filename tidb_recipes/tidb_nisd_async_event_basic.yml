@@ -21,12 +21,8 @@
       }}
     lookout_uuid: ""
     # ncp_event lreg keys exposed by the NISD ctl interface.
-    ncp_event:
-      - "/nisd_root_entry/0/uuid"
-      - "/ncp_event/0/ping_enabled"
-      - "/ncp_event/0/event_sno"
-    ncp_event_ping_key: "/ncp_event/0/ping_enabled"
-    ncp_event_sno_key: "/ncp_event/0/event_sno"
+    ncp_event_ping_key: "/ncp_event/ping_enabled"
+    ncp_event_sno_key: "/ncp_event/event_sno"
     # TEST event type used by the async-event implementation.
     async_event_action: 250
     # Test endpoint path is branch-dependent. Override with -e if needed.
@@ -159,15 +155,6 @@
         # 5. Verify ping_enabled = true
         # ------------------------------------------------------------
 
-        - name: "{{ recipe_name }}: Inspect ncp_event registry."
-          vars:
-            stage: "inspect_ncp_event"
-          ansible.builtin.debug:
-            msg: >-
-              {{
-                lookup('niova_ctlrequest', 'lookup', nisd_uuid, ncp_event, 'nisd', lookout_uuid)
-              }}
-
         # The existing niova_ctlrequest lookup interface is:
         # lookup('niova_ctlrequest','lookup',nisd_uuid,lookup_key,'nisd',lookout_uuid)
 
@@ -178,7 +165,6 @@
               {{
                 lookup('niova_ctlrequest','lookup', nisd_uuid, ncp_event_ping_key, 'nisd', lookout_uuid)
               }}
-
           ansible.builtin.debug:
             msg: "ncp_event ping state: {{ ping_state }}"
           register: ping_enabled_result
