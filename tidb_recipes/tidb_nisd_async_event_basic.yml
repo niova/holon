@@ -161,7 +161,7 @@
           ansible.builtin.debug:
             msg: >-
               {{
-                lookup('niova_ctlrequest', 'lookup', nisd_uuid, '/ncp_event', 'nisd', lookout_uuid)
+                lookup('niova_ctlrequest', 'lookup', nisd_uuid, 'ncp_event', 'nisd', lookout_uuid)
               }}
 
         # The existing niova_ctlrequest lookup interface is:
