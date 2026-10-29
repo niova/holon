@@ -163,9 +163,9 @@
           pause:
             seconds: 25
 
-        # ----------------------------------------
-        # 8. Start niova-block-test
-        # ----------------------------------------
+        # -------------------------------------------
+        # 8. Start niova-block-test using vdev uuid
+        # -------------------------------------------
 
         - name: "{{ recipe_name }}: Start niova-block-test process."
           vars:
