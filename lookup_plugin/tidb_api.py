@@ -287,6 +287,27 @@ def extract_fields(data):
         "state",
         "created_at",
         "completed_at",
+
+        # Cleanup worker fields
+        "pending",
+        "processing",
+        "failed",
+        "recent_jobs",
+        "job_id",
+        "job_type",
+        "resource_id",
+        "queue_wait_us",
+        "process_us",
+        "job_us",
+        "ok",
+
+        # NISD event fields
+        "events",
+        "nisd_id",
+        "event_ptr",
+        "action",
+        "params",
+        "expire_at",
     ]
 
     def collect(obj):
@@ -694,16 +715,23 @@ class LookupModule(LookupBase):
             "create_infra": ("POST", "/api/infra"),
             "get_infra": ("GET", "/api/infra"),
 
+            # VDEV APIs
             "create_vdev": ("POST", "/api/vdev"),
             "get_vdev": ("GET", "/api/vdev"),
+            "delete_vdev": ("DELETE", "/api/vdev"),
             "mount_vdev": ("POST", "/api/vdev/mount"),
 
             # Snapshot lookup APIs
             "get_snapshot": ("GET", "/api/snapshot"),
             "get_snapshot_name": ("GET", "/api/snapshot/name"),
 
+            # Cleanup worker APIs (testendpoints build)
+            "get_cleanup_jobs": ("GET", "/api/cleanup-jobs"),
+
             # NISD async event APIs
             "heartbeat": ("POST", "/api/heartbeat"),
+            "get_events": ("GET", "/api/events"),
+            "add_event": ("POST", "/api/events"),
 
             "get_chunk": ("GET", "/api/chunk"),
             "get_chunks": ("GET", "/api/chunks"),
