@@ -18,7 +18,13 @@
 
     # Give PD/TiKV a short interval to observe node failure/recovery.
     tikv_settle_seconds: 5
-    recovery_wait_seconds: 10
+    
+    # Maximum time for quorum recovery checks.
+    recovery_ready_retries: 20
+    recovery_ready_delay: 5
+
+    # Longer timeout specifically for operations after recovery.
+    recovery_request_timeout: 60
 
     # This recipe starts its own ephemeral TiUP Playground cluster.
     # No playground tag is used, so TiUP removes the playground data when it stops.
@@ -467,6 +473,33 @@
           set_fact:
             first_node_down: false
 
+        # Wait until PD reports at least two TiKV stores as Up.
+        - name: "{{ recipe_name }}: Wait for TiKV stores to recover."
+          set_fact:
+            recovery_store_result: "{{ lookup('tidb_setup', 'list_tikv_stores') }}"
+          register: recovery_store_check
+          until: >-
+            (
+              recovery_store_result.stores
+              | selectattr('state_name', 'equalto', 'Up')
+              | list
+              | length
+            ) >= 2
+          retries: "{{ recovery_ready_retries }}"
+          delay: "{{ recovery_ready_delay }}"
+
+        - name: "{{ recipe_name }}: Print recovered TiKV store status."
+          debug:
+            msg:
+              - "Recovered TiKV stores: {{
+                  recovery_store_result.stores
+                  | selectattr('state_name', 'equalto', 'Up')
+                  | list
+                  | length
+                }}/3"
+              - "Restarted node: {{ first_node_id }}"
+              - "PD reports a majority of TiKV stores Up."
+
         - name: "{{ recipe_name }}: Wait for quorum recovery."
           pause:
             seconds: "{{ recovery_wait_seconds }}"
@@ -485,7 +518,7 @@
                   base_url=api_base_url,
                   token=access_token,
                   file=vdev_payload,
-                  timeout=quorum_request_timeout
+                  timeout=recovery_request_timeout
                 )
               }}
 
