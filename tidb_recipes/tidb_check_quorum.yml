@@ -473,20 +473,30 @@
           set_fact:
             first_node_down: false
 
-        # Wait until PD reports at least two TiKV stores as Up.
+        # Wait until PD reports at least two TiKV stores as Up. This polls PD
+        # with uri: a set_fact lookup under until is only rendered once, so
+        # every retry would re-check the first (stale) store list.
         - name: "{{ recipe_name }}: Wait for TiKV stores to recover."
-          set_fact:
-            recovery_store_result: "{{ lookup('tidb_setup', 'list_tikv_stores') }}"
+          uri:
+            url: "{{ ClusterParams.pd_client_url }}/pd/api/v1/stores"
+            return_content: true
           register: recovery_store_check
           until: >-
-            (
-              recovery_store_result.stores
+            recovery_store_check.json is defined
+            and (
+              recovery_store_check.json.stores
+              | map(attribute='store')
               | selectattr('state_name', 'equalto', 'Up')
               | list
               | length
             ) >= 2
           retries: "{{ recovery_ready_retries }}"
           delay: "{{ recovery_ready_delay }}"
+
+        - name: "{{ recipe_name }}: Store recovered TiKV store status."
+          set_fact:
+            recovery_store_result:
+              stores: "{{ recovery_store_check.json.stores | map(attribute='store') | list }}"
 
         - name: "{{ recipe_name }}: Print recovered TiKV store status."
           debug:
@@ -502,7 +512,7 @@
 
         - name: "{{ recipe_name }}: Wait for quorum recovery."
           pause:
-            seconds: "{{ recovery_wait_seconds }}"
+            seconds: "{{ tikv_settle_seconds }}"
 
         # =====================================================
         # 10. Verify write succeeds again after quorum recovery
