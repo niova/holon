@@ -180,10 +180,70 @@ def wait_for_new_ublk_device(before, timeout=30):
         "Timed out waiting for new /dev/ublkbN device"
     )
 
+def pid_running(pid):
+    # a killed child stays a zombie until reaped, which is not running
+    try:
+        return psutil.Process(pid).status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return False
+
+def stop_failed_ublk(pids, logger, wait=10):
+    # niova-ublk may run under sudo, so signal through sudo as well
+    for sig in ("-TERM", "-KILL"):
+        live = [p for p in pids if pid_running(p)]
+        if not live:
+            return
+        subprocess.run(["sudo", "-n", "kill", sig] + [str(p) for p in live],
+                       check=False)
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline and any(pid_running(p) for p in live):
+            time.sleep(0.2)
+    logger.warning(f"niova-ublk pids still alive after kill: {pids}")
+
+def start_niova_ublk_once(command, fp, cwd, device_timeout, logger):
+    # returns (pid, device_path); a failed start is stopped before it raises
+    before_devices = list_ublk_devices()
+    process = subprocess.Popen(
+        command,
+        stdout=fp,
+        stderr=fp,
+        cwd=cwd,
+        env=os.environ.copy()
+    )
+    pids = [process.pid]
+    try:
+        logger.info(f"Launcher PID: {process.pid}")
+
+        time.sleep(1)
+
+        parent = psutil.Process(process.pid)
+        children = parent.children(recursive=True)
+
+        ublk_proc = None
+        for child in children:
+            cmdline = " ".join(child.cmdline())
+            if "niova-ublk" in cmdline:
+                ublk_proc = child
+                break
+
+        if ublk_proc is None:
+            raise RuntimeError(
+                f"Could not find niova-ublk child process for launcher PID {process.pid}"
+            )
+
+        pid = ublk_proc.pid
+        pids.append(pid)
+        logger.info(f"Actual niova-ublk PID: {pid}")
+
+        device_path = wait_for_new_ublk_device(before_devices, timeout=device_timeout)
+        return pid, device_path
+    except Exception:
+        stop_failed_ublk(pids, logger)
+        process.poll()
+        raise
+
 # start a ublk device of size 8GB
 def run_niova_ublk(cluster_params, input_values):
-    before_devices = list_ublk_devices()
-
     base_dir = cluster_params['base_dir']
     raft_uuid = cluster_params['raft_uuid']
     binary_dir = os.getenv('NIOVA_BIN_PATH')
@@ -318,42 +378,25 @@ def run_niova_ublk(cluster_params, input_values):
     # Combine the environment variable and command into a single string
     full_command = " ".join(str(item) for item in command)
     logger.info(f"ublk command: {full_command}")
+    # A start can fail transiently, e.g. the CP still holds the vdev in its
+    # mount cooldown (303); retry a few times before giving up.
+    attempts = max(1, int(input_values.get("ublk_start_retries", 3)))
+    retry_delay = float(input_values.get("ublk_start_retry_delay", 5))
     try:
-        process = subprocess.Popen(
-            command,
-            stdout=fp,
-            stderr=fp,
-            cwd=base_path,
-            env=os.environ.copy()
-        )
-
-        logger.info(f"Launcher PID: {process.pid}")
-
-        time.sleep(1)
-
-        parent = psutil.Process(process.pid)
-        children = parent.children(recursive=True)
-
-        ublk_proc = None
-        for child in children:
-            cmdline = " ".join(child.cmdline())
-            if "niova-ublk" in cmdline:
-                ublk_proc = child
+        for attempt in range(1, attempts + 1):
+            try:
+                pid, device_path = start_niova_ublk_once(
+                    command, fp, base_path,
+                    int(input_values.get("device_timeout", 30)), logger)
                 break
+            except Exception as e:
+                if attempt == attempts:
+                    raise
+                logger.error(
+                    f"niova-ublk start attempt {attempt}/{attempts} failed: {e};"
+                    f" retrying in {retry_delay}s")
+                time.sleep(retry_delay)
 
-        if ublk_proc is None:
-            raise RuntimeError(
-                f"Could not find niova-ublk child process for launcher PID {process.pid}"
-            )
-
-        pid = ublk_proc.pid
-        logger.info(f"Actual niova-ublk PID: {pid}")
-
-        device_path = wait_for_new_ublk_device(
-            before_devices,
-            timeout=int(input_values.get("device_timeout", 30))
-        )
-        
         if cp_mode == 1:
             ctl_input = f"/tmp/.niova/{client_uuid}/input"
             logger.info(f"Expected ublk ctl-if input directory: {ctl_input}")
