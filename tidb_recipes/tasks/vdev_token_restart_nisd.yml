@@ -1,0 +1,58 @@
+# Stop the recipe's NISD, if running, and start it again with the token
+# settings in nisd_token_cfg (token_validation, nisd_secret, tenant_uuid; a
+# key that is left out is unset). Sets nisd_log_mark, the NISD log's size
+# before the start, so checks read only this run's lines.
+#
+# Needs: nisd_uuid, nisd_device_path, nisd_peer_port, nisd_client_port,
+#        nisd_log, nisd_token_cfg.
+
+# Match the command line: the NISD renames itself (comm "nisd-<device>"), so
+# "pkill -x nisd" misses it and the old NISD would keep serving.
+- name: "{{ recipe_name }}: Stop NISD."
+  shell: |
+    pat='[b]in/nisd -u {{ nisd_uuid }}'
+    pkill -TERM -f "$pat" 2>/dev/null || true
+    for i in $(seq 1 30); do
+        pgrep -f "$pat" >/dev/null || exit 0
+        sleep 1
+    done
+    pkill -KILL -f "$pat" 2>/dev/null || true
+    sleep 1
+    ! pgrep -f "$pat" >/dev/null
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: "{{ recipe_name }}: Mark the NISD log."
+  shell: "stat -c %s '{{ nisd_log }}' 2>/dev/null || echo 0"
+  args:
+    executable: /bin/bash
+  register: nisd_log_mark_out
+  changed_when: false
+
+- name: "{{ recipe_name }}: Start NISD ({{ nisd_token_desc }})."
+  vars:
+    input_param: >-
+      {{
+        {
+          'nisd_device_path': nisd_device_path,
+          'nisd_uuid': nisd_uuid,
+          'peer_port': nisd_peer_port,
+          'client_port': nisd_client_port,
+          'enable_auth': 0,
+          'log_level': 3,
+        } | combine(nisd_token_cfg)
+      }}
+  set_fact:
+    nisd_start_result: "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"
+
+- name: "{{ recipe_name }}: Record the NISD log mark."
+  set_fact:
+    nisd_log_mark: "{{ nisd_log_mark_out.stdout | int }}"
+
+- name: "{{ recipe_name }}: Wait for the NISD client port."
+  wait_for:
+    host: 127.0.0.1
+    port: "{{ nisd_client_port | int }}"
+    timeout: 60
+  when: not (nisd_token_cfg.expect_exit | default(false) | bool)

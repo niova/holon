@@ -1,0 +1,504 @@
+# Vdev token enforcement, end to end: the CP (mdsvc-tidb), a NISD and
+# niova-block-test.
+#
+#   1. The CP signs a mount's vdev token with the tenant's NISD key, and the
+#      claims name the tenant, vdev and mount counter. An API-key login
+#      (mdk_ key as the password) gets the same token; a [vdev:read] key
+#      gets no read/write mount, so the client fails at the CP.
+#   2. A NISD that validates tokens with that key serves the client, logged
+#      in with the password or with a [vdev:read,vdev:write] API key.
+#   3. A NISD with another secret, or of another tenant, refuses the token:
+#      the client aborts with "refused the vdev token", the NISD logs
+#      auth_failure.
+#   4. A NISD with validation on and no secret refuses to start.
+#   5. After those refusals the vdev still works with the right NISD.
+#
+# Needs a CP with real vdev tokens and per-tenant keys (mdsvc-tidb #121) and
+# a NISD/client that reply to and report a refused token (niova-block #1117).
+# Against an older CP the get_nisd_key step fails and names the cause.
+
+- name: "tidb_vdev_token_enforcement.yml"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "tidb_vdev_token_enforcement"
+    api_base_url: "http://localhost:8081"
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
+    # Must match create_sample_infra.json.
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+    nisd_peer_port: "13000"
+    nisd_client_port: "13001"
+    client_id: "5e00ce0c-8021-11f1-911c-0fc57145aa3a"
+    other_tenant_uuid: "5e7f9a1b-2c3d-4e5f-9a0b-1c2d3e4f5a6b"
+    nisd_log: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/nisd_{{ nisd_uuid }}.log"
+
+  tasks:
+    - block:
+
+        - name: "{{ recipe_name }}: Check if app_type is tidb."
+          debug:
+            msg: "app_type is: {{ app_type }}"
+          failed_when: app_type != "tidb"
+
+        # ----------------------------------------
+        # 1. Start mdsvc-tidb, log in, get the tenant's NISD key
+        # ----------------------------------------
+
+        - name: "{{ recipe_name }}: Start mdsvc-tidb."
+          set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+
+        - name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
+          uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+          register: api_health
+          retries: 90
+          delay: 3
+          until: api_health.status in [200, 301, 302]
+
+        - name: "{{ recipe_name }}: Login to mdsvc-api."
+          set_fact:
+            login_result: >-
+              {{ lookup('tidb_api', 'login', base_url=api_base_url,
+                        username='admin', password='admin') }}
+
+        # The CP stamps the user's tenant into the login token, and from
+        # there into every vdev token as "t".
+        - name: "{{ recipe_name }}: Read the admin's tenant."
+          set_fact:
+            tenant_uuid: >-
+              {{ lookup('tidb_api', 'decode_vdev_token',
+                        vdev_token=login_result.access_token).claims.tenant }}
+
+        - name: "{{ recipe_name }}: Tenant-admin login."
+          set_fact:
+            tenant_admin_login: >-
+              {{ lookup('tidb_api', 'tenant_admin_login', base_url=api_base_url) }}
+
+        - name: "{{ recipe_name }}: Get the tenant's NISD key."
+          set_fact:
+            tenant_key: >-
+              {{ lookup('tidb_api', 'get_nisd_key', base_url=api_base_url,
+                        token=tenant_admin_login.access_token,
+                        tenant_uuid=tenant_uuid) }}
+          no_log: true
+          register: nisd_key_lookup
+          ignore_errors: true
+
+        # no_log hides the lookup's own error, so name the likely cause.
+        - name: "{{ recipe_name }}: Check the CP has per-tenant NISD keys."
+          fail:
+            msg: >-
+              GET /cp/tenants/{{ tenant_uuid }}/nisd-key failed. This needs a
+              CP with per-tenant NISD keys and real vdev tokens (mdsvc-tidb
+              #121); see {{ login_result.log_file }}.
+          when: nisd_key_lookup is failed
+
+        - name: "{{ recipe_name }}: Tenant."
+          debug:
+            msg: "tenant {{ tenant_uuid }}, NISD key {{ tenant_key[:8] }}..."
+
+        # ----------------------------------------
+        # API keys for the admin: one that can mount read/write, one that
+        # can only read. Clients log in with the key in place of the password.
+        # ----------------------------------------
+
+        - name: "{{ recipe_name }}: Create a [vdev:read,vdev:write] API key."
+          set_fact:
+            rw_api_key: >-
+              {{ lookup('tidb_api', 'create_api_key', base_url=api_base_url,
+                        token=login_result.access_token,
+                        user_id=(lookup('tidb_api', 'decode_vdev_token',
+                                        vdev_token=login_result.access_token).claims.uid),
+                        name='holon-vdev-rw', scopes=['vdev:read', 'vdev:write']) }}
+          no_log: true
+
+        - name: "{{ recipe_name }}: Create a [vdev:read] API key."
+          set_fact:
+            ro_api_key: >-
+              {{ lookup('tidb_api', 'create_api_key', base_url=api_base_url,
+                        token=login_result.access_token,
+                        user_id=(lookup('tidb_api', 'decode_vdev_token',
+                                        vdev_token=login_result.access_token).claims.uid),
+                        name='holon-vdev-ro', scopes=['vdev:read']) }}
+          no_log: true
+
+        - name: "{{ recipe_name }}: Log in with the read/write API key."
+          set_fact:
+            key_login: >-
+              {{ lookup('tidb_api', 'login', base_url=api_base_url,
+                        username='admin', password=rw_api_key.key) }}
+
+        - name: "{{ recipe_name }}: Check the API keys and the key login."
+          vars:
+            key_claims: >-
+              {{ lookup('tidb_api', 'decode_vdev_token',
+                        vdev_token=key_login.access_token).claims }}
+          assert:
+            that:
+              - rw_api_key.key is match('^mdk_')
+              - rw_api_key.scopes | sort == ['vdev:read', 'vdev:write']
+              - ro_api_key.scopes == ['vdev:read']
+              - key_claims.akid == rw_api_key.id
+              - key_claims.tenant == tenant_uuid
+            fail_msg: "API key login is wrong: scopes={{ rw_api_key.scopes }} claims={{ key_claims }}"
+
+        # ----------------------------------------
+        # 2. Infra, NISD with token validation, vdev
+        # ----------------------------------------
+
+        - name: "{{ recipe_name }}: Create infra."
+          set_fact:
+            infra_result: >-
+              {{ lookup('tidb_api', 'create_infra', base_url=api_base_url,
+                        token=login_result.access_token, file=infra_payload) }}
+
+        - name: "{{ recipe_name }}: Create NISD device file."
+          vars:
+            img_dir: "/sample.device"
+            bs: "64M"
+            count: 160
+          set_fact:
+            nisd_device_path: "{{ lookup('helper', 'create_dd_file', img_dir, bs, count) }}"
+
+        - name: "{{ recipe_name }}: Start niova-block-ctl process."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+          debug:
+            msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
+
+        # run-niova-block-ctl doesn't wait. A NISD started before the
+        # format is done finds no superblock and asserts.
+        - name: "{{ recipe_name }}: Wait for niova-block-ctl to format the device."
+          shell: "! pgrep -f '[n]iova-block-ctl -d {{ nisd_device_path }}'"
+          args:
+            executable: /bin/bash
+          register: ctl_done
+          retries: 60
+          delay: 2
+          until: ctl_done.rc == 0
+          changed_when: false
+
+        - name: "{{ recipe_name }}: NISD validates tokens with the tenant key."
+          include_tasks: tasks/vdev_token_restart_nisd.yml
+          vars:
+            nisd_token_desc: "tenant key"
+            nisd_token_cfg:
+              token_validation: 1
+              nisd_secret: "{{ tenant_key }}"
+              tenant_uuid: "{{ tenant_uuid }}"
+
+        - name: "{{ recipe_name }}: Create vdev."
+          set_fact:
+            vdev_result: >-
+              {{ lookup('tidb_api', 'create_vdev', base_url=api_base_url,
+                        token=login_result.access_token, file=vdev_payload) }}
+
+        - name: "{{ recipe_name }}: Extract vdev UUID."
+          set_fact:
+            vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
+
+        - name: "{{ recipe_name }}: Wait before the first mount."
+          pause:
+            seconds: 25
+
+        # ----------------------------------------
+        # 3. The mount's token: signed with the tenant key, right claims
+        # ----------------------------------------
+
+        # An API-key session can't widen its scopes: the [vdev:read] key
+        # gets no read/write mount, so never a token the NISD would accept.
+        - name: "{{ recipe_name }}: Log in with the read-only API key."
+          set_fact:
+            ro_key_login: >-
+              {{ lookup('tidb_api', 'login', base_url=api_base_url,
+                        username='admin', password=ro_api_key.key) }}
+
+        - name: "{{ recipe_name }}: Read/write mount with the read-only key."
+          set_fact:
+            ro_mount_result: >-
+              {{ lookup('tidb_api', 'mount_vdev', base_url=api_base_url,
+                        token=ro_key_login.access_token,
+                        body={'vdev_id': vdev_uuid, 'client_id': client_id}) }}
+
+        - name: "{{ recipe_name }}: Check the read-only key got no token."
+          assert:
+            that:
+              - ro_mount_result.data.status | int == 201
+              - ro_mount_result.access_token is not defined
+            fail_msg: "A [vdev:read] key got a read/write mount: {{ ro_mount_result.data }}"
+
+        - name: "{{ recipe_name }}: Mount the vdev with the read/write API key."
+          set_fact:
+            mount_result: >-
+              {{ lookup('tidb_api', 'mount_vdev', base_url=api_base_url,
+                        token=key_login.access_token,
+                        body={'vdev_id': vdev_uuid, 'client_id': client_id}) }}
+
+        - name: "{{ recipe_name }}: Decode the vdev token."
+          set_fact:
+            vdev_token: >-
+              {{ lookup('tidb_api', 'decode_vdev_token',
+                        vdev_token=mount_result.access_token | default(''),
+                        key=tenant_key) }}
+
+        - name: "{{ recipe_name }}: Vdev token claims."
+          debug:
+            var: vdev_token.claims
+
+        - name: "{{ recipe_name }}: Check the vdev token."
+          assert:
+            that:
+              - mount_result.data.status | int == 0
+              - vdev_token.header.alg == 'HS256'
+              - vdev_token.signature_valid
+              - vdev_token.claims.aud == 'nisd'
+              - vdev_token.claims.t == tenant_uuid
+              - vdev_token.claims.v == vdev_uuid
+              - vdev_token.claims.mc | string == mount_result.mount_counter | string
+              - vdev_token.claims.ro | int == 0
+              - vdev_token.claims.sn is not defined
+              - vdev_token.claims.exp | int > vdev_token.claims.iat | int
+            fail_msg: >-
+              The CP's vdev token is wrong (or the CP predates per-tenant
+              keys): {{ vdev_token }}
+
+        # ----------------------------------------
+        # 4. The validating NISD serves the client
+        # ----------------------------------------
+
+        - name: "{{ recipe_name }}: Write with a valid token (password login)."
+          include_tasks: tasks/vdev_token_run_client.yml
+          vars:
+            client_tag: "token_ok_write"
+            client_rd_ratio: "0"
+
+        - name: "{{ recipe_name }}: Check the write succeeded."
+          assert:
+            that: client_rc | int == 0
+            fail_msg: "niova-block-test failed (rc={{ client_rc }}), see {{ client_log }}"
+
+        - name: "{{ recipe_name }}: Read with a new mount's token (API key login)."
+          include_tasks: tasks/vdev_token_run_client.yml
+          vars:
+            client_tag: "token_ok_read_apikey"
+            client_rd_ratio: "100"
+            client_secret: "{{ rw_api_key.key }}"
+
+        - name: "{{ recipe_name }}: Check the read succeeded."
+          assert:
+            that: client_rc | int == 0
+            fail_msg: "niova-block-test failed (rc={{ client_rc }}), see {{ client_log }}"
+
+        - name: "{{ recipe_name }}: Client with the read-only API key."
+          include_tasks: tasks/vdev_token_run_client.yml
+          vars:
+            client_tag: "apikey_read_only"
+            client_rd_ratio: "0"
+            client_secret: "{{ ro_api_key.key }}"
+
+        - name: "{{ recipe_name }}: Check the CP refused the read-only key's mount."
+          shell: "grep -q 'CP REST error: status=201 error=read/write mount needs scope vdev:write' '{{ client_log }}'"
+          args:
+            executable: /bin/bash
+          changed_when: false
+          register: check_out
+          failed_when: client_rc | int == 0 or client_rc | int == 124 or check_out.rc != 0
+
+        - name: "{{ recipe_name }}: The NISD accepted every token and request."
+          shell: |
+            tail -c +$(( {{ nisd_log_mark }} + 1 )) '{{ nisd_log }}' |
+                grep -E 'auth_failure=|outside token scope|token is for another tenant' && exit 1
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        # ----------------------------------------
+        # 5. A NISD with another secret refuses the token
+        # ----------------------------------------
+
+        - name: "{{ recipe_name }}: NISD with another secret."
+          include_tasks: tasks/vdev_token_restart_nisd.yml
+          vars:
+            nisd_token_desc: "wrong secret"
+            nisd_token_cfg:
+              token_validation: 1
+              nisd_secret: "holon-not-the-tenant-key"
+              tenant_uuid: "{{ tenant_uuid }}"
+
+        - name: "{{ recipe_name }}: Client against the wrong secret."
+          include_tasks: tasks/vdev_token_run_client.yml
+          vars:
+            client_tag: "token_wrong_secret"
+            client_rd_ratio: "0"
+
+        - name: "{{ recipe_name }}: Check the token was refused (wrong secret)."
+          shell: |
+            rc=0
+            grep -q 'refused the vdev token' '{{ client_log }}' ||
+                { echo "client did not report a refused token"; rc=1; }
+            tail -c +$(( {{ nisd_log_mark }} + 1 )) '{{ nisd_log }}' |
+                grep -q 'auth_failure=' ||
+                { echo "NISD did not log auth_failure"; rc=1; }
+            pgrep -f '[b]in/nisd -u {{ nisd_uuid }}' >/dev/null || { echo "NISD exited"; rc=1; }
+            exit $rc
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: client_rc | int >= 0 or check_out.rc != 0
+          register: check_out
+
+        # ----------------------------------------
+        # 6. A NISD of another tenant refuses the token
+        # ----------------------------------------
+
+        - name: "{{ recipe_name }}: NISD of another tenant."
+          include_tasks: tasks/vdev_token_restart_nisd.yml
+          vars:
+            nisd_token_desc: "other tenant"
+            nisd_token_cfg:
+              token_validation: 1
+              nisd_secret: "{{ tenant_key }}"
+              tenant_uuid: "{{ other_tenant_uuid }}"
+
+        - name: "{{ recipe_name }}: Client against another tenant's NISD."
+          include_tasks: tasks/vdev_token_run_client.yml
+          vars:
+            client_tag: "token_other_tenant"
+            client_rd_ratio: "0"
+
+        - name: "{{ recipe_name }}: Check the token was refused (other tenant)."
+          shell: |
+            rc=0
+            grep -q 'refused the vdev token' '{{ client_log }}' ||
+                { echo "client did not report a refused token"; rc=1; }
+            tail -c +$(( {{ nisd_log_mark }} + 1 )) '{{ nisd_log }}' |
+                grep -q 'token is for another tenant' ||
+                { echo "NISD did not log the tenant mismatch"; rc=1; }
+            pgrep -f '[b]in/nisd -u {{ nisd_uuid }}' >/dev/null || { echo "NISD exited"; rc=1; }
+            exit $rc
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: client_rc | int >= 0 or check_out.rc != 0
+          register: check_out
+
+        # ----------------------------------------
+        # 7. Validation on without a secret: the NISD refuses to start
+        # ----------------------------------------
+
+        - name: "{{ recipe_name }}: NISD with validation on and no secret."
+          include_tasks: tasks/vdev_token_restart_nisd.yml
+          vars:
+            nisd_token_desc: "no secret"
+            nisd_token_cfg:
+              token_validation: 1
+              tenant_uuid: "{{ tenant_uuid }}"
+              expect_exit: true
+
+        - name: "{{ recipe_name }}: Check the NISD refused to start."
+          shell: |
+            tail -c +$(( {{ nisd_log_mark }} + 1 )) '{{ nisd_log }}' |
+                grep -q 'NIOVA_NISD_SECRET is not set'
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: >-
+            not nisd_start_result.exited or
+            nisd_start_result.returncode | int == 0 or
+            check_out.rc != 0
+          register: check_out
+
+        # ----------------------------------------
+        # 8. The vdev still works with the right NISD
+        # ----------------------------------------
+
+        - name: "{{ recipe_name }}: NISD with the tenant key again."
+          include_tasks: tasks/vdev_token_restart_nisd.yml
+          vars:
+            nisd_token_desc: "tenant key"
+            nisd_token_cfg:
+              token_validation: 1
+              nisd_secret: "{{ tenant_key }}"
+              tenant_uuid: "{{ tenant_uuid }}"
+
+        - name: "{{ recipe_name }}: Write after the refusals."
+          include_tasks: tasks/vdev_token_run_client.yml
+          vars:
+            client_tag: "token_ok_after"
+            client_rd_ratio: "0"
+
+        - name: "{{ recipe_name }}: Check the vdev still works."
+          shell: |
+            tail -c +$(( {{ nisd_log_mark }} + 1 )) '{{ nisd_log }}' |
+                grep -E 'auth_failure=|outside token scope' && exit 1
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: client_rc | int != 0 or check_out.rc != 0
+          register: check_out
+
+      rescue:
+       - name: "Recipe: {{ recipe_name }} failed"
+         set_fact:
+           terminate_recipe: true
+
+      always:
+
+        # The NISD is left running: post_run.yml kills the PID that
+        # run_nisd recorded, and fails if it's already gone.
+        - name: "{{ recipe_name }}: Stop niova-block-test and niova-block-ctl."
+          shell: |
+            set +e
+            pkill -TERM -f '[n]iova-block-test' 2>/dev/null
+            pkill -TERM -f '[n]iova-block-ctl' 2>/dev/null
+            sleep 2
+            pkill -KILL -f '[n]iova-block-test' 2>/dev/null
+            pkill -KILL -f '[n]iova-block-ctl' 2>/dev/null
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+        - name: "{{ recipe_name }}: Tear down mdsvc-tidb."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Stop stale Serf."
+          shell: |
+            set +e
+            pkill -TERM -x serf 2>/dev/null || true
+            sleep 1
+            pkill -KILL -x serf 2>/dev/null || true
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+        # Keep HOLON_LOG_PATH: CI uploads it on failure.
+        - name: "{{ recipe_name }}: Remove runtime leftovers."
+          shell: |
+            set +e
+            [ -d /tmp/tidb ] && rm -rf /tmp/tidb/*
+            [ -d /local ] && rm -rf /local/*
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+    - name: "{{ recipe_name }}: Fail recipe after cleanup."
+      fail:
+        msg: "Recipe {{ recipe_name }} failed. Cleanup completed."
+      when: terminate_recipe | default(false) | bool

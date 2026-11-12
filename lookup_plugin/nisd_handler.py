@@ -74,18 +74,40 @@ def run_nisd_command(cluster_params, input_values):
     sock_dir = f"/tmp/.niova/{nisd_uuid}"
     os.makedirs(sock_dir, exist_ok=True)
 
-    # if enable_authentication == 1:
-    #     os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
-    #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
-    # else:
-    #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '0'
-
     os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
-    os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}" 
-    
-    env = os.environ.copy()
+    os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}"
+
     os.environ["NIOVA_BLOCK_TCP_PEER_PORT"] = str(peer_port)
     os.environ["NIOVA_BLOCK_TCP_CLIENT_PORT"] = str(client_port)
+
+    # Vdev token settings go only to this NISD, never into os.environ, so
+    # nothing leaks into later processes. enable_auth doesn't turn validation
+    # on: existing recipes pass enable_auth=1 without a tenant key.
+    #   token_validation  NIOVA_NISD_DO_TOKEN_VALIDATION (default off)
+    #   nisd_secret       NIOVA_NISD_SECRET, the tenant's key
+    #                     (GET /cp/tenants/{uuid}/nisd-key)
+    #   tenant_uuid       NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID
+    # A setting that isn't given is removed from the NISD's environment.
+    env = os.environ.copy()
+    for var in ("NIOVA_NISD_DO_TOKEN_VALIDATION", "NIOVA_NISD_SECRET",
+                "NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID"):
+        env.pop(var, None)
+    if int(input_values.get("token_validation", 0)) == 1:
+        env["NIOVA_NISD_DO_TOKEN_VALIDATION"] = "1"
+    if input_values.get("nisd_secret") is not None:
+        env["NIOVA_NISD_SECRET"] = str(input_values["nisd_secret"])
+    if input_values.get("tenant_uuid") is not None:
+        env["NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID"] = str(input_values["tenant_uuid"])
+    # log_level: NIOVA_LOG_LEVEL for this NISD only (2 = WARN, 3 = NOTIFY).
+    # Without it the NISD inherits whatever an earlier lookup left in
+    # os.environ (niova-block-test sets 5, trace).
+    if input_values.get("log_level") is not None:
+        env["NIOVA_LOG_LEVEL"] = str(input_values["log_level"])
+
+    # expect_exit: the NISD should refuse to start. Wait up to exit_timeout
+    # seconds and return its exit status instead of the process.
+    expect_exit = bool(input_values.get("expect_exit", False))
+    exit_timeout = int(input_values.get("exit_timeout", 15))
 
     command = [bin_path, "-u", nisd_uuid, "-d", device_path]
 
@@ -93,14 +115,34 @@ def run_nisd_command(cluster_params, input_values):
     log_file_path = "%s/%s/nisd_%s.log" % (base_dir, raft_uuid, nisd_uuid)
     logger = initialize_logger(log_file_path)
 
-    logger.info("Executing nisd command: %s", command)    
+    logger.info("Executing nisd command: %s token_validation=%s secret=%s tenant=%s",
+                command, env.get("NIOVA_NISD_DO_TOKEN_VALIDATION", "unset"),
+                "set" if env.get("NIOVA_NISD_SECRET") else "unset",
+                env.get("NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID", "unset"))
     # Open log file in append mode
     with open(log_file_path, 'a') as log_file:
         # Launch the command as a non-blocking subprocess
-        process = subprocess.Popen(command, stdout=log_file, stderr=log_file, text=True, cwd=base_path)
-        
+        process = subprocess.Popen(command, stdout=log_file, stderr=log_file, text=True,
+                                   cwd=base_path, env=env)
+
         # Log the process ID for reference
-        logger.info("NISD command started with PID %d. Logs will be written to %s", process.pid, log_file_path)    
+        logger.info("NISD command started with PID %d. Logs will be written to %s", process.pid, log_file_path)
+
+    if expect_exit:
+        try:
+            rc = process.wait(timeout=exit_timeout)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            logger.info("NISD PID %d still ran after %ds", process.pid, exit_timeout)
+            return {"exited": False, "returncode": None, "log_file": log_file_path}
+        logger.info("NISD PID %d exited with %d", process.pid, rc)
+        return {"exited": True, "returncode": rc, "log_file": log_file_path}
+
     recipe_conf = load_recipe_op_config(cluster_params)
 
     pid = process.pid
@@ -901,8 +943,13 @@ def start_niova_block_test(cluster_params, input_values):
     sequential_writes = input_values['sequential_writes']
     blocking_process = input_values['blocking_process']
 
-    # Authentication environment variables
-    env = os.environ.copy()
+    # Optional: tenant_uuid (default: the CP's default tenant), log_tag (a
+    # separate log file per run), timeout_sec (kill a hung client; rc 124).
+    tenant_uuid = input_values.get('tenant_uuid', "85d85e86-212d-47f5-b97b-4222d378b7b3")
+    log_tag = input_values.get('log_tag', "")
+    timeout_sec = input_values.get('timeout_sec')
+    timeout_sec = int(timeout_sec) if timeout_sec else None
+
     if app_name == "tidb":
         workspace_dir = os.getenv("NIOVA_WORKSPACE")
         gossip_path = f"{workspace_dir}/mdsvc-tidb/configs/gossipNodes"
@@ -912,7 +959,6 @@ def start_niova_block_test(cluster_params, input_values):
         os.environ["NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT"] = "256"
         os.environ["NIOVA_BLOCK_PROXY_TAG"] = "mdsvc-tidb"
         os.environ["NIOVA_LOG_LEVEL"] = "5"
-        os.environ["NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID"] = "85d85e86-212d-47f5-b97b-4222d378b7b3"
     else:
         # Resolve gossipNodes file path
         gossip_nodes_path = os.path.join(raft_dir, "gossipNodes.json")
@@ -923,19 +969,24 @@ def start_niova_block_test(cluster_params, input_values):
         os.environ['NIOVA_BLOCK_AUTH_ENABLED']="true" 
         os.environ["NIOVA_LOG_LEVEL"] = "5"
         
+    # Client credentials go only to this client. The NISD settings
+    # (NIOVA_NISD_SECRET, NIOVA_NISD_DO_TOKEN_VALIDATION) are run_nisd's
+    # token_validation/nisd_secret; the client never reads them.
+    env = os.environ.copy()
+    for var in ("NIOVA_NISD_DO_TOKEN_VALIDATION", "NIOVA_NISD_SECRET"):
+        env.pop(var, None)
+    if app_name == "tidb":
+        env["NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID"] = tenant_uuid
     if enable_authentication == 1:
-        os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
-        os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
-        os.environ["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
-        os.environ["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
-        os.environ["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
+        env["NIOVA_BLOCK_AUTH_ENABLED"] = "1"
+        env["NIOVA_BLOCK_CP_AUTH_USERNAME"] = input_values['auth_username']
+        env["NIOVA_BLOCK_CP_AUTH_SECRET"] = input_values['auth_secret']
 
-    if read_operation_ratio_percentage == '0':
-        # prepare path for log file.
-        log_path = "%s/%s/niova-block-test_write_%s.log" % (base_dir, raft_uuid, vdev)
+    op_name = "write" if read_operation_ratio_percentage == '0' else "read"
+    if log_tag:
+        log_path = "%s/%s/niova-block-test_%s_%s.log" % (base_dir, raft_uuid, log_tag, vdev)
     else:
-        # Prepare path for log file.
-        log_path = "%s/%s/niova-block-test_read_%s.log" % (base_dir, raft_uuid, vdev)
+        log_path = "%s/%s/niova-block-test_%s_%s.log" % (base_dir, raft_uuid, op_name, vdev)
 
     # Initialize the logger
     logger = initialize_logger(log_path)
@@ -951,21 +1002,31 @@ def start_niova_block_test(cluster_params, input_values):
     logger.debug("vdev-uuid: %s", vdev)
     logger.debug("client-uuid: %s", client_uuid)
     file_size_in_bytes = "8589934592"
-    
+
+    # subprocess.run with this client's env. A client killed by a signal
+    # (e.g. an abort on a refused vdev token) returns -<signal>; one still
+    # running after timeout_sec is killed and returns 124.
+    def run_client(args, **kwargs):
+        try:
+            return subprocess.run(args, env=env, timeout=timeout_sec, **kwargs)
+        except subprocess.TimeoutExpired:
+            logger.info("niova-block-test still ran after %ss, killed", timeout_sec)
+            return subprocess.CompletedProcess(args, 124)
+
     if sequential_writes == True and integrity_check == False and blocking_process == False:
-        ps = subprocess.run((bin_path, '-d', '-c', nisd_uuid_to_write, '-v', vdev, '-r', read_operation_ratio_percentage,
+        ps = run_client((bin_path, '-d', '-c', nisd_uuid_to_write, '-v', vdev, '-r', read_operation_ratio_percentage,
                                    '-u', client_uuid, '-Z', request_size_in_bytes,
                                    '-q', queue_depth, '-N', num_ops, '-I', '-Q', '-z', file_size_in_bytes), stdout=fp, stderr=fp)
 
     elif integrity_check == True and sequential_writes == False and blocking_process == False:
-        ps = subprocess.run((bin_path, '-d', '-c', nisd_uuid_to_write, '-v', vdev, '-r', read_operation_ratio_percentage,
+        ps = run_client((bin_path, '-d', '-c', nisd_uuid_to_write, '-v', vdev, '-r', read_operation_ratio_percentage,
                                    '-a', random_seed, '-u', client_uuid, '-Z', request_size_in_bytes,
                                    '-q', queue_depth, '-N', num_ops, '-I', '-z', file_size_in_bytes), stdout=fp, stderr=fp)
 
     elif blocking_process == True and sequential_writes == False and integrity_check == False:
         proc = subprocess.Popen([bin_path, '-d', '-c', nisd_uuid_to_write, '-v', vdev, '-r', read_operation_ratio_percentage,
                                    '-u', client_uuid, '-Z', request_size_in_bytes,
-                                   '-q', queue_depth, '-N', num_ops, '-I', '-Q', '-z', file_size_in_bytes], stdout=fp, stderr=fp)
+                                   '-q', queue_depth, '-N', num_ops, '-I', '-Q', '-z', file_size_in_bytes], stdout=fp, stderr=fp, env=env)
 
         poll = proc.poll()  # returns the exit code or None if the process is still running
         logger.info("niova-block-test args: %s", proc.args)
@@ -976,15 +1037,15 @@ def start_niova_block_test(cluster_params, input_values):
         if cp_mode == 1:
             logger.debug("Starting niova-block-test in cp mode.....")
             if client_uuid == "":
-                ps = subprocess.run((bin_path, '-c', 'cp', '-v', vdev, '-r', read_operation_ratio_percentage,
+                ps = run_client((bin_path, '-c', 'cp', '-v', vdev, '-r', read_operation_ratio_percentage,
                          '-Z', request_size_in_bytes, '-N', num_ops, '-a', random_seed, '-z', file_size_in_bytes), stdout=fp, stderr=fp)
 
             else:      
-                ps = subprocess.run((bin_path, '-c', 'cp', '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
+                ps = run_client((bin_path, '-c', 'cp', '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
                          '-Z', request_size_in_bytes, '-N', num_ops, '-a', random_seed, '-z', file_size_in_bytes), stdout=fp, stderr=fp)
 
         else: 
-            ps = subprocess.run((bin_path, '-c', nisd_uuid_to_write, '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
+            ps = run_client((bin_path, '-c', nisd_uuid_to_write, '-v', vdev, '-u', client_uuid, '-r', read_operation_ratio_percentage,
                          '-Z', request_size_in_bytes, '-N', num_ops, '-a', random_seed), stdout=fp, stderr=fp)
             
     logger.info("niova-block-test args: %s", ps.args)
