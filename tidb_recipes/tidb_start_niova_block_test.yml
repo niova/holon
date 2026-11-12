@@ -113,6 +113,18 @@
           debug:
             msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
 
+        # run-niova-block-ctl doesn't wait. A NISD started before the
+        # format is done finds no superblock and never serves.
+        - name: "{{ recipe_name }}: Wait for niova-block-ctl to format the device."
+          shell: "! pgrep -f '[n]iova-block-ctl -d {{ nisd_dev_path.msg[0] }}'"
+          args:
+            executable: /bin/bash
+          register: ctl_done
+          retries: 60
+          delay: 2
+          until: ctl_done.rc == 0
+          changed_when: false
+
         # ----------------------------------------
         # 6. Start NISD
         # ----------------------------------------

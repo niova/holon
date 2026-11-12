@@ -1,0 +1,40 @@
+# Run niova-block-test in CP mode (login, mount, I/O). Sets client_rc
+# (negative = killed by a signal, 124 = timed out) and client_log.
+#
+# Needs: client_tag, client_rd_ratio, vdev_uuid, client_id, tenant_uuid.
+# Optional: client_secret, the admin's password (default) or an mdk_ API key.
+
+# The CP refuses a remount inside MDSVC_MOUNT_COOLDOWN (5 s by default).
+- name: "{{ recipe_name }}: Wait out the mount cooldown."
+  pause:
+    seconds: 6
+
+- name: "{{ recipe_name }}: Run niova-block-test ({{ client_tag }})."
+  vars:
+    input_param: {
+      'enable_auth': 1,
+      'cp_mode': 1,
+      'auth_username': 'admin',
+      'auth_secret': '{{ client_secret | default("admin") }}',
+      'tenant_uuid': '{{ tenant_uuid }}',
+      'log_tag': '{{ client_tag }}',
+      'timeout_sec': 180,
+      'nisd_uuid_to_write': 'unix:{{ nisd_uuid }}',
+      'vdev': '{{ vdev_uuid }}',
+      'client_uuid': '{{ client_id }}',
+      'rd_op_ratio': '{{ client_rd_ratio }}',
+      'num_ops': '50',
+      'random_seed_pt': '123',
+      'request_size_in_bytes': '1',
+      'queue_depth': '0',
+      'integrity_check': False,
+      'sequential_writes': False,
+      'blocking_process': False
+    }
+  set_fact:
+    client_rc: "{{ lookup('nisd_handler', 'niova-block-test', input_param) | int }}"
+    client_log: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/niova-block-test_{{ client_tag }}_{{ vdev_uuid }}.log"
+
+- name: "{{ recipe_name }}: niova-block-test ({{ client_tag }}) rc."
+  debug:
+    msg: "rc={{ client_rc }} log={{ client_log }}"
