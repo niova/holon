@@ -67,6 +67,15 @@ def run_nisd_command(cluster_params, input_values):
     client_port = input_values["client_port"]
     enable_authentication = input_values["enable_auth"]
 
+    # Async event configuration.
+    enable_cp_event_handler = int(
+        input_values.get("enable_cp_event_handler", 0)
+    )
+
+    nisd_secret = input_values.get("nisd_secret")
+
+    cp_cluster_uuid = input_values.get("cp_cluster_uuid")
+
     s3config = '/%s/s3.config.example' % binary_dir
     bin_path = os.path.normpath(bin_path)
     set_nisd_environ_variables(s3config)
@@ -82,10 +91,50 @@ def run_nisd_command(cluster_params, input_values):
 
     os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}" 
+
+    if enable_cp_event_handler:
+        os.environ["NIOVA_BLOCK_CP_EVENT_HANDLER_ENABLE"] = "1"
+
+        if not nisd_secret:
+            raise AnsibleError(
+                "nisd_secret is required when "
+                "enable_cp_event_handler=1"
+            )
+
+        os.environ["NIOVA_NISD_SECRET"] = str(nisd_secret)
+
+        if cp_cluster_uuid:
+            os.environ["NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID"] = str(cp_cluster_uuid)
+    else:
+        os.environ.pop("NIOVA_BLOCK_CP_EVENT_HANDLER_ENABLE", None,)
     
-    env = os.environ.copy()
     os.environ["NIOVA_BLOCK_TCP_PEER_PORT"] = str(peer_port)
     os.environ["NIOVA_BLOCK_TCP_CLIENT_PORT"] = str(client_port)
+
+    # Configure TiDB Control Plane discovery
+    if app_name == "tidb":
+        workspace_dir = os.getenv("NIOVA_WORKSPACE")
+
+        if not workspace_dir:
+            raise RuntimeError("NIOVA_WORKSPACE is not set")
+
+        gossip_path = os.path.join(
+            workspace_dir,
+            "mdsvc-tidb",
+            "configs",
+            "gossipNodes"
+        )
+
+        if not os.path.isfile(gossip_path):
+            raise RuntimeError(
+                f"TiDB gossipNodes file not found: {gossip_path}"
+            )
+
+        os.environ["NIOVA_GOSSIP_PATH"] = gossip_path
+        os.environ["NIOVA_GOSSIP_KEY"] = "dummy"
+        os.environ["NIOVA_BLOCK_PROXY_TAG"] = "mdsvc-tidb"
+
+    env = os.environ.copy()
 
     command = [bin_path, "-u", nisd_uuid, "-d", device_path]
 
@@ -97,10 +146,22 @@ def run_nisd_command(cluster_params, input_values):
     # Open log file in append mode
     with open(log_file_path, 'a') as log_file:
         # Launch the command as a non-blocking subprocess
-        process = subprocess.Popen(command, stdout=log_file, stderr=log_file, text=True, cwd=base_path)
+        process = subprocess.Popen(command, stdout=log_file, stderr=log_file, text=True, cwd=base_path, env=env)
         
         # Log the process ID for reference
-        logger.info("NISD command started with PID %d. Logs will be written to %s", process.pid, log_file_path)    
+        logger.info("NISD command started with PID %d. Logs will be written to %s", process.pid, log_file_path)
+
+    time.sleep(1)
+
+    return_code = process.poll()
+
+    if return_code is not None:
+        raise RuntimeError(
+            f"NISD exited during startup. "
+            f"Exit code: {return_code}. "
+            f"Check log: {log_file_path}"
+        )    
+        
     recipe_conf = load_recipe_op_config(cluster_params)
 
     pid = process.pid
