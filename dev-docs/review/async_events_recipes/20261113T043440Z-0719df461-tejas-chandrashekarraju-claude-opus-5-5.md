@@ -64,13 +64,11 @@ P0 blocks merge. P1 should be fixed in this PR. P2 can be a tracked follow-up. P
 | P1 | Broken | `server_env` passed to `docker_setup` is dropped. CP never gets the non-default tenant. | `cluster_uuid:83-92` | 10 |
 | P1 | Broken | SQL checks query database `mdsvc`. `nisd_event` lives in the tenant schema `mdsvc_tenant_<uuid>`. | `auth_recovery`, `vdev_cleanup` | 11 |
 | P1 | Flaky | `cp_recovery` queues the event before blocking CP, so the NISD can consume it before the outage | `cp_recovery:215-261` | 12 |
-| P2 | Weak assertion | AddEvent and other API responses are never asserted. mdsvc returns app errors with HTTP 200 (`nisd not found`). | all NISD recipes | 13 |
-| P2 | Weak assertion | `basic` callback grep uses `\*` inside `grep -E`, so two of three patterns can never match | `basic` step 10 | 14 |
-| P2 | Hygiene | 8 of 9 NISD recipes have no `rescue` / `terminate_recipe`, unlike holon's convention. A failure skips `post_run.yml` cleanup. | all except `basic` | 15 |
-| P2 | Coverage | `restart_persistence` "no replay" sends its own heartbeat to CP. It does not check that the NISD skipped callbacks after restart. | `restart_persistence:409-441` | 16 |
-| P3 | Maintainability | `extract_fields` flattens several response levels into one dict. Later levels overwrite `status`, `name`, `failed`, `ok`. | `lookup_plugin/tidb_api.py:262` | 17 |
-| P3 | Cleanup | `wait_server_log` is added but no recipe calls it. It also matches the pattern anywhere in the log, including earlier lines. | `lookup_plugin/tidb_setup.py` | 17 |
-| P3 | Hygiene | Fixed ports 13000-13201, device files at `/`, `iptables` on the host, `become: true` | several | 17 |
+| P2 | Hygiene | 8 of 9 NISD recipes have no `rescue` / `terminate_recipe`, unlike holon's convention. A failure skips `post_run.yml` cleanup. | all except `basic` | 13 |
+| P2 | Coverage | `restart_persistence` "no replay" sends its own heartbeat to CP. It does not check that the NISD skipped callbacks after restart. | `restart_persistence:409-441` | 14 |
+| P3 | Diagnosability | AddEvent and other API responses are not asserted. mdsvc returns some app errors with HTTP 200, so a failure surfaces later as an `event_sno` timeout. | all NISD recipes | 15 |
+| P3 | Cleanup | Dead regex text in `basic` grep. `wait_server_log` is added but no recipe calls it. It also matches the pattern anywhere in the log, including earlier lines. | `lookup_plugin/tidb_setup.py` | 16 |
+| P3 | Hygiene | Fixed ports 13000-13201, device files at `/`, `iptables` on the host, `become: true` | several | 16 |
 
 ## Findings
 
@@ -229,41 +227,35 @@ Ansible's own API calls. So scope the rule to the NISD (`-m owner --uid-owner` f
 cgroup match), or point the NISD at a separate CP port. Also confirm the NISD reaches CP at `cp_host:cp_port`.
 It uses `mdsvc-tidb/configs/gossipNodes`, not `api_base_url`.
 
-### 13. P2 (weak assertion): API responses are not checked
-
-The `tidb_api` lookup raises only on HTTP status not in {200, 201}. mdsvc reports some errors with HTTP 200
-and an app status in the body. AddEvent returns HTTP 200 with `StatusNotFound` for an unknown NISD. No recipe
-asserts on `add_event_result`. A later wait times out with a message about `event_sno`, which hides the cause.
-After every AddEvent, assert the app status is OK and `event_ptr` is set. Then use `event_ptr` as the expected
-serial instead of `initial + 1`.
-
-### 14. P2 (weak assertion): `basic` callback grep
-
-`grep -Ei "ncp_event_test|test.\*event|event.\*callback"`. In `grep -E`, `\*` is a literal `*`, so the second
-and third patterns never match. Only `ncp_event_test` works, and it does match the NISD's
-`ncp_event_test_cb: dispatched TEST event (params=...)` line (`LL_NOTIFY`). Grep for that line plus the
-event's marker in `params` (`basic-async-event`), as `multiple_order` does. That proves this event ran.
-
-### 15. P2 (hygiene): no `rescue` in eight NISD recipes
+### 13. P2 (hygiene): no `rescue` in eight NISD recipes
 
 Holon's convention (`holon.yml`, `post_run.yml:195`) is `rescue` sets `terminate_recipe: true`, and
 `post_run.yml` fails the run after cleanup. Only `basic` does this. In the other eight, a failed task fails
 the play, and `post_run.yml` (process kill, device cleanup) is skipped for that host. NISDs and device files
 from a failed run stay behind. Follow the `basic` pattern.
 
-### 16. P2 (coverage): `restart_persistence` replay check tests the CP, not the NISD
+
+### 14. P2 (coverage): `restart_persistence` replay check tests the CP, not the NISD
 
 After restart the recipe sends its own heartbeat with `AckEventSerialNo=3` and asserts 0 events come back.
 That checks CP filtering. The claim is that the restarted NISD does not re-run callbacks 1-3. Check that too:
 count each event marker in the NISD log after the restart line. Each should appear once in the whole log,
 and zero times after the restart.
 
-### 17. P3 nits
 
-- `extract_fields` (`tidb_api.py:262`) collects the same keys from the envelope, `data`, `payload` and
-  `data.payload` into one dict, and later levels overwrite earlier ones. This PR adds generic keys (`status`
-  already, now `failed`, `ok`, `action`, `params`, `name`). A recipe reading `result.status` can get either the
-  envelope status or an inner field. Prefer reading `result.data...` paths explicitly in new recipes.
+### 15. P3 (diagnosability): API responses are not checked
+
+The `tidb_api` lookup raises only on HTTP status not in {200, 201}. mdsvc reports some errors with HTTP 200
+and an app status in the body. AddEvent returns HTTP 200 with `StatusNotFound` for an unknown NISD. No recipe
+asserts on `add_event_result`. The test still fails, but later, in a wait that times out with a message about `event_sno`. That hides the cause.
+After every AddEvent, assert the app status is OK and `event_ptr` is set. Then use `event_ptr` as the expected
+serial instead of `initial + 1`.
+
+
+### 16. P3 nits
+
+- `basic` step 10 greps `"ncp_event_test|test.\*event|event.\*callback"`. In `grep -E`, `\*` is a literal `*`, so the
+  last two patterns are dead text. The check still works through `ncp_event_test`. Drop the dead patterns.
 - `wait_server_log` (`tidb_setup.py`) has no caller. It also scans the whole log, so a line written before the
   action under test satisfies it. Remove it, or record the log offset first and scan from there.
 - Fixed ports (13000-13201), device files at `/`, `become: true` and host `iptables` make the recipes need root
