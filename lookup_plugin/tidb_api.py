@@ -1,6 +1,10 @@
 from ansible.plugins.lookup import LookupBase
 from ansible.errors import AnsibleError
 
+import base64
+import binascii
+import hashlib
+import hmac
 import json
 import os
 import requests
@@ -147,11 +151,151 @@ def parse_response(response, log_file=None, method=None, url=None, payload=None)
 
     return data
 
-def login(base_url, username, password, log_file, timeout):
+def b64url_decode(part):
+    return base64.urlsafe_b64decode(part + "=" * (-len(part) % 4))
+
+def decode_vdev_token(token, key=None):
+    """
+    Decode a vdev token (JWT) without trusting it. With key (the tenant's
+    NISD key), also check the HS256 signature, as the NISD does.
+    """
+    if not isinstance(token, str) or token.count(".") != 2:
+        raise AnsibleError(f"Not a JWT: {str(token)[:40]}...")
+
+    header_b64, claims_b64, sig_b64 = token.split(".")
+
+    try:
+        header = json.loads(b64url_decode(header_b64))
+        claims = json.loads(b64url_decode(claims_b64))
+    except (ValueError, binascii.Error) as exc:
+        raise AnsibleError(f"Cannot decode JWT: {exc}")
+
+    result = {
+        "header": header,
+        "claims": claims,
+        "signature_checked": key is not None,
+        "signature_valid": None,
+    }
+
+    if key is not None:
+        signing_input = f"{header_b64}.{claims_b64}".encode()
+        want = hmac.new(str(key).encode(), signing_input, hashlib.sha256).digest()
+        try:
+            got = b64url_decode(sig_b64)
+        except (ValueError, binascii.Error):
+            got = b""
+        result["signature_valid"] = hmac.compare_digest(want, got)
+
+    return result
+
+def tenant_admin_login(base_url, username, password, log_file, timeout):
     payload = {
         "username": username,
         "password": password,
     }
+
+    url = f"{base_url}/tenant-admin/login"
+
+    response = perform_request(
+        method="POST",
+        url=url,
+        payload=payload,
+        params=None,
+        headers={"Content-Type": "application/json"},
+        timeout=timeout,
+        log_file=log_file,
+    )
+
+    data = parse_response(response, log_file=log_file, method="POST",
+                          url=url, payload=payload)
+    write_log(log_file, "POST", url, {"username": username},
+              response.status_code, data)
+
+    token = (data.get("payload") or {}).get("access_token")
+    if not token:
+        raise AnsibleError(f"Tenant-admin login failed: {data}")
+
+    return token
+
+def get_nisd_key(base_url, tenant_uuid, token, log_file, timeout):
+    url = f"{base_url}/cp/tenants/{tenant_uuid}/nisd-key"
+
+    response = perform_request(
+        method="GET",
+        url=url,
+        payload=None,
+        params=None,
+        headers=make_headers(token=token),
+        timeout=timeout,
+        log_file=log_file,
+    )
+
+    data = parse_response(response, log_file=log_file, method="GET", url=url)
+    # Don't write the key itself to the log.
+    write_log(log_file, "GET", url, None, response.status_code,
+              {"status": data.get("status"), "error": data.get("error")})
+
+    key = (data.get("payload") or {}).get("nisd_secret")
+    if data.get("status") != 0 or not key:
+        raise AnsibleError(
+            f"No NISD key for tenant {tenant_uuid}: status={data.get('status')} "
+            f"error={data.get('error')}. A CP without per-tenant keys "
+            f"(before mdsvc-tidb #121) has no such route."
+        )
+
+    return key
+
+def create_api_key(base_url, user_id, token, name, scopes, log_file, timeout):
+    """
+    POST /api/users/{user_id}/api-keys with a password-login token (an
+    api-key login can't create keys). scopes None = the owner's full role.
+    Returns {id, key, key_prefix, scopes}; key is the plaintext mdk_ key.
+    """
+    url = f"{base_url}/api/users/{user_id}/api-keys"
+    payload = {"name": name}
+    if scopes is not None:
+        payload["scopes"] = list(scopes)
+
+    response = perform_request(
+        method="POST",
+        url=url,
+        payload=payload,
+        params=None,
+        headers=make_headers(token=token),
+        timeout=timeout,
+        log_file=log_file,
+    )
+
+    data = parse_response(response, log_file=log_file, method="POST",
+                          url=url, payload=payload)
+    body = data.get("payload") or {}
+    # Don't write the plaintext key to the log.
+    write_log(log_file, "POST", url, payload, response.status_code,
+              {"status": data.get("status"), "error": data.get("error"),
+               "id": body.get("id"), "key_prefix": body.get("key_prefix"),
+               "scopes": body.get("scopes")})
+
+    if data.get("status") != 0 or not body.get("key"):
+        raise AnsibleError(
+            f"Creating API key {name} failed: status={data.get('status')} "
+            f"error={data.get('error')}. A CP without API keys (before "
+            f"mdsvc-tidb #121) has no such route."
+        )
+
+    return {
+        "id": body.get("id"),
+        "key": body.get("key"),
+        "key_prefix": body.get("key_prefix"),
+        "scopes": body.get("scopes"),
+    }
+
+def login(base_url, username, password, log_file, timeout, tenant_uuid=None):
+    payload = {
+        "username": username,
+        "password": password,
+    }
+    if tenant_uuid:
+        payload["tenant_uuid"] = tenant_uuid
 
     url = f"{base_url}/users/login"
 
@@ -629,12 +773,43 @@ class LookupModule(LookupBase):
             return [run_schema(repo_path, log_file, mysql_env)]
 
         if action == "login":
-            token = login(base_url, username, password, log_file, timeout)
+            token = login(base_url, username, password, log_file, timeout,
+                          tenant_uuid=kwargs.get("tenant_uuid"))
             return [{
                 "status": "login_success",
                 "access_token": token,
                 "log_file": log_file,
             }]
+
+        if action == "tenant_admin_login":
+            token = tenant_admin_login(
+                base_url,
+                kwargs.get("username", os.getenv("TENANT_ADMIN_USERNAME", "tenant-admin")),
+                kwargs.get("password", os.getenv("TENANT_ADMIN_PASSWORD",
+                                                 "integration-test-tenant-admin-secret")),
+                log_file, timeout)
+            return [{
+                "status": "login_success",
+                "access_token": token,
+                "log_file": log_file,
+            }]
+
+        if action == "get_nisd_key":
+            tenant_uuid = kwargs.get("tenant_uuid")
+            if not tenant_uuid or not token:
+                raise AnsibleError("get_nisd_key needs tenant_uuid and a tenant-admin token")
+            return [get_nisd_key(base_url, tenant_uuid, token, log_file, timeout)]
+
+        if action == "create_api_key":
+            user_id = kwargs.get("user_id")
+            if not user_id or not token:
+                raise AnsibleError("create_api_key needs user_id and a password-login token")
+            return [create_api_key(base_url, user_id, token,
+                                   kwargs.get("name", "holon"),
+                                   kwargs.get("scopes"), log_file, timeout)]
+
+        if action == "decode_vdev_token":
+            return [decode_vdev_token(kwargs.get("vdev_token"), kwargs.get("key"))]
 
         if action == "expected_allocations":
             nisd_resources = kwargs.get("nisd_resources")
