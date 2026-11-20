@@ -83,14 +83,9 @@ def run_nisd_command(cluster_params, input_values):
     sock_dir = f"/tmp/.niova/{nisd_uuid}"
     os.makedirs(sock_dir, exist_ok=True)
 
-    # if enable_authentication == 1:
-    #     os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
-    #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
-    # else:
-    #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '0'
-
     os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}" 
+    os.environ["NIOVA_LOG_LEVEL"] = "5"
 
     if enable_cp_event_handler:
         os.environ["NIOVA_BLOCK_CP_EVENT_HANDLER_ENABLE"] = "1"
