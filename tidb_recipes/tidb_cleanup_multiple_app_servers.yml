@@ -1,0 +1,209 @@
+- name: "tidb_cleanup_multiple_app_servers.yml"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    recipe_name: "tidb_cleanup_multiple_app_servers"
+    api_base_url: "http://localhost:8081"
+    infra_payload: "{{ playbook_dir }}/../examples/e2e.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_vdev_100gb_1replica.json"
+    cleanup_repo_path: "{{ lookup('env', 'NIOVA_WORKSPACE') }}/mdsvc-tidb"
+    cleanup_logs_dir: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/tidb_cleanup_multiple_app_servers"
+    cleanup_tenant_count: 3
+    cleanup_vdevs_per_tenant: 3
+    cleanup_multi_count: 100
+    cleanup_timeout_seconds: 900
+
+  tasks:
+    - block:
+        # =====================================================
+        # 0. Configure a fresh, disposable TiUP Playground
+        # =====================================================
+        - name: "{{ recipe_name }}: Check app type."
+          ansible.builtin.assert:
+            that:
+              - app_type == 'tidb'
+              - lookup('env', 'NIOVA_WORKSPACE') | length > 0
+            fail_msg: "Requires Holon app_type=tidb and NIOVA_WORKSPACE."
+
+        - name: "{{ recipe_name }}: Save original cluster parameters."
+          ansible.builtin.set_fact:
+            original_cluster_params: "{{ ClusterParams }}"
+            cleanup_setup_done: false
+            cleanup_recipe_failed: false
+
+        - name: "{{ recipe_name }}: Configure TiUP Playground."
+          ansible.builtin.set_fact:
+            ClusterParams: >-
+              {{
+                original_cluster_params | combine({
+                  'tidb_backend': 'playground',
+                  'tidb_version': original_cluster_params.tidb_version | default('v8.5.0'),
+                  'playground_host': '127.0.0.1',
+                  'playground_pd': 1,
+                  'playground_kv': 3,
+                  'playground_db': 1,
+                  'playground_tiflash': 0,
+                  'playground_without_monitor': true,
+                  'playground_tag': none,
+                  'mysql_host': '127.0.0.1',
+                  'mysql_port': '4000',
+                  'api_base_url': api_base_url,
+                  'server_timeout': 300
+                }, recursive=true)
+              }}
+
+        - name: "{{ recipe_name }}: Save playground configuration."
+          ansible.builtin.set_fact:
+            playground_cluster_params: "{{ ClusterParams }}"
+
+        - name: "{{ recipe_name }}: Verify fixture and helper files."
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ infra_payload }}"
+            - "{{ vdev_payload }}"
+            - "{{ playbook_dir }}/cleanup_worker_verify.py"
+          register: cleanup_fixture_stats
+
+        - name: "{{ recipe_name }}: Require all fixtures."
+          ansible.builtin.assert:
+            that:
+              - cleanup_fixture_stats.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+            fail_msg: "Missing one or more cleanup fixtures/helper files."
+
+        # Both GET introspection routes are gated by testendpoints.
+        - name: "{{ recipe_name }}: Build test-enabled mdsvc-api."
+          ansible.builtin.command:
+            argv: ["go", "build", "-tags=testendpoints", "-o", "server", "./cmd/server"]
+            chdir: "{{ cleanup_repo_path }}"
+          changed_when: true
+
+        # =====================================================
+        # 1. Start TiDB + primary mdsvc-api (same as quorum recipe)
+        # =====================================================
+        - name: "{{ recipe_name }}: Start TiUP Playground and mdsvc-api."
+          ansible.builtin.set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
+
+        - name: "{{ recipe_name }}: Mark setup complete."
+          ansible.builtin.set_fact:
+            cleanup_setup_done: true
+
+        - name: "{{ recipe_name }}: Wait for mdsvc-api readiness."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+          register: cleanup_api_health
+          until: cleanup_api_health.status in [200, 301, 302]
+          retries: 90
+          delay: 3
+
+        - name: "{{ recipe_name }}: Login to control plane."
+          ansible.builtin.set_fact:
+            login_result: >-
+              {{ lookup('tidb_api', 'login', base_url=api_base_url,
+                         username=lookup('env', 'INTEGRATION_ADMIN_USERNAME') | default('admin', true),
+                         password=lookup('env', 'INTEGRATION_ADMIN_PASSWORD') | default('admin', true)) }}
+          no_log: true
+
+        - name: "{{ recipe_name }}: Save access token."
+          ansible.builtin.set_fact:
+            access_token: "{{ login_result.access_token }}"
+          no_log: true
+
+        - name: "{{ recipe_name }}: Assert admin login succeeded."
+          ansible.builtin.assert:
+            that:
+              - access_token | length > 0
+
+        - name: "{{ recipe_name }}: Verify cleanup test endpoint."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/cleanup-jobs"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ access_token }}"
+            status_code: 200
+            return_content: true
+          register: cleanup_endpoint_check
+          no_log: true
+
+        # =====================================================
+        # 2. Execute tenant/VDEV workload with SQL/event checks
+        # =====================================================
+        # This helper implements isolated tenant provisioning and per-job SQL checks;
+        # service lifecycle, authentication and final cleanup stay in Ansible.
+        - name: "{{ recipe_name }}: Run cleanup workload and verification."
+          ansible.builtin.command:
+            argv:
+              - python3
+              - "{{ playbook_dir }}/cleanup_worker_verify.py"
+              - --mode
+              - multi
+              - --api
+              - "{{ api_base_url }}"
+              - --server-binary
+              - "{{ cleanup_repo_path }}/server"
+              - --infra-json
+              - "{{ infra_payload }}"
+              - --vdev-json
+              - "{{ vdev_payload }}"
+              - --multi-count
+              - "{{ cleanup_multi_count | string }}"
+              - --secondary-ports
+              - "8082"
+              - "8083"
+              - --mysql-host
+              - "{{ ClusterParams.mysql_host }}"
+              - --mysql-port
+              - "{{ ClusterParams.mysql_port | string }}"
+              - --mysql-user
+              - "{{ ClusterParams.mysql_user | default('root') }}"
+              - --logs
+              - "{{ cleanup_logs_dir }}"
+              - --wait-seconds
+              - "{{ cleanup_timeout_seconds | string }}"
+          environment:
+            INTEGRATION_ADMIN_USERNAME: "{{ lookup('env', 'INTEGRATION_ADMIN_USERNAME') | default('admin', true) }}"
+            INTEGRATION_ADMIN_PASSWORD: "{{ lookup('env', 'INTEGRATION_ADMIN_PASSWORD') | default('admin', true) }}"
+            MDSVC_MYSQL_PASSWORD: "{{ ClusterParams.mysql_password | default('') }}"
+            MDSVC_TENANT_MANAGER_ID: "{{ ClusterParams.server_env.MDSVC_TENANT_MANAGER_ID | default(lookup('env', 'MDSVC_TENANT_MANAGER_ID')) }}"
+          register: cleanup_run
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Show verification summary."
+          ansible.builtin.debug:
+            var: cleanup_run.stdout_lines
+
+      rescue:
+        - name: "{{ recipe_name }}: Print failure."
+          ansible.builtin.debug:
+            msg: "{{ ansible_failed_result.msg | default(ansible_failed_result) }}"
+
+        - name: "{{ recipe_name }}: Record failed outcome."
+          ansible.builtin.set_fact:
+            cleanup_recipe_failed: true
+            cleanup_recipe_failure: "{{ ansible_failed_result }}"
+
+      always:
+        - name: "{{ recipe_name }}: Restore playground configuration."
+          ansible.builtin.set_fact:
+            ClusterParams: "{{ playground_cluster_params }}"
+          when: playground_cluster_params is defined
+
+        - name: "{{ recipe_name }}: Tear down TiUP Playground."
+          ansible.builtin.set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'playground_teardown') }}"
+          when: cleanup_setup_done | default(false) | bool
+
+        - name: "{{ recipe_name }}: Restore caller configuration."
+          ansible.builtin.set_fact:
+            ClusterParams: "{{ original_cluster_params }}"
+          when: original_cluster_params is defined
+
+        - name: "{{ recipe_name }}: Fail after cleanup when validation failed."
+          ansible.builtin.fail:
+            msg: "Cleanup Worker test failed; check previous failure and run logs."
+          when: cleanup_recipe_failed | default(false) | bool
