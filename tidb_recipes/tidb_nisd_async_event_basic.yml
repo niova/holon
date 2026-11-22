@@ -118,10 +118,6 @@
         # 4. Start NISD with async-event handling enabled
         # ------------------------------------------------------------
 
-        - name: "{{ recipe_name }}: Mark the NISD start attempt."
-          ansible.builtin.set_fact:
-            nisd_start_attempted: true
-
         - name: "{{ recipe_name }}: Start NISD with async-event handler."
           vars:
             input_param:
@@ -137,10 +133,6 @@
               {{
                 lookup('nisd_handler','run_nisd',input_param)
               }}
-
-        - name: "{{ recipe_name }}: Read the PID recorded by run_nisd."
-          ansible.builtin.set_fact:
-            recipe_nisd_pid: "{{ (lookup('file', run_dir ~ '/' ~ ClusterParams.raft_uuid ~ '.json') | from_json).nisd_process.process_pid }}"
 
         - name: "{{ recipe_name }}: Wait for NISD registration."
           ansible.builtin.uri:
@@ -337,50 +329,8 @@
             terminate_recipe: true
 
       always:
-        # Stop the NISD before deleting its backing file. This prevents failed
-        # runs from leaving the process alive on ports 13000/13001.
-        - name: "{{ recipe_name }}: Stop NISD if it is still running."
-          ansible.builtin.shell: |
-            set -euo pipefail
-
-            pid={{ recipe_nisd_pid | int }}
-            [[ "$pid" -gt 1 ]] || exit 1
-            owns_nisd() {
-              [[ -r /proc/$pid/comm && $(cat "/proc/$pid/comm") == nisd ]] &&
-                grep -Fzxq -- {{ nisd_dev_path.msg[0] | quote }} "/proc/$pid/cmdline"
-            }
-            [[ -d /proc/$pid ]] || exit 0
-            owns_nisd || exit 1
-            kill -TERM "$pid"
-            for ((i=0; i<10; i++)); do
-              owns_nisd || exit 0
-              sleep 1
-            done
-            if owns_nisd; then kill -KILL "$pid"; fi
-          args:
-            executable: /bin/bash
-          changed_when: false
-          when: recipe_nisd_pid is defined
-          register: stop_nisd
-          failed_when: false
-
-        - name: "{{ recipe_name }}: Remove NISD backing file."
-          ansible.builtin.file:
-            path: "{{ nisd_dev_path.msg[0] }}"
-            state: absent
-          when:
-            - nisd_start_attempted is not defined or stop_nisd.rc | default(1) == 0
-            - nisd_dev_path is defined
-            - nisd_dev_path.msg is defined
-            - nisd_dev_path.msg | length > 0
-
+        # Holon post_run handles the recorded NISD and its backing file.
         - name: "{{ recipe_name }}: Tear down mdsvc-tidb."
           ansible.builtin.debug:
             msg: "{{ lookup('tidb_setup', 'docker_teardown') }}"
           ignore_errors: true
-
-
-        - name: "{{ recipe_name }}: Report incomplete process cleanup."
-          ansible.builtin.set_fact:
-            terminate_recipe: true
-          when: nisd_start_attempted is defined and stop_nisd.rc | default(1) != 0

@@ -1,3 +1,99 @@
+- name: "tidb_cleanup_single_server.yml"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    recipe_name: "tidb_cleanup_single_server"
+    api_base_url: "http://localhost:8081"
+    infra_payload: "{{ playbook_dir }}/../examples/e2e.json"
+    vdev_payload: "{{ playbook_dir }}/../examples/create_vdev_100gb_1replica.json"
+    cleanup_repo_path: "{{ lookup('env', 'NIOVA_WORKSPACE') }}/mdsvc-tidb"
+    cleanup_logs_dir: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/tidb_cleanup_single_server"
+    cleanup_tenant_count: 3
+    cleanup_vdevs_per_tenant: 3
+    cleanup_multi_count: 100
+    cleanup_timeout_seconds: 900
+
+  tasks:
+    - block:
+        # =====================================================
+        # 0. Configure a fresh, disposable TiUP Playground
+        # =====================================================
+        - name: "{{ recipe_name }}: Check app type."
+          ansible.builtin.assert:
+            that:
+              - app_type == 'tidb'
+              - lookup('env', 'NIOVA_WORKSPACE') | length > 0
+            fail_msg: "Requires Holon app_type=tidb and NIOVA_WORKSPACE."
+
+        - name: "{{ recipe_name }}: Save original cluster parameters."
+          ansible.builtin.set_fact:
+            original_cluster_params: "{{ ClusterParams }}"
+            cleanup_setup_done: false
+            cleanup_recipe_failed: false
+
+        - name: "{{ recipe_name }}: Configure TiUP Playground."
+          ansible.builtin.set_fact:
+            ClusterParams: >-
+              {{
+                original_cluster_params | combine({
+                  'tidb_backend': 'playground',
+                  'tidb_version': original_cluster_params.tidb_version | default('v8.5.0'),
+                  'playground_host': '127.0.0.1',
+                  'playground_pd': 1,
+                  'playground_kv': 3,
+                  'playground_db': 1,
+                  'playground_tiflash': 0,
+                  'playground_without_monitor': true,
+                  'playground_tag': none,
+                  'mysql_host': '127.0.0.1',
+                  'mysql_port': '4000',
+                  'api_base_url': api_base_url,
+                  'server_timeout': 300
+                }, recursive=true)
+              }}
+
+        - name: "{{ recipe_name }}: Save playground configuration."
+          ansible.builtin.set_fact:
+            playground_cluster_params: "{{ ClusterParams }}"
+
+        - name: "{{ recipe_name }}: Verify fixture and helper files."
+          ansible.builtin.stat:
+            path: "{{ item }}"
+          loop:
+            - "{{ infra_payload }}"
+            - "{{ vdev_payload }}"
+            - "{{ playbook_dir }}/cleanup_worker_verify.py"
+          register: cleanup_fixture_stats
+
+        - name: "{{ recipe_name }}: Require all fixtures."
+          ansible.builtin.assert:
+            that:
+              - cleanup_fixture_stats.results | selectattr('stat.exists', 'equalto', false) | list | length == 0
+            fail_msg: "Missing one or more cleanup fixtures/helper files."
+
+        # Both GET introspection routes are gated by testendpoints.
+        - name: "{{ recipe_name }}: Build test-enabled mdsvc-api."
+          ansible.builtin.command:
+            argv: ["go", "build", "-tags=testendpoints", "-o", "server", "./cmd/server"]
+            chdir: "{{ cleanup_repo_path }}"
+          changed_when: true
+
+        # =====================================================
+        # 1. Start TiDB + primary mdsvc-api (same as quorum recipe)
+        # =====================================================
+        - name: "{{ recipe_name }}: Start TiUP Playground and mdsvc-api."
+          ansible.builtin.set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
+
+        - name: "{{ recipe_name }}: Mark setup complete."
+          ansible.builtin.set_fact:
+            cleanup_setup_done: true
+
+        - name: "{{ recipe_name }}: Wait for mdsvc-api readiness."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
             method: GET
             status_code: [200, 301, 302]
           register: cleanup_api_health
