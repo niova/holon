@@ -28,28 +28,7 @@
     run_dir: '{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}'
     nisd_log_file: '{{ run_dir }}/nisd_{{ nisd_uuid }}.log'
     heartbeat_401_regex: (heartbeat|cmi_ping_cp).*\b401\b|\b401\b.*(heartbeat|cmi_ping_cp)
-    stop_recorded_nisd_script: |-
-      import os, select, signal, sys
-      from pathlib import Path
-      pid, birth = int(sys.argv[1]), sys.argv[2]
-      if pid <= 1:
-          sys.exit("Invalid recorded PID")
-      try:
-          fd = os.pidfd_open(pid)
-          proc = Path("/proc") / str(pid)
-          if (proc / "stat").read_text().rsplit(")", 1)[1].split()[19] != birth:
-              sys.exit(0)  # The recorded process has already exited.
-          if (proc / "comm").read_text().strip() != "nisd":
-              sys.exit("Recorded PID is not nisd")
-          poller = select.poll()
-          poller.register(fd, select.POLLIN)
-          for sig in (signal.SIGTERM, signal.SIGKILL):
-              signal.pidfd_send_signal(fd, sig)
-              if poller.poll(10000):
-                  sys.exit(0)
-          sys.exit("NISD did not exit")
-      except (ProcessLookupError, FileNotFoundError):
-          pass
+    
   tasks:
     - block:
         - name: '{{ recipe_name }}: Validate configuration.'
@@ -130,10 +109,6 @@
                 )
               }}
 
-        - name: '{{ recipe_name }}: Mark process launch in progress.'
-          ansible.builtin.set_fact:
-            launch_pending: true
-
         - name: '{{ recipe_name }}: Register the fresh NISD using the accepted secret.'
           vars:
             input_param:
@@ -159,20 +134,6 @@
           ansible.builtin.set_fact:
             active_pid: '{{ (lookup(''file'',run_dir ~ ''/'' ~ ClusterParams.raft_uuid ~ ''.json'') | from_json).nisd_process.process_pid
               }}'
-
-        - name: '{{ recipe_name }}: Record the process start time.'
-          ansible.builtin.command:
-            argv:
-              - python3
-              - -c
-              - import pathlib,sys; print(pathlib.Path("/proc",sys.argv[1],"stat").read_text().rsplit(")",1)[1].split()[19])
-              - '{{ active_pid }}'
-          register: proc_identity
-          changed_when: false
-
-        - name: '{{ recipe_name }}: Mark the process as tracked.'
-          ansible.builtin.set_fact:
-            launch_pending: false
 
         - name: '{{ recipe_name }}: Wait for bootstrap ping.'
           vars:
@@ -207,17 +168,19 @@
           retries: '{{ async_event_timeout_retries }}'
           delay: '{{ async_event_poll_delay }}'
 
-        - name: '{{ recipe_name }}: Stop the recorded NISD and wait for exit.'
+        - name: '{{ recipe_name }}: Validate the recorded NISD PID.'
+          ansible.builtin.assert:
+            that: active_pid | int > 1
+
+        - name: '{{ recipe_name }}: Stop the recorded NISD.'
           ansible.builtin.command:
-            argv:
-              - python3
-              - -c
-              - '{{ stop_recorded_nisd_script }}'
-              - '{{ active_pid }}'
-              - '{{ proc_identity.stdout }}'
-        - name: '{{ recipe_name }}: Clear the stopped process identity.'
-          ansible.builtin.set_fact:
-            active_pid: 0
+            argv: [kill, "-TERM", "{{ active_pid }}"]
+
+        - name: '{{ recipe_name }}: Wait for NISD to exit.'
+          ansible.builtin.wait_for:
+            path: '/proc/{{ active_pid }}'
+            state: absent
+            timeout: 30
 
         - name: '{{ recipe_name }}: Archive the completed phase log.'
           ansible.builtin.command:
@@ -227,7 +190,7 @@
               - '{{ nisd_log_file }}'
               - '{{ nisd_log_file }}.bootstrap'
 
-        - name: '{{ recipe_name }}: Queue queued TEST event.'
+        - name: '{{ recipe_name }}: Queue a TEST event before wrong-secret startup.'
           ansible.builtin.set_fact:
             add_result: '{{ lookup(''tidb_api'',''add_event'',base_url=api_base_url,token=login_result.access_token,body={''nisd_id'':nisd_uuid,''action'':async_event_action,''params'':{''marker'':event_marker
               ~ ''-queued''}}) }}'
@@ -261,10 +224,6 @@
           retries: '{{ async_event_timeout_retries }}'
           delay: '{{ async_event_poll_delay }}'
 
-        - name: '{{ recipe_name }}: Mark process launch in progress.'
-          ansible.builtin.set_fact:
-            launch_pending: true
-
         - name: '{{ recipe_name }}: Launch NISD with the wrong secret.'
           vars:
             input_param:
@@ -290,20 +249,6 @@
           ansible.builtin.set_fact:
             active_pid: '{{ (lookup(''file'',run_dir ~ ''/'' ~ ClusterParams.raft_uuid ~ ''.json'') | from_json).nisd_process.process_pid
               }}'
-
-        - name: '{{ recipe_name }}: Record the process start time.'
-          ansible.builtin.command:
-            argv:
-              - python3
-              - -c
-              - import pathlib,sys; print(pathlib.Path("/proc",sys.argv[1],"stat").read_text().rsplit(")",1)[1].split()[19])
-              - '{{ active_pid }}'
-          register: proc_identity
-          changed_when: false
-
-        - name: '{{ recipe_name }}: Mark the process as tracked.'
-          ansible.builtin.set_fact:
-            launch_pending: false
 
         - name: '{{ recipe_name }}: Observe HTTP 401 on a heartbeat in this launch log.'
           ansible.builtin.command:
@@ -358,17 +303,19 @@
           retries: '{{ async_event_timeout_retries }}'
           delay: '{{ async_event_poll_delay }}'
 
-        - name: '{{ recipe_name }}: Stop the recorded NISD and wait for exit.'
+        - name: '{{ recipe_name }}: Validate the recorded NISD PID.'
+          ansible.builtin.assert:
+            that: active_pid | int > 1
+
+        - name: '{{ recipe_name }}: Stop the recorded NISD.'
           ansible.builtin.command:
-            argv:
-              - python3
-              - -c
-              - '{{ stop_recorded_nisd_script }}'
-              - '{{ active_pid }}'
-              - '{{ proc_identity.stdout }}'
-        - name: '{{ recipe_name }}: Clear the stopped process identity.'
-          ansible.builtin.set_fact:
-            active_pid: 0
+            argv: [kill, "-TERM", "{{ active_pid }}"]
+
+        - name: '{{ recipe_name }}: Wait for NISD to exit.'
+          ansible.builtin.wait_for:
+            path: '/proc/{{ active_pid }}'
+            state: absent
+            timeout: 30
 
         - name: '{{ recipe_name }}: Archive the completed phase log.'
           ansible.builtin.command:
@@ -377,10 +324,6 @@
               - --
               - '{{ nisd_log_file }}'
               - '{{ nisd_log_file }}.wrong-secret'
-
-        - name: '{{ recipe_name }}: Mark process launch in progress.'
-          ansible.builtin.set_fact:
-            launch_pending: true
 
         - name: '{{ recipe_name }}: Restart the same device with the correct secret.'
           vars:
@@ -402,25 +345,6 @@
                 )
               }}
           no_log: true
-
-        - name: '{{ recipe_name }}: Identify this launch from the run JSON.'
-          ansible.builtin.set_fact:
-            active_pid: '{{ (lookup(''file'',run_dir ~ ''/'' ~ ClusterParams.raft_uuid ~ ''.json'') | from_json).nisd_process.process_pid
-              }}'
-
-        - name: '{{ recipe_name }}: Record the process start time.'
-          ansible.builtin.command:
-            argv:
-              - python3
-              - -c
-              - import pathlib,sys; print(pathlib.Path("/proc",sys.argv[1],"stat").read_text().rsplit(")",1)[1].split()[19])
-              - '{{ active_pid }}'
-          register: proc_identity
-          changed_when: false
-
-        - name: '{{ recipe_name }}: Mark the process as tracked.'
-          ansible.builtin.set_fact:
-            launch_pending: false
 
         - name: '{{ recipe_name }}: Verify the NISD serial recovered.'
           ansible.builtin.debug:
@@ -451,8 +375,8 @@
           ansible.builtin.command:
             argv:
               - grep
-              - -Fq
-              - ncp_event_test
+              - -Eq
+              - 'dispatched TEST event .*"marker"[[:space:]]*:[[:space:]]*"{{ event_marker }}-queued"'
               - '{{ nisd_log_file }}'
           changed_when: false
           register: callback
@@ -508,6 +432,19 @@
           retries: '{{ async_event_timeout_retries }}'
           delay: '{{ async_event_poll_delay }}'
 
+        - name: '{{ recipe_name }}: Verify the fresh TEST callback ran in the recovery log.'
+          ansible.builtin.command:
+            argv:
+              - grep
+              - -Eq
+              - 'dispatched TEST event .*"marker"[[:space:]]*:[[:space:]]*"{{ event_marker }}-fresh"'
+              - '{{ nisd_log_file }}'
+          changed_when: false
+          register: callback
+          until: callback.rc == 0
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+
         - name: '{{ recipe_name }}: Wait through several healthy heartbeats.'
           ansible.builtin.pause:
             seconds: '{{ post_restart_error_watch_seconds }}'
@@ -530,17 +467,19 @@
             terminate_recipe: true
 
       always:
-        - name: '{{ recipe_name }}: Stop the recorded NISD and wait for exit.'
+        - name: '{{ recipe_name }}: Validate the recorded NISD PID.'
+          ansible.builtin.assert:
+            that: active_pid | int > 1
+
+        - name: '{{ recipe_name }}: Stop the recorded NISD.'
           ansible.builtin.command:
-            argv:
-              - python3
-              - -c
-              - '{{ stop_recorded_nisd_script }}'
-              - '{{ active_pid }}'
-              - '{{ proc_identity.stdout }}'
-          when: active_pid | default(0) | int > 1 and not (launch_pending | default(false))
-          register: stopped
-          failed_when: false
+            argv: [kill, "-TERM", "{{ active_pid }}"]
+
+        - name: '{{ recipe_name }}: Wait for NISD to exit.'
+          ansible.builtin.wait_for:
+            path: '/proc/{{ active_pid }}'
+            state: absent
+            timeout: 30
 
         - name: '{{ recipe_name }}: Retain backing storage if stop could not be confirmed.'
           ansible.builtin.set_fact:

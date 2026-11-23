@@ -1,93 +1,93 @@
-- name: "tidb_nisd_async_event_cp_recovery.yml"
+- name: tidb_nisd_async_event_cp_recovery.yml
   hosts: localhost
   connection: local
   gather_facts: false
-  become: true
 
   vars:
-    recipe_name: "tidb_nisd_async_event_cp_recovery"
-
-    api_base_url: "http://127.0.0.1:8081"
-    cp_username: "admin"
-    cp_password: "admin"
-
+    recipe_name: tidb_nisd_async_event_cp_recovery
+    api_base_url: http://localhost:8081
+    cp_username: admin
+    cp_password: admin
     infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
-
-    # Must match the NISD in create_sample_infra.json.
-    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
-
-    nisd_device_path: "/nisd-async-event-cp-recovery.device"
-    nisd_device_size: "10G"
-
-    nisd_peer_port: "13000"
-    nisd_client_port: "13001"
-
-    nisd_secret: >-
+    nisd_uuid: 1a93c9af-5184-49b4-972b-1c94a2057e74
+    run_dir: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}"
+    nisd_peer_port: "{{ ClusterParams.srv_port }}"
+    nisd_client_port: "{{ ClusterParams.client_port }}"
+    nisd_secret: |-
       {{
         lookup('env', 'NIOVA_NISD_SECRET')
         | default('Nisd-secret', true)
       }}
-
-    lookout_uuid: ""
-
-    ncp_event_ping_key: "/ncp_event/0/ping_enabled"
-    ncp_event_sno_key: "/ncp_event/0/event_sno"
-
-    async_event_action: 250
-    async_event_add_path: "/api/test/event"
-
+    lookout_uuid: ''
+    ncp_event_ping_key: /ncp_event/ping_enabled
+    ncp_event_sno_key: /ncp_event/event_sno
+    async_event_action: 1
+    vdev_size_bytes: 8589934592
+    nisd_device_path: "{{ run_dir }}/nisd-async-event-cp-recovery.device"
     async_event_timeout_retries: 90
     async_event_poll_delay: 1
-
-    # NISD heartbeat interval is currently 10 seconds.
-    # Keep the CP blocked long enough for one heartbeat's worker retries
-    # to exhaust and for the failure to be observable.
+    heartbeat_event_limit: 100
+    tenant_uuid: ''
     cp_unavailable_seconds: 45
-
-    # Local mdsvc API endpoint blocked from the NISD host.
-    cp_host: "127.0.0.1"
-    cp_port: "8081"
-
-    # Retry/failure patterns may be adjusted if log wording changes.
-    retry_log_regex: >-
-      ENOTCONN|ETIMEDOUT|ECONNRESET|retry|Retry
-    heartbeat_failure_regex: >-
-      ESHUTDOWN|heartbeat.*fail|ping.*fail|request.*fail
-
-    event_marker: "cp-recovery-event"
 
   tasks:
     - block:
 
-        # ============================================================
-        # 1. Start CP and NISD
-        # ============================================================
         - name: "{{ recipe_name }}: Check application type."
           ansible.builtin.assert:
             that:
               - app_type == "tidb"
-            fail_msg: "This recipe must run with app_type=tidb."
+            fail_msg: This recipe must run with app_type=tidb.
 
-        - name: "{{ recipe_name }}: Start mdsvc-tidb."
+        - name: "{{ recipe_name }}: Validate outage duration."
+          ansible.builtin.assert:
+            that:
+              - cp_unavailable_seconds | int >= 30
+              - cp_unavailable_seconds | int <= 60
+
+        - name: "{{ recipe_name }}: Save harness configuration."
           ansible.builtin.set_fact:
-            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+            cp_recovery_original_params: "{{ ClusterParams }}"
+            cp_recovery_setup_attempted: false
+            cp_restart_needed: false
+
+        - name: "{{ recipe_name }}: Select tracked playground CP setup."
+          ansible.builtin.set_fact:
+            ClusterParams: "{{ ClusterParams | combine({'tidb_backend': 'playground', 'api_base_url': api_base_url})\
+              \ }}"
+
+        - name: "{{ recipe_name }}: Mark CP setup attempted."
+          ansible.builtin.set_fact:
+            cp_recovery_setup_attempted: true
+
+        - name: "{{ recipe_name }}: Start CP and TiDB."
+          ansible.builtin.set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
+
+        - name: "{{ recipe_name }}: Require the tracked CP process."
+          ansible.builtin.assert:
+            that:
+              - setup_status.server_pid is defined
+              - setup_status.server_pid | int > 1
+            fail_msg: playground_setup must return the mdsvc server_pid.
 
         - name: "{{ recipe_name }}: Wait for Control Plane."
-          become: false
           ansible.builtin.uri:
             url: "{{ api_base_url }}/swagger/"
             method: GET
-            status_code: [200, 301, 302]
+            status_code:
+              - 200
+              - 301
+              - 302
             timeout: 10
           register: api_health
           retries: 90
           delay: 2
           until: api_health.status in [200, 301, 302]
 
-        - name: "{{ recipe_name }}: Login."
-          become: false
+        - name: "{{ recipe_name }}: Login to Control Plane."
           ansible.builtin.set_fact:
-            login_result: >-
+            login_result: |-
               {{
                 lookup(
                   'tidb_api',
@@ -99,9 +99,8 @@
               }}
 
         - name: "{{ recipe_name }}: Create infrastructure."
-          become: false
           ansible.builtin.set_fact:
-            infra_result: >-
+            infra_result: |-
               {{
                 lookup(
                   'tidb_api',
@@ -112,356 +111,339 @@
                 )
               }}
 
-        - name: "{{ recipe_name }}: Create fresh NISD backing file."
-          ansible.builtin.command:
-            argv:
-              - truncate
-              - -s
-              - "{{ nisd_device_size }}"
-              - "{{ nisd_device_path }}"
-          changed_when: true
+        - name: "{{ recipe_name }}: Create NISD device file."
+          vars:
+            img_dir: "{{ nisd_device_path }}"
+            bs: 64M
+            count: 160
+          debug:
+            msg:
+              - "{{ lookup('helper', 'create_dd_file', img_dir, bs, count) }}"
+          register: nisd_dev_path
 
-        - name: "{{ recipe_name }}: Initialize NISD backing storage."
-          become: false
+        - name: "{{ recipe_name }}: Initialize NISD using niova-block-ctl."
           vars:
             input_param:
-              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_device_path: "{{ nisd_dev_path.msg[0] }}"
               nisd_uuid: "{{ nisd_uuid }}"
+          debug:
+            msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
+
+        - name: "{{ recipe_name }}: Start NISD with async-event handler."
+          vars:
+            input_param: "{{ {'nisd_device_path': nisd_dev_path.msg[0], 'nisd_uuid': nisd_uuid, 'peer_port': nisd_peer_port,\
+              \ 'client_port': nisd_client_port, 'enable_auth': 1, 'enable_cp_event_handler': 1, 'nisd_secret': nisd_secret}\
+              \ | combine({'cp_cluster_uuid': tenant_uuid} if tenant_uuid | length > 0 else {}) }}"
           ansible.builtin.debug:
-            msg: >-
+            msg: |-
               {{
-                lookup(
-                  'nisd_handler',
-                  'run-niova-block-ctl',
-                  input_param
-                )
+                lookup('nisd_handler','run_nisd',input_param)
               }}
 
-        - name: "{{ recipe_name }}: Start NISD with async-event handling."
-          become: false
-          vars:
-            input_param:
-              nisd_device_path: "{{ nisd_device_path }}"
-              nisd_uuid: "{{ nisd_uuid }}"
-              peer_port: "{{ nisd_peer_port }}"
-              client_port: "{{ nisd_client_port }}"
-              enable_auth: 1
-              enable_cp_event_handler: 1
-              nisd_secret: "{{ nisd_secret }}"
-          ansible.builtin.debug:
-            msg: >-
-              {{
-                lookup(
-                  'nisd_handler',
-                  'run_nisd',
-                  input_param
-                )
-              }}
+        - name: "{{ recipe_name }}: Wait for NISD registration."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/resource?type=nisd"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+          register: nisd_resources
+          retries: 30
+          delay: 2
+          until: nisd_uuid in (nisd_resources.content | default(''))
+          no_log: true
 
-        # ============================================================
-        # 2. Verify normal heartbeat path is enabled
-        # ============================================================
-        - name: "{{ recipe_name }}: Wait for ping_enabled=true."
-          become: false
+        - name: "{{ recipe_name }}: Wait for async-event ping to become enabled."
           vars:
-            stage: "wait_for_ping"
+            stage: wait_for_async_event_ping
+            ping_state: |-
+              {{
+                lookup('niova_ctlrequest','lookup', nisd_uuid, ncp_event_ping_key, 'nisd', lookout_uuid)
+              }}
           ansible.builtin.debug:
-            msg: "Waiting for async-event heartbeat"
+            msg: "ncp_event ping state: {{ ping_state }}"
+          register: ping_enabled_result
           retries: "{{ async_event_timeout_retries }}"
           delay: "{{ async_event_poll_delay }}"
-          until: >-
+          until: |-
             (
-              lookup(
-                'niova_ctlrequest',
-                'lookup',
-                nisd_uuid,
-                ncp_event_ping_key,
-                'nisd',
-                lookout_uuid
-              )['/0/ping_enabled']
-              | string
-              | lower
+              lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_ping_key,'nisd',lookout_uuid)['/ncp_event/ping_enabled']
+              | string | lower
             ) in ['1', 'true']
 
-        - name: "{{ recipe_name }}: Read initial event_sno."
-          become: false
+        - name: "{{ recipe_name }}: Read the recorded NISD process through nisd_handler."
+          ansible.builtin.set_fact:
+            nisd_process_info: "{{ lookup('nisd_handler', 'get_nisd_process', {'nisd_uuid': nisd_uuid}) }}"
+
+        - name: "{{ recipe_name }}: Save the recorded NISD process identity."
+          ansible.builtin.set_fact:
+            nisd_identity: "{{ nisd_process_info.identity }}"
+
+        - name: "{{ recipe_name }}: Create the VDEV to delete."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/vdev"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            body_format: json
+            body:
+              size_bytes: "{{ vdev_size_bytes | int }}"
+              data_blk_cnt: 1
+              parity_blk_cnt: 0
+              redundancy: 0
+            status_code: 200
+            return_content: true
+            timeout: 30
+          register: vdev_result
+          no_log: true
+
+        - name: "{{ recipe_name }}: Require successful VDEV creation."
+          ansible.builtin.assert:
+            that:
+              - vdev_result.json.status == 0
+              - vdev_result.json.payload.chunk_cnt == 1
+            fail_msg: "VDEV creation failed: {{ vdev_result }}"
+
+        - name: "{{ recipe_name }}: Save the created VDEV identity."
+          ansible.builtin.set_fact:
+            vdev_uuid: "{{ vdev_result.json.payload.vdev_id }}"
+
+        - name: "{{ recipe_name }}: Validate the VDEV identity before deletion."
+          ansible.builtin.assert:
+            that:
+              - vdev_uuid is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+              - nisd_uuid is match('^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$')
+
+        - name: "{{ recipe_name }}: Wait for VDEV chunk allocation."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/chunks?vdev_id={{ vdev_uuid }}&limit=2"
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+            timeout: 10
+          register: chunks_result
+          retries: 60
+          delay: 2
+          until: chunks_result.json.status == 0 and (chunks_result.json.payload.chunks | length) == 1
+          no_log: true
+
+        - name: "{{ recipe_name }}: Save placement before deleting metadata."
+          ansible.builtin.set_fact:
+            vdev_chunks: "{{ chunks_result.json.payload.chunks }}"
+
+        - name: "{{ recipe_name }}: Require placement only on the test NISD."
+          ansible.builtin.assert:
+            that:
+              - vdev_chunks[0].nisd_ids == [nisd_uuid]
+              - vdev_chunks[0].chunk_idx is defined
+            fail_msg: "Expected one chunk on the running test NISD: {{ vdev_chunks }}"
+
+        - name: "{{ recipe_name }}: Check the initial CP event queue."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            body_format: json
+            body:
+              EntityID: "{{ nisd_uuid }}"
+              TenantUUID: "{{ tenant_uuid }}"
+              AckEventSerialNo: 0
+              EventLimit: "{{ heartbeat_event_limit | int }}"
+            status_code: 200
+            return_content: true
+            timeout: 10
+          register: initial_heartbeat
+          no_log: true
+
+        - name: "{{ recipe_name }}: Require a clean, authenticated tenant event queue."
+          ansible.builtin.assert:
+            that:
+              - initial_heartbeat.json.status == 0
+              - initial_heartbeat.json.payload.events == []
+            fail_msg: Expected successful service authentication and an empty event queue.
+
+        - name: "{{ recipe_name }}: Read the actual baseline NISD serial."
           vars:
-            stage: "initial_event_sno"
-            initial_state: >-
-              {{
-                lookup(
-                  'niova_ctlrequest',
-                  'lookup',
-                  nisd_uuid,
-                  ncp_event_sno_key,
-                  'nisd',
-                  lookout_uuid
-                )
-              }}
+            stage: cp_recovery_initial_serial
           ansible.builtin.set_fact:
-            initial_event_sno: "{{ initial_state['/0/event_sno'] | int }}"
+            initial_event_sno: "{{ lookup('niova_ctlrequest', 'lookup', nisd_uuid, ncp_event_sno_key, 'nisd', lookout_uuid)[ncp_event_sno_key]\
+              \ | int }}"
 
-        - name: "{{ recipe_name }}: Set expected event_sno."
+        - name: "{{ recipe_name }}: Require fresh event state."
+          ansible.builtin.assert:
+            that:
+              - initial_event_sno | int == 0
+
+        - name: "{{ recipe_name }}: Pause only the recorded test NISD before deletion."
           ansible.builtin.set_fact:
-            expected_event_sno: "{{ (initial_event_sno | int) + 1 }}"
+            nisd_control_result: "{{ lookup('nisd_handler', 'pause_nisd', {'nisd_uuid': nisd_uuid, 'expected_identity':\
+              \ nisd_identity}) }}"
 
-        # ============================================================
-        # 3. Queue an event while CP is healthy
-        # ============================================================
-        #
-        # Queue before breaking connectivity so the CP has pending work
-        # available throughout the outage.
-        #
-        - name: "{{ recipe_name }}: Add one pending TEST event."
-          become: false
+        - name: "{{ recipe_name }}: Confirm NISD is paused."
+          vars:
+            nisd_state: "{{ lookup('nisd_handler', 'nisd_process_status', {'nisd_uuid': nisd_uuid, 'expected_identity':\
+              \ nisd_identity}) }}"
+          ansible.builtin.assert:
+            that:
+              - nisd_state.stopped
+            fail_msg: The original NISD did not remain in the expected process state.
+
+        - name: "{{ recipe_name }}: Delete the VDEV through the production API."
           ansible.builtin.set_fact:
-            add_event_result: >-
-              {{
-                lookup(
-                  'tidb_api',
-                  'custom_request',
-                  async_event_add_path,
-                  method='POST',
-                  base_url=api_base_url,
-                  token=login_result.access_token,
-                  body={
-                    'EntityID': nisd_uuid,
-                    'Action': async_event_action,
-                    'Params': {
-                      'marker': event_marker
-                    }
-                  }
-                )
-              }}
+            delete_vdev_result: |-
+              {{ lookup('tidb_api', 'custom_request', '/api/vdev/' ~ vdev_uuid,
+                        method='DELETE', base_url=api_base_url,
+                        token=login_result.access_token) }}
 
-        # ============================================================
-        # 4. Make CP unreachable
-        # ============================================================
-        #
-        # REJECT is preferred over DROP here so the client receives a
-        # connection error quickly and exercises the retry path.
-        #
-        - name: "{{ recipe_name }}: Block NISD access to CP."
-          ansible.builtin.command:
-            argv:
-              - iptables
-              - -I
-              - OUTPUT
-              - "1"
-              - -p
-              - tcp
-              - -d
-              - "{{ cp_host }}"
-              - --dport
-              - "{{ cp_port }}"
-              - -j
-              - REJECT
-              - --reject-with
-              - tcp-reset
-          changed_when: true
+        - name: "{{ recipe_name }}: Require successful deletion acceptance."
+          ansible.builtin.assert:
+            that:
+              - delete_vdev_result.data.status == 0
+            fail_msg: "VDEV deletion was rejected: {{ delete_vdev_result }}"
 
-        - name: "{{ recipe_name }}: Mark CP block active."
+        - name: "{{ recipe_name }}: Poll CP heartbeat for the generated VDEV deletion event."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            body_format: json
+            body:
+              EntityID: "{{ nisd_uuid }}"
+              TenantUUID: "{{ tenant_uuid }}"
+              AckEventSerialNo: 0
+              EventLimit: "{{ heartbeat_event_limit | int }}"
+            status_code: 200
+            return_content: true
+            timeout: 10
+          register: deletion_heartbeat
+          no_log: true
+          retries: 180
+          delay: 2
+          until: deletion_heartbeat.json.status == 0 and (deletion_heartbeat.json.payload.events | selectattr('Action',
+            'equalto', async_event_action | int) | selectattr('Params.vdev_id', 'equalto', vdev_uuid) | list | length)
+            > 0
+
+        - name: "{{ recipe_name }}: Require exactly the expected single-NISD deletion event."
+          ansible.builtin.assert:
+            that:
+              - deletion_heartbeat.json.payload.events | length == 1
+              - deletion_heartbeat.json.payload.events[0].Action | int == async_event_action | int
+              - deletion_heartbeat.json.payload.events[0].Params.vdev_id == vdev_uuid
+              - (deletion_heartbeat.json.payload.events[0].Params.chunks | sort) == (vdev_chunks | map(attribute='chunk_idx')
+                | list | sort)
+              - deletion_heartbeat.json.payload.events[0].EventSerialNo is string
+              - deletion_heartbeat.json.payload.events[0].EventSerialNo is match('^[0-9]+$')
+              - deletion_heartbeat.json.payload.events[0].EventSerialNo | int > 0
+
+        - name: "{{ recipe_name }}: Save the CP-assigned event serial."
           ansible.builtin.set_fact:
-            cp_block_active: true
+            expected_event_sno: "{{ deletion_heartbeat.json.payload.events[0].EventSerialNo | int }}"
 
-        # ============================================================
-        # 5. Verify worker retry behavior
-        # ============================================================
-        - name: "{{ recipe_name }}: Resolve NISD log path."
+        - name: "{{ recipe_name }}: Mark CP crash phase for failure recovery."
           ansible.builtin.set_fact:
-            nisd_log_file: >-
-              {{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/nisd_{{ nisd_uuid }}.log
+            cp_restart_needed: true
 
-        - name: "{{ recipe_name }}: Record log line count before outage."
-          ansible.builtin.shell: |
-            if [ -f "{{ nisd_log_file }}" ]; then
-              wc -l < "{{ nisd_log_file }}"
-            else
-              echo 0
-            fi
-          args:
-            executable: /bin/bash
-          register: log_start_line
+        - name: "{{ recipe_name }}: Kill only the recorded CP process group."
+          ansible.builtin.set_fact:
+            cp_kill_result: "{{ lookup('tidb_setup', 'cp_kill') }}"
+
+        - name: "{{ recipe_name }}: Resume the same NISD while CP is unavailable."
+          ansible.builtin.set_fact:
+            nisd_control_result: "{{ lookup('nisd_handler', 'resume_nisd', {'nisd_uuid': nisd_uuid, 'expected_identity':\
+              \ nisd_identity}) }}"
+
+        - name: "{{ recipe_name }}: Verify CP is unreachable after the crash."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            timeout: 3
+            return_content: true
+          register: outage_health
+          failed_when: false
           changed_when: false
 
-        - name: "{{ recipe_name }}: Keep CP unavailable through retry exhaustion."
+        - name: "{{ recipe_name }}: Require an actual unavailable CP endpoint."
+          ansible.builtin.assert:
+            that:
+              - outage_health.status | default(0) | int == -1
+            fail_msg: CP must be unavailable; an HTTP response means the wrong process/endpoint was selected.
+
+        - name: "{{ recipe_name }}: Keep CP unavailable across multiple heartbeat intervals."
           ansible.builtin.pause:
             seconds: "{{ cp_unavailable_seconds }}"
 
-        - name: "{{ recipe_name }}: Read outage log section."
-          ansible.builtin.shell: |
-            start=$(( {{ log_start_line.stdout | int }} + 1 ))
-            if [ -f "{{ nisd_log_file }}" ]; then
-              sed -n "${start},\$p" "{{ nisd_log_file }}"
-            fi
-          args:
-            executable: /bin/bash
-          register: outage_log
-          changed_when: false
-
-        - name: "{{ recipe_name }}: Verify supported connection retry was observed."
-          ansible.builtin.assert:
-            that:
-              - outage_log.stdout is regex(retry_log_regex)
-            fail_msg: >-
-              No connection retry evidence found in NISD log after CP became
-              unreachable. Outage log={{ outage_log.stdout }}
-            success_msg: "NISD worker retry behavior was observed."
-
-        - name: "{{ recipe_name }}: Verify heartbeat eventually failed."
-          ansible.builtin.assert:
-            that:
-              - outage_log.stdout is regex(heartbeat_failure_regex)
-            fail_msg: >-
-              Retry exhaustion / heartbeat failure was not observed.
-              Outage log={{ outage_log.stdout }}
-            success_msg: "Heartbeat failure after retry exhaustion was observed."
-
-        # ============================================================
-        # 6. Verify event_sno did not advance during outage
-        # ============================================================
-        - name: "{{ recipe_name }}: Read event_sno while CP is unavailable."
-          become: false
+        - name: "{{ recipe_name }}: Verify the original NISD remains alive and runnable."
           vars:
-            stage: "event_sno_during_outage"
-            outage_state: >-
-              {{
-                lookup(
-                  'niova_ctlrequest',
-                  'lookup',
-                  nisd_uuid,
-                  ncp_event_sno_key,
-                  'nisd',
-                  lookout_uuid
-                )
-              }}
-          ansible.builtin.set_fact:
-            event_sno_during_outage: "{{ outage_state['/0/event_sno'] | int }}"
+            nisd_state: "{{ lookup('nisd_handler', 'nisd_process_status', {'nisd_uuid': nisd_uuid, 'expected_identity':\
+              \ nisd_identity}) }}"
+          ansible.builtin.assert:
+            that:
+              - nisd_state.running
+            fail_msg: The original NISD did not remain in the expected process state.
 
-        - name: "{{ recipe_name }}: Verify event_sno is unchanged."
+        - name: "{{ recipe_name }}: Read NISD serial during the outage."
+          vars:
+            stage: cp_recovery_outage_serial
+          ansible.builtin.set_fact:
+            event_sno_during_outage: "{{ lookup('niova_ctlrequest', 'lookup', nisd_uuid, ncp_event_sno_key, 'nisd', lookout_uuid)[ncp_event_sno_key]\
+              \ | int }}"
+
+        - name: "{{ recipe_name }}: Require no event progress while CP is unavailable."
           ansible.builtin.assert:
             that:
               - event_sno_during_outage | int == initial_event_sno | int
-            fail_msg: >-
-              event_sno changed while CP was unreachable.
-              Initial={{ initial_event_sno }},
-              during outage={{ event_sno_during_outage }}.
-            success_msg: >-
-              event_sno remained {{ event_sno_during_outage }} while CP was unavailable.
 
-        # ============================================================
-        # 7. Verify async-event handling was NOT permanently disabled
-        # ============================================================
-        - name: "{{ recipe_name }}: Verify ping_enabled stayed true."
-          become: false
+        - name: "{{ recipe_name }}: Verify event handling remains enabled during the outage."
           vars:
-            stage: "ping_state_during_outage"
-            ping_state_during_outage: >-
-              {{
-                lookup(
-                  'niova_ctlrequest',
-                  'lookup',
-                  nisd_uuid,
-                  ncp_event_ping_key,
-                  'nisd',
-                  lookout_uuid
-                )
-              }}
+            stage: cp_recovery_outage_ping
           ansible.builtin.assert:
             that:
-              - >-
-                (
-                  ping_state_during_outage['/0/ping_enabled']
-                  | string
-                  | lower
-                ) in ['1', 'true']
-            fail_msg: >-
-              Async-event pings were permanently disabled by a temporary
-              Control Plane failure.
-            success_msg: "ping_enabled remained true during the temporary outage."
+              - (lookup('niova_ctlrequest', 'lookup', nisd_uuid, ncp_event_ping_key, 'nisd', lookout_uuid)[ncp_event_ping_key]
+                | string | lower) in ['1', 'true']
 
-        # ============================================================
-        # 8. Restore CP connectivity
-        # ============================================================
-        - name: "{{ recipe_name }}: Restore NISD access to CP."
-          ansible.builtin.command:
-            argv:
-              - iptables
-              - -D
-              - OUTPUT
-              - -p
-              - tcp
-              - -d
-              - "{{ cp_host }}"
-              - --dport
-              - "{{ cp_port }}"
-              - -j
-              - REJECT
-              - --reject-with
-              - tcp-reset
-          changed_when: true
-
-        - name: "{{ recipe_name }}: Mark CP block inactive."
+        - name: "{{ recipe_name }}: Restart CP against the same TiDB with the saved configuration."
           ansible.builtin.set_fact:
-            cp_block_active: false
+            cp_restart_result: "{{ lookup('tidb_setup', 'cp_start') }}"
 
-        - name: "{{ recipe_name }}: Verify CP is reachable again."
-          become: false
+        - name: "{{ recipe_name }}: Mark CP restart complete."
+          ansible.builtin.set_fact:
+            cp_restart_needed: false
+
+        - name: "{{ recipe_name }}: Wait for Control Plane."
           ansible.builtin.uri:
             url: "{{ api_base_url }}/swagger/"
             method: GET
-            status_code: [200, 301, 302]
+            status_code:
+              - 200
+              - 301
+              - 302
             timeout: 10
-          register: restored_api_health
-          retries: 30
-          delay: 1
-          until: restored_api_health.status in [200, 301, 302]
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
 
-        # ============================================================
-        # 9. Verify same ACK state is preserved
-        # ============================================================
-        #
-        # event_sno is the durable value NISD sends as AckEventSerialNo.
-        # Since it did not move during the outage, the next heartbeat is
-        # sent with the same acknowledgement.
-        #
-        - name: "{{ recipe_name }}: Verify ACK state remained unchanged."
-          ansible.builtin.assert:
-            that:
-              - event_sno_during_outage | int == initial_event_sno | int
-            success_msg: >-
-              NISD retained AckEventSerialNo={{ initial_event_sno }}
-              across the Control Plane outage.
-
-        # ============================================================
-        # 10. Verify pending event is received and processed
-        # ============================================================
-        - name: "{{ recipe_name }}: Wait for pending event after CP recovery."
-          become: false
+        - name: "{{ recipe_name }}: Wait until NISD processes the event."
           vars:
-            stage: "wait_for_event_after_recovery"
+            stage: wait_for_event_sno
           ansible.builtin.debug:
             msg: "Waiting for event_sno={{ expected_event_sno }}"
+          register: event_wait_result
           retries: "{{ async_event_timeout_retries }}"
           delay: "{{ async_event_poll_delay }}"
-          until: >-
+          until: |-
             (
-              lookup(
-                'niova_ctlrequest',
-                'lookup',
-                nisd_uuid,
-                ncp_event_sno_key,
-                'nisd',
-                lookout_uuid
-              )['/0/event_sno']
+              lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_sno_key,'nisd',lookout_uuid)['/ncp_event/event_sno']
               | int
             ) >= (expected_event_sno | int)
 
         - name: "{{ recipe_name }}: Read final event_sno."
-          become: false
           vars:
-            stage: "final_event_sno"
-            final_state: >-
+            stage: get_final_event_sno
+            final_event_state: |-
               {{
                 lookup(
                   'niova_ctlrequest',
@@ -473,110 +455,97 @@
                 )
               }}
           ansible.builtin.set_fact:
-            final_event_sno: "{{ final_state['/0/event_sno'] | int }}"
+            final_event_sno: "{{ final_event_state['/ncp_event/event_sno'] | int }}"
 
-        - name: "{{ recipe_name }}: Verify exactly one queued event was processed."
+        - name: "{{ recipe_name }}: Verify event_sno reached the deletion event."
           ansible.builtin.assert:
             that:
               - final_event_sno | int == expected_event_sno | int
-            fail_msg: >-
-              Expected event_sno={{ expected_event_sno }} after CP recovery,
-              got {{ final_event_sno }}.
-            success_msg: >-
-              Pending event was processed after recovery and event_sno advanced
-              from {{ initial_event_sno }} to {{ final_event_sno }}.
+            fail_msg: "Expected event_sno={{ expected_event_sno }}, but NISD reported event_sno={{ final_event_sno }}."
+            success_msg: "NISD processed the event and advanced event_sno from {{ initial_event_sno }} to {{ final_event_sno\
+              \ }}."
 
-        # ============================================================
-        # 11. Verify callback occurred after connectivity recovery
-        # ============================================================
-        - name: "{{ recipe_name }}: Verify recovered event callback."
-          ansible.builtin.shell: |
-            set -o pipefail
-            grep -q "{{ event_marker }}" "{{ nisd_log_file }}"
-          args:
-            executable: /bin/bash
-          register: recovered_callback
-          retries: 30
-          delay: 1
-          until: recovered_callback.rc == 0
-          changed_when: false
-
-        # ============================================================
-        # 12. Verify async-event path remains active after recovery
-        # ============================================================
-        - name: "{{ recipe_name }}: Verify ping_enabled after recovery."
-          become: false
+        - name: "{{ recipe_name }}: Verify recovery used the original NISD process."
           vars:
-            stage: "ping_state_after_recovery"
-            ping_state_after_recovery: >-
-              {{
-                lookup(
-                  'niova_ctlrequest',
-                  'lookup',
-                  nisd_uuid,
-                  ncp_event_ping_key,
-                  'nisd',
-                  lookout_uuid
-                )
-              }}
+            nisd_state: "{{ lookup('nisd_handler', 'nisd_process_status', {'nisd_uuid': nisd_uuid, 'expected_identity':\
+              \ nisd_identity}) }}"
           ansible.builtin.assert:
             that:
-              - >-
-                (
-                  ping_state_after_recovery['/0/ping_enabled']
-                  | string
-                  | lower
-                ) in ['1', 'true']
-            fail_msg: "Async-event pings did not recover after CP connectivity returned."
-            success_msg: "Async-event heartbeat path recovered successfully."
+              - nisd_state.running
+            fail_msg: The original NISD did not remain in the expected process state.
 
-        # ============================================================
-        # Result
-        # ============================================================
-        - name: "{{ recipe_name }}: Test passed."
+        - name: "{{ recipe_name }}: Verify CP filters the event using the observed durable NISD serial."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            body_format: json
+            body:
+              EntityID: "{{ nisd_uuid }}"
+              TenantUUID: "{{ tenant_uuid }}"
+              AckEventSerialNo: "{{ final_event_sno | int }}"
+              EventLimit: "{{ heartbeat_event_limit | int }}"
+            status_code: 200
+            return_content: true
+            timeout: 10
+          register: ack_heartbeat
+          no_log: true
+
+        - name: "{{ recipe_name }}: Require a successful heartbeat with no pending events."
+          ansible.builtin.assert:
+            that:
+              - ack_heartbeat.json.status == 0
+              - ack_heartbeat.json.payload.events == []
+            fail_msg: CP did not accept the observed serial or returned unexpected pending work.
+
+        - name: "{{ recipe_name }}: Report verified CP recovery."
           ansible.builtin.debug:
             msg:
-              - "CP temporary-unavailability recovery test passed."
-              - "Initial event_sno={{ initial_event_sno }}"
-              - "event_sno during outage={{ event_sno_during_outage }}"
-              - "Final event_sno={{ final_event_sno }}"
-              - "Worker retry observed=true"
-              - "Heartbeat failure after retry exhaustion observed=true"
-              - "AckEventSerialNo remained {{ initial_event_sno }} during outage"
-              - "Pending event processed after CP recovery"
-              - "ping_enabled remained active"
+              - CP was killed with SIGKILL; TiDB and the original NISD remained running during the outage.
+              - The queued DeleteVdev event did not advance event_sno during the outage.
+              - "Without a NISD restart, event_sno advanced to {{ final_event_sno }} after a new CP process started."
+              - CP filtered pending events using the durable serial supplied by the recipe.
+              - Retry count/exhaustion, NISD-originated ACK receipt, soft-reaping, and physical chunk reclamation are
+                not asserted.
+
+      rescue:
+
+        - name: "{{ recipe_name }}: Mark recipe failed for Holon post_run cleanup."
+          ansible.builtin.set_fact:
+            terminate_recipe: true
 
       always:
-        # Remove firewall rule even if the test fails midway.
-        - name: "{{ recipe_name }}: Ensure CP firewall block is removed."
-          ansible.builtin.shell: |
-            while iptables -C OUTPUT \
-              -p tcp \
-              -d "{{ cp_host }}" \
-              --dport "{{ cp_port }}" \
-              -j REJECT \
-              --reject-with tcp-reset 2>/dev/null; do
+        - when: nisd_identity is defined
+          block:
+            - name: "{{ recipe_name }}: Ensure NISD is resumed during cleanup."
+              ansible.builtin.set_fact:
+                nisd_control_result: "{{ lookup('nisd_handler', 'resume_nisd', {'nisd_uuid': nisd_uuid, 'expected_identity':\
+                  \ nisd_identity}) }}"
+          rescue:
+            - name: "{{ recipe_name }}: Record process restoration failure."
+              ansible.builtin.set_fact:
+                terminate_recipe: true
+        - when: cp_restart_needed | default(false) | bool
+          block:
+            - name: "{{ recipe_name }}: Restore CP after an interrupted crash test."
+              ansible.builtin.set_fact:
+                cp_cleanup_restart: "{{ lookup('tidb_setup', 'cp_start') }}"
+          rescue:
+            - name: "{{ recipe_name }}: Record CP restoration failure."
+              ansible.builtin.set_fact:
+                terminate_recipe: true
+        - when: cp_recovery_setup_attempted | default(false) | bool
+          block:
+            - name: "{{ recipe_name }}: Tear down the tracked playground."
+              ansible.builtin.debug:
+                msg: "{{ lookup('tidb_setup', 'playground_teardown') }}"
+          rescue:
+            - name: "{{ recipe_name }}: Record teardown failure."
+              ansible.builtin.set_fact:
+                terminate_recipe: true
 
-              iptables -D OUTPUT \
-                -p tcp \
-                -d "{{ cp_host }}" \
-                --dport "{{ cp_port }}" \
-                -j REJECT \
-                --reject-with tcp-reset
-            done
-          args:
-            executable: /bin/bash
-          changed_when: false
-          ignore_errors: true
-
-        - name: "{{ recipe_name }}: Remove test backing file."
-          ansible.builtin.file:
-            path: "{{ nisd_device_path }}"
-            state: absent
-          ignore_errors: true
-
-        - name: "{{ recipe_name }}: Tear down mdsvc-tidb."
-          become: false
-          ansible.builtin.debug:
-            msg: "{{ lookup('tidb_setup', 'docker_teardown') }}"
-          ignore_errors: true
+        - name: "{{ recipe_name }}: Restore original harness configuration."
+          ansible.builtin.set_fact:
+            ClusterParams: "{{ cp_recovery_original_params }}"
+          when: cp_recovery_original_params is defined
