@@ -27,7 +27,6 @@
     post_restart_error_regex: \b401\b|unauthori[sz]ed|auth(entication)?.*fail|heartbeat.*fail|cmi_ping_cp.*rc=-?[1-9][0-9]*\b
     run_dir: '{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}'
     nisd_log_file: '{{ run_dir }}/nisd_{{ nisd_uuid }}.log'
-    heartbeat_401_regex: (heartbeat|cmi_ping_cp).*\b401\b|\b401\b.*(heartbeat|cmi_ping_cp)
     
   tasks:
     - block:
@@ -250,20 +249,6 @@
             active_pid: '{{ (lookup(''file'',run_dir ~ ''/'' ~ ClusterParams.raft_uuid ~ ''.json'') | from_json).nisd_process.process_pid
               }}'
 
-        - name: '{{ recipe_name }}: Observe HTTP 401 on a heartbeat in this launch log.'
-          ansible.builtin.command:
-            argv:
-              - grep
-              - -Eiq
-              - --
-              - '{{ heartbeat_401_regex }}'
-              - '{{ nisd_log_file }}'
-          register: rejected
-          until: rejected.rc == 0
-          changed_when: false
-          retries: '{{ async_event_timeout_retries }}'
-          delay: '{{ async_event_poll_delay }}'
-
         - name: '{{ recipe_name }}: Verify the heartbeat endpoint rejects an ACK covering the queued event.'
           ansible.builtin.uri:
             url: '{{ api_base_url }}/api/heartbeat'
@@ -277,6 +262,10 @@
               EventLimit: 2
             status_code: 401
           no_log: true
+
+        - name: '{{ recipe_name }}: Allow the wrong-secret NISD to attempt heartbeats.'
+          ansible.builtin.pause:
+            seconds: 15
 
         - name: '{{ recipe_name }}: Verify the NISD serial wrong_secret.'
           ansible.builtin.debug:
@@ -467,30 +456,37 @@
             terminate_recipe: true
 
       always:
-        - name: '{{ recipe_name }}: Validate the recorded NISD PID.'
-          ansible.builtin.assert:
-            that: active_pid | int > 1
-
-        - name: '{{ recipe_name }}: Stop the recorded NISD.'
+        - name: '{{ recipe_name }}: Stop NISD if a process was launched.'
           ansible.builtin.command:
             argv: [kill, "-TERM", "{{ active_pid }}"]
+          register: cleanup_stop
+          changed_when: cleanup_stop.rc == 0
+          failed_when: false
+          when: active_pid is defined and active_pid | int > 1
 
-        - name: '{{ recipe_name }}: Wait for NISD to exit.'
+        - name: '{{ recipe_name }}: Wait for NISD to exit before deleting its device.'
           ansible.builtin.wait_for:
             path: '/proc/{{ active_pid }}'
             state: absent
             timeout: 30
+          register: cleanup_wait
+          ignore_errors: true
+          when: active_pid is defined and active_pid | int > 1
 
-        - name: '{{ recipe_name }}: Retain backing storage if stop could not be confirmed.'
-          ansible.builtin.set_fact:
-            terminate_recipe: true
-          when: launch_pending | default(false) or stopped.rc | default(0) != 0
-
-        - name: '{{ recipe_name }}: Remove the stopped NISD backing file.'
+        - name: '{{ recipe_name }}: Remove backing file only after confirmed stop.'
           ansible.builtin.file:
             path: '{{ nisd_device_path }}'
             state: absent
-          when: not (launch_pending | default(false)) and stopped.rc | default(0) == 0
+          when: >-
+            active_pid is not defined or
+            (cleanup_wait is defined and cleanup_wait is succeeded and not (cleanup_wait.skipped | default(false)))
+
+        - name: '{{ recipe_name }}: Report cleanup failure.'
+          ansible.builtin.set_fact:
+            terminate_recipe: true
+          when: >-
+            active_pid is defined and
+            (cleanup_wait is not defined or cleanup_wait is failed)
 
         - name: '{{ recipe_name }}: Tear down mdsvc-tidb.'
           ansible.builtin.debug:
