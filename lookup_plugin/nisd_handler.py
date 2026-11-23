@@ -103,6 +103,12 @@ def run_nisd_command(cluster_params, input_values):
     # os.environ (niova-block-test sets 5, trace).
     if input_values.get("log_level") is not None:
         env["NIOVA_LOG_LEVEL"] = str(input_values["log_level"])
+    # shared_sock_dir: don't set NIOVA_BLOCK_SOCK_PATH, so the NISD binds
+    # /tmp/.niova/<uuid>/peer-<uuid> (the default). A NISD that rebuilds a
+    # chunk builds its source's socket path from its own NIOVA_BLOCK_SOCK_PATH,
+    # so the per-NISD path above only works for a NISD that has no peers.
+    if int(input_values.get("shared_sock_dir", 0)) == 1:
+        env.pop("NIOVA_BLOCK_SOCK_PATH", None)
 
     # expect_exit: the NISD should refuse to start. Wait up to exit_timeout
     # seconds and return its exit status instead of the process.
