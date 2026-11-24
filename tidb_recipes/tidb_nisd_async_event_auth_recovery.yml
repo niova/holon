@@ -487,37 +487,6 @@
             terminate_recipe: true
 
       always:
-        - name: '{{ recipe_name }}: Stop NISD if a process was launched.'
-          ansible.builtin.command:
-            argv: [kill, "-TERM", "{{ active_pid }}"]
-          register: cleanup_stop
-          changed_when: cleanup_stop.rc == 0
-          failed_when: false
-          when: active_pid is defined and active_pid | int > 1
-
-        - name: '{{ recipe_name }}: Wait for NISD to exit before deleting its device.'
-          ansible.builtin.wait_for:
-            path: '/proc/{{ active_pid }}'
-            state: absent
-            timeout: 30
-          register: cleanup_wait
-          ignore_errors: true
-          when: active_pid is defined and active_pid | int > 1
-
-        - name: '{{ recipe_name }}: Remove backing file only after confirmed stop.'
-          ansible.builtin.file:
-            path: '{{ nisd_device_path }}'
-            state: absent
-          when: >-
-            active_pid is not defined or
-            (cleanup_wait is defined and cleanup_wait is succeeded and not (cleanup_wait.skipped | default(false)))
-
-        - name: '{{ recipe_name }}: Report cleanup failure.'
-          ansible.builtin.set_fact:
-            terminate_recipe: true
-          when: >-
-            active_pid is defined and
-            (cleanup_wait is not defined or cleanup_wait is failed)
 
         - name: '{{ recipe_name }}: Tear down mdsvc-tidb.'
           ansible.builtin.debug:
