@@ -333,8 +333,7 @@
               - deletion_heartbeat.json.payload.events | length == 1
               - deletion_heartbeat.json.payload.events[0].Action | int == async_event_action | int
               - deletion_heartbeat.json.payload.events[0].Params.vdev_id == vdev_uuid
-              - (deletion_heartbeat.json.payload.events[0].Params.chunks | sort) == (vdev_chunks | map(attribute='chunk_idx')
-                | list | sort)
+              - (deletion_heartbeat.json.payload.events[0].Params.chunks | sort) == (vdev_chunks | map(attribute='chunk_idx') | list | sort)
               - deletion_heartbeat.json.payload.events[0].EventSerialNo is string
               - deletion_heartbeat.json.payload.events[0].EventSerialNo is match('^[0-9]+$')
               - deletion_heartbeat.json.payload.events[0].EventSerialNo | int > 0
@@ -401,8 +400,7 @@
             stage: cp_recovery_outage_ping
           ansible.builtin.assert:
             that:
-              - (lookup('niova_ctlrequest', 'lookup', nisd_uuid, ncp_event_ping_key, 'nisd', lookout_uuid)[ncp_event_ping_key]
-                | string | lower) in ['1', 'true']
+              - (lookup('niova_ctlrequest', 'lookup', nisd_uuid, ncp_event_ping_key, 'nisd', lookout_uuid)[ncp_event_ping_key] | string | lower) in ['1', 'true']
 
         - name: "{{ recipe_name }}: Restart CP against the same TiDB with the saved configuration."
           ansible.builtin.set_fact:

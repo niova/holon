@@ -249,19 +249,38 @@
             active_pid: '{{ (lookup(''file'',run_dir ~ ''/'' ~ ClusterParams.raft_uuid ~ ''.json'') | from_json).nisd_process.process_pid
               }}'
 
-        - name: '{{ recipe_name }}: Verify the heartbeat endpoint rejects an ACK covering the queued event.'
+        - name: "{{ recipe_name }}: Check heartbeat rejection with wrong secret."
           ansible.builtin.uri:
-            url: '{{ api_base_url }}/api/heartbeat'
+            url: "{{ api_base_url }}/api/heartbeat"
             method: POST
             headers:
-              Authorization: Service {{ wrong_nisd_secret }}
+              Authorization: "Service {{ wrong_nisd_secret }}"
             body_format: json
             body:
-              EntityID: '{{ nisd_uuid }}'
-              AckEventSerialNo: '{{ queued_ptr | int }}'
+              EntityID: "{{ nisd_uuid }}"
+              AckEventSerialNo: "{{ queued_ptr | int }}"
               EventLimit: 2
-            status_code: 401
+            status_code: [200, 400, 401, 403, 404, 500]
+            return_content: true
+          register: wrong_secret_response
+          failed_when: false
           no_log: true
+
+        - name: "{{ recipe_name }}: Show wrong-secret HTTP status."
+          ansible.builtin.debug:
+            msg: >-
+              Wrong-secret heartbeat returned HTTP
+              {{ wrong_secret_response.status | default('unknown') }}
+
+        - name: "{{ recipe_name }}: Require HTTP 401 for wrong secret."
+          ansible.builtin.assert:
+            that:
+              - wrong_secret_response.status | default(-1) | int == 401
+            fail_msg: >-
+              Expected HTTP 401 for wrong NISD secret,
+              got HTTP {{ wrong_secret_response.status | default('unknown') }}.
+              Error: {{ wrong_secret_response.msg | default('none') }}
+            success_msg: "Control Plane correctly rejected the wrong NISD secret."
 
         - name: '{{ recipe_name }}: Allow the wrong-secret NISD to attempt heartbeats.'
           ansible.builtin.pause:

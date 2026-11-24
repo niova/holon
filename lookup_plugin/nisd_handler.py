@@ -1063,7 +1063,6 @@ def load_recipe_op_config(cluster_params):
 
     return recipe_conf
 
-
 def nisd_process_control(cluster_params, input_values, action):
     """Operate only on this run's recorded NISD; never search host processes."""
     nisd_uuid = str(input_values["nisd_uuid"])
