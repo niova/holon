@@ -24,7 +24,7 @@
     async_event_poll_delay: 1
     event_marker: auth-recovery-test-event
     post_restart_error_watch_seconds: 35
-    post_restart_error_regex: \b401\b|unauthori[sz]ed|auth(entication)?.*fail|heartbeat.*fail|cmi_ping_cp.*rc=-?[1-9][0-9]*\b
+    post_restart_error_regex: 'unauthori[sz]ed|invalid service secret|auth(entication)?.*fail|heartbeat.*fail|cmi_ping_cp.*rc=-?[1-9][0-9]*\b'
     run_dir: '{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}'
     nisd_log_file: '{{ run_dir }}/nisd_{{ nisd_uuid }}.log'
     
@@ -357,6 +357,14 @@
                 )
               }}
           no_log: true
+
+        - name: '{{ recipe_name }}: Identify the restarted NISD.'
+          ansible.builtin.set_fact:
+            active_pid: >-
+              {{
+                (lookup('file', run_dir ~ '/' ~ ClusterParams.raft_uuid ~ '.json')
+                | from_json).nisd_process.process_pid
+              }}
 
         - name: '{{ recipe_name }}: Verify the NISD serial recovered.'
           ansible.builtin.debug:
