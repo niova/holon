@@ -7,6 +7,11 @@
     infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
     vdev_payload: "{{ playbook_dir }}/../examples/create_sample_vdev.json"
     snapshot_nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+    snapshot_enable_cp_event_handler: 0
+    snapshot_nisd_secret: >-
+      {{
+        lookup('env', 'NIOVA_NISD_SECRET') | default('Nisd-secret', true)
+      }}
     snapshot_cp_username: "admin"
     snapshot_cp_password: "admin"
     niova_block_repo: >-
@@ -131,6 +136,8 @@
           peer_port: "13000"
           client_port: "13001"
           enable_auth: 1
+          enable_cp_event_handler: "{{ snapshot_enable_cp_event_handler }}"
+          nisd_secret: "{{ snapshot_nisd_secret }}"
       ansible.builtin.debug:
         msg:
           - "{{ lookup('nisd_handler', 'run_nisd', input_param) }}"

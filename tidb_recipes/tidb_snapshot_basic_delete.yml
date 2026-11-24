@@ -1,0 +1,401 @@
+# SR-01: Basic delete, keep the newer snapshot.
+# Verify that deleting S1 removes only the target snapshot
+# and does not affect S2 or the live RW device.
+
+- import_playbook: tidb_snapshot_setup.yml
+  vars:
+    snapshot_enable_cp_event_handler: 1
+
+- name: "tidb_snapshot_basic_delete.yml"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "tidb_snapshot_basic_delete"
+
+    api_base_url: "http://localhost:8081"
+    cp_username: "admin"
+    cp_password: "admin"
+
+    holon_repo: "{{ playbook_dir }}/.."
+
+    snapshot_test_script: >-
+      {{ holon_repo }}/scripts/snapshot-basic-delete.sh
+
+    snapshot_test_helpers: >-
+      {{ holon_repo }}/scripts/snapshot_helper.sh
+
+    niova_snapshot_bin: >-
+      {{
+        (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova/niova-snapshot')
+        if lookup('env', 'NIOVA_BIN_PATH')
+        else 'niova-snapshot'
+      }}
+
+    niova_ublk_bin: >-
+      {{
+        (lookup('env', 'NIOVA_BIN_PATH') ~ '/bin/niova-ublk')
+        if lookup('env', 'NIOVA_BIN_PATH')
+        else 'niova-ublk'
+      }}
+
+    gossip_path: >-
+      {{ lookup('env', 'NIOVA_WORKSPACE') }}/mdsvc-tidb/configs/gossipNodes
+
+    snapshot_s1_name: "sr01-s1"
+    snapshot_s2_name: "sr01-s2"
+
+    lookout_uuid: ""
+    ncp_event_ping_key: "/ncp_event/ping_enabled"
+
+    snapshot_cli_env:
+      NIOVA_GOSSIP_PATH: "{{ gossip_path }}"
+      NIOVA_GOSSIP_KEY: "dummy"
+      NIOVA_BLOCK_CP_AUTH_USERNAME: "{{ cp_username }}"
+      NIOVA_BLOCK_CP_AUTH_SECRET: "{{ cp_password }}"
+      NIOVA_BLOCK_MDSVC_GET_CHUNKS_LIMIT: "256"
+      NIOVA_BLOCK_PROXY_TAG: "mdsvc-tidb"
+      NIOVA_BLOCK_UBLK_UNIFIED: "0"
+
+  tasks:
+    - block:
+
+        # ------------------------------------------------------------
+        # 1. Prepare snapshot deletion test
+        # ------------------------------------------------------------
+
+        - name: "{{ recipe_name }}: Build test log directory path."
+          ansible.builtin.set_fact:
+            snapshot_test_logdir: >-
+              {{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/snapshot-basic-delete
+
+        - name: "{{ recipe_name }}: Verify snapshot test script exists."
+          ansible.builtin.stat:
+            path: "{{ snapshot_test_script }}"
+          register: snapshot_script_stat
+
+        - name: "{{ recipe_name }}: Assert snapshot test script exists."
+          ansible.builtin.assert:
+            that:
+              - snapshot_script_stat.stat.exists
+            fail_msg: >-
+              Snapshot test script not found:
+              {{ snapshot_test_script }}
+
+        - name: "{{ recipe_name }}: Verify niova-snapshot exists."
+          ansible.builtin.stat:
+            path: "{{ niova_snapshot_bin }}"
+          register: snapshot_cli_stat
+
+        - name: "{{ recipe_name }}: Assert niova-snapshot exists."
+          ansible.builtin.assert:
+            that:
+              - snapshot_cli_stat.stat.exists
+              - snapshot_cli_stat.stat.executable
+            fail_msg: >-
+              niova-snapshot not found or not executable:
+              {{ niova_snapshot_bin }}
+
+        # ------------------------------------------------------------
+        # 2. Verify common snapshot setup results
+        # ------------------------------------------------------------
+
+        - name: "{{ recipe_name }}: Verify snapshot setup."
+          ansible.builtin.assert:
+            that:
+              - snapshot_login_result is defined
+              - snapshot_login_result.access_token is defined
+              - snapshot_login_result.access_token | length > 0
+
+              - snapshot_vdev_uuid is defined
+              - snapshot_vdev_uuid | length > 0
+
+              - snapshot_nisd_uuid is defined
+              - snapshot_nisd_uuid | length > 0
+
+              - snapshot_live_device is defined
+              - snapshot_live_device | length > 0
+
+            fail_msg: >-
+              Snapshot test setup did not provide all required values.
+
+        - name: "{{ recipe_name }}: Verify live block device."
+          ansible.builtin.stat:
+            path: "{{ snapshot_live_device }}"
+          register: live_device_stat
+
+        - name: "{{ recipe_name }}: Assert live block device is ready."
+          ansible.builtin.assert:
+            that:
+              - live_device_stat.stat.exists
+              - live_device_stat.stat.isblk | default(false)
+            fail_msg: >-
+              Live ublk device is not ready:
+              {{ snapshot_live_device }}
+
+        # ------------------------------------------------------------
+        # 3. Verify NISD heartbeat event handler is enabled
+        # ------------------------------------------------------------
+
+        - name: "{{ recipe_name }}: Wait for async-event ping to become enabled."
+          vars:
+            stage: "wait_for_async_event_ping"
+            ping_state: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  snapshot_nisd_uuid,
+                  ncp_event_ping_key,
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          ansible.builtin.debug:
+            msg: "NCP event ping state: {{ ping_state }}"
+          register: ping_enabled_result
+          retries: 45
+          delay: 1
+          until: >-
+            (
+              lookup(
+                'niova_ctlrequest',
+                'lookup',
+                snapshot_nisd_uuid,
+                ncp_event_ping_key,
+                'nisd',
+                lookout_uuid
+              )['/ncp_event/ping_enabled']
+              | string | lower
+            ) in ['1', 'true']
+
+        # ------------------------------------------------------------
+        # 4. Run snapshot deletion test
+        #
+        # The shell test verifies:
+        #   - A is written at offset 0.
+        #   - S1 is created and applied.
+        #   - B is written at offset 64 MiB.
+        #   - S2 is created and applied.
+        #   - S1 deletion by snapshot ID succeeds.
+        #   - One Action-6 event per NISD is generated.
+        #   - All deletion events are acknowledged.
+        #   - snapshot_delete_event rows are cleaned up.
+        #   - S1 lookup by ID and name returns not-found.
+        #   - S2 lookup succeeds.
+        #   - S2 and live RW device contain both A and B.
+        # ------------------------------------------------------------
+
+        - name: "{{ recipe_name }}: Run basic snapshot delete test."
+          ansible.builtin.command:
+            argv:
+              - bash
+              - "{{ snapshot_test_script }}"
+          environment: >-
+            {{
+              snapshot_cli_env | combine({
+                'VDEV_UUID': snapshot_vdev_uuid,
+                'LIVE_DEVICE': snapshot_live_device,
+                'SNAPSHOT_S1': snapshot_s1_name,
+                'SNAPSHOT_S2': snapshot_s2_name,
+                'NIOVA_SNAPSHOT': niova_snapshot_bin,
+                'NIOVA_UBLK': niova_ublk_bin,
+                'SNAPSHOT_TEST_HELPERS': snapshot_test_helpers,
+                'MDSVC_API_URL': api_base_url,
+                'INTEGRATION_ADMIN_USERNAME': cp_username,
+                'INTEGRATION_ADMIN_PASSWORD': cp_password,
+                'TEST_LOGDIR': snapshot_test_logdir,
+                'MYSQL_HOST': ClusterParams.mysql_host | default('127.0.0.1'),
+                'MYSQL_PORT': ClusterParams.mysql_port | default(4000) | string,
+                'MYSQL_USER': ClusterParams.mysql_user | default('root'),
+                'MYSQL_PWD': ClusterParams.mysql_password | default('')
+              })
+            }}
+          register: snapshot_test_result
+          failed_when: false
+
+        - name: "{{ recipe_name }}: Print snapshot test output."
+          ansible.builtin.debug:
+            var: snapshot_test_result.stdout_lines
+
+        - name: "{{ recipe_name }}: Print snapshot test errors."
+          ansible.builtin.debug:
+            var: snapshot_test_result.stderr_lines
+          when: snapshot_test_result.rc != 0
+
+        - name: "{{ recipe_name }}: Assert shell test succeeded."
+          ansible.builtin.assert:
+            that:
+              - snapshot_test_result.rc == 0
+              - "'PASS: basic snapshot delete test' in snapshot_test_result.stdout"
+            fail_msg: >-
+              Snapshot basic delete test failed.
+              Logs: {{ snapshot_test_logdir }}
+
+        # ------------------------------------------------------------
+        # 5. Retrieve snapshot IDs
+        # ------------------------------------------------------------
+
+        - name: "{{ recipe_name }}: Read snapshot IDs."
+          ansible.builtin.set_fact:
+            snapshot_s1_id: >-
+              {{
+                lookup(
+                  'file',
+                  snapshot_test_logdir ~ '/s1-id.txt'
+                ) | trim | int
+              }}
+
+            snapshot_s2_id: >-
+              {{
+                lookup(
+                  'file',
+                  snapshot_test_logdir ~ '/s2-id.txt'
+                ) | trim | int
+              }}
+
+        # ------------------------------------------------------------
+        # 6. Refresh CP access token
+        # ------------------------------------------------------------
+
+        - name: "{{ recipe_name }}: Login to Control Plane."
+          ansible.builtin.set_fact:
+            snapshot_login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username=cp_username,
+                  password=cp_password
+                )
+              }}
+          no_log: true
+
+        # ------------------------------------------------------------
+        # 7. Independently verify deleted S1 through CP
+        # ------------------------------------------------------------
+
+        - name: "{{ recipe_name }}: Lookup deleted snapshot by ID."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/snapshot?vdev_id={{ snapshot_vdev_uuid }}&snapshot_id={{ snapshot_s1_id }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ snapshot_login_result.access_token }}"
+            status_code: 404
+            return_content: true
+          register: deleted_snapshot_by_id
+          no_log: true
+
+        - name: "{{ recipe_name }}: Lookup deleted snapshot by name."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/snapshot?vdev_id={{ snapshot_vdev_uuid }}&name={{ snapshot_s1_name }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ snapshot_login_result.access_token }}"
+            status_code: 404
+            return_content: true
+          register: deleted_snapshot_by_name
+          no_log: true
+
+        - name: "{{ recipe_name }}: Verify deleted snapshot responses."
+          ansible.builtin.assert:
+            that:
+              - deleted_snapshot_by_id.status == 404
+              - deleted_snapshot_by_id.json.status | int == 300
+
+              - deleted_snapshot_by_name.status == 404
+              - deleted_snapshot_by_name.json.status | int == 300
+            fail_msg: >-
+              Deleted snapshot lookup did not return StatusNotFound.
+
+        # ------------------------------------------------------------
+        # 8. Independently verify retained S2 through tidb_api
+        # ------------------------------------------------------------
+
+        - name: "{{ recipe_name }}: Lookup retained snapshot through CP API."
+          ansible.builtin.set_fact:
+            snapshot_s2_info: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'get_snapshot',
+                  base_url=api_base_url,
+                  token=snapshot_login_result.access_token,
+                  params={
+                    'vdev_id': snapshot_vdev_uuid,
+                    'name': snapshot_s2_name
+                  }
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Verify retained snapshot state and ID."
+          ansible.builtin.assert:
+            that:
+              - snapshot_s2_info.status_code | int == 200
+              - snapshot_s2_info.state == "applied"
+              - snapshot_s2_info.snapshot_id | int == snapshot_s2_id | int
+              - snapshot_s2_info.vdev_id == snapshot_vdev_uuid
+              - snapshot_s2_info.snapshot_name == snapshot_s2_name
+            fail_msg: >-
+              Retained snapshot S2 validation failed.
+              Snapshot response: {{ snapshot_s2_info }}
+
+        # ------------------------------------------------------------
+        # 9. Report successful verification
+        # ------------------------------------------------------------
+
+        - name: "{{ recipe_name }}: Report successful verification."
+          ansible.builtin.debug:
+            msg:
+              - "Snapshot basic delete test PASSED"
+              - "vdev={{ snapshot_vdev_uuid }}"
+              - "deleted_snapshot={{ snapshot_s1_name }}"
+              - "deleted_snapshot_id={{ snapshot_s1_id }}"
+              - "retained_snapshot={{ snapshot_s2_name }}"
+              - "retained_snapshot_id={{ snapshot_s2_id }}"
+              - "retained_snapshot_state={{ snapshot_s2_info.state }}"
+              - "live_device={{ snapshot_live_device }}"
+              - "Action-6 events verified"
+              - "Snapshot deletion tracking rows cleaned up"
+              - "S2 and live device data verified"
+              - "logs={{ snapshot_test_logdir }}"
+
+      always:
+
+        # ------------------------------------------------------------
+        # Cleanup
+        #
+        # The shell script stops its own RO snapshot mount.
+        # Snapshot deletion is best-effort so cleanup does not
+        # hide the original test failure.
+        # ------------------------------------------------------------
+
+        - name: "{{ recipe_name }}: Delete remaining test snapshots."
+          ansible.builtin.command:
+            argv:
+              - sudo
+              - -E
+              - "{{ niova_snapshot_bin }}"
+              - --vdev
+              - "{{ snapshot_vdev_uuid | default('') }}"
+              - --op
+              - delete
+              - --snapshot-name
+              - "{{ item }}"
+          environment: "{{ snapshot_cli_env }}"
+          loop:
+            - "{{ snapshot_s1_name }}"
+            - "{{ snapshot_s2_name }}"
+          register: snapshot_delete_result
+          changed_when: snapshot_delete_result.rc == 0
+          failed_when: false
+          when:
+            - snapshot_vdev_uuid is defined
+            - snapshot_cli_stat is defined
+            - snapshot_cli_stat.stat.exists | default(false)
+
+        - name: "{{ recipe_name }}: Stop mdsvc-api and TiDB stack."
+          ansible.builtin.set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+          failed_when: false
