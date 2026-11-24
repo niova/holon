@@ -272,15 +272,19 @@
               Wrong-secret heartbeat returned HTTP
               {{ wrong_secret_response.status | default('unknown') }}
 
-        - name: "{{ recipe_name }}: Require HTTP 401 for wrong secret."
+        - name: "{{ recipe_name }}: Verify wrong-secret heartbeat is rejected."
           ansible.builtin.assert:
             that:
-              - wrong_secret_response.status | default(-1) | int == 401
+              - wrong_secret_response.status | int == 200
+              - wrong_secret_response.json.status | int == 200
+              - wrong_secret_response.json.error == "invalid service secret"
             fail_msg: >-
-              Expected HTTP 401 for wrong NISD secret,
-              got HTTP {{ wrong_secret_response.status | default('unknown') }}.
-              Error: {{ wrong_secret_response.msg | default('none') }}
-            success_msg: "Control Plane correctly rejected the wrong NISD secret."
+              Expected application-level unauthorized response for
+              the incorrect NISD secret.
+              HTTP status={{ wrong_secret_response.status | default('unknown') }},
+              application status={{ wrong_secret_response.json.status | default('unknown') }},
+              error={{ wrong_secret_response.json.error | default('unknown') }}.
+            success_msg: "Control Plane correctly rejected the incorrect NISD secret."
 
         - name: '{{ recipe_name }}: Allow the wrong-secret NISD to attempt heartbeats.'
           ansible.builtin.pause:
