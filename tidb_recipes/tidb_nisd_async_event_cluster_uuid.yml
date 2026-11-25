@@ -133,16 +133,19 @@
         headers:
           Authorization: "Bearer {{ login_result.access_token }}"
         body_format: json
-        body:
-          size_bytes: '{{ vdev_size_bytes | int }}'
-          data_blk_cnt: 1
-          parity_blk_cnt: 0
-          redundancy: 0
-        status_code: [200, 400, 409, 422, 500, 503]
+        body: >-
+          {{
+            {
+              'size_bytes': vdev_size_bytes | int,
+              'data_blk_cnt': 1,
+              'parity_blk_cnt': 0,
+              'redundancy': 0
+            }
+          }}
+        status_code: [200, 400]
         return_content: true
         timeout: 30
       register: vdev_result
-      failed_when: false
       no_log: true
 
     - name: '{{ recipe_name }}: Report VDEV creation result.'
