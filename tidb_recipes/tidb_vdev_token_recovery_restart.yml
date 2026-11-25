@@ -1,0 +1,319 @@
+# A rebuilding NISD restarts mid-rebuild, with token validation on.
+#
+# As tidb_vdev_token_recovery.yml (three NISDs, a 2-replica vdev, a writing
+# client, one replica killed), but the spare is killed once it has started the
+# rebuild, and then started again. A NISD doesn't resume a rebuild it didn't
+# finish, not even after a restart: it fences the chunk, and the client moves
+# the chunk to another NISD. That NISD signs its own peer token (with the
+# tenant key), and the surviving replica has to accept it.
+#
+# The CP's only other choice is the killed replica, so it comes back first as a
+# freshly formatted NISD, like a replaced disk. The spare and the client are
+# stopped (SIGSTOP) while it starts, so the client can't move the chunk before
+# that NISD is up.
+#
+#   1. The victim replica is killed. The client moves its slot to the spare,
+#      which logs "recovery peer token: signed" and is stopped before
+#      "recovery complete".
+#   2. The victim comes back freshly formatted. The spare is killed, the
+#      client resumed, and the spare started again.
+#   3. The restarted spare doesn't resume the rebuild: no "recovery complete",
+#      no new peer token.
+#   4. The client moves the spare's slot to the formatted victim, which signs
+#      its peer token and logs "recovery complete".
+#   5. The surviving replica logs no auth_failure.
+#
+# Needs a CP with real vdev tokens and per-tenant keys (mdsvc-tidb #121) and
+# niova-block with peer-token signing and NISD token scope (niova-block #1117).
+
+- name: "tidb_vdev_token_recovery_restart.yml"
+  hosts: localhost
+  connection: local
+
+  vars:
+    recipe_name: "tidb_vdev_token_recovery_restart"
+    api_base_url: "http://localhost:8081"
+    client_id: "5e00ce0c-8021-11f1-911c-0fc57145aa3a"
+    # Ports: peer port, client port = peer port + 1. All inside the infra's
+    # hypervisor port_range.
+    nisd_ids:
+      - "3b7c5c1e-0a1d-4c58-8d0b-6a3f1e9d2a01"
+      - "3b7c5c1e-0a1d-4c58-8d0b-6a3f1e9d2a02"
+      - "3b7c5c1e-0a1d-4c58-8d0b-6a3f1e9d2a03"
+    nisd_peer_ports: [13000, 13010, 13020]
+    nisd_size: 21474836480
+    work_dir: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}"
+    client_log: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/niova-block-test_recovery.log"
+    recovery_timeout: 120
+    # Long enough for a rebuild that takes more than a moment.
+    write_secs: 30
+
+  tasks:
+    - block:
+
+        - name: "{{ recipe_name }}: Check if app_type is tidb."
+          debug:
+            msg: "app_type is: {{ app_type }}"
+          failed_when: app_type != "tidb"
+
+        - name: "{{ recipe_name }}: Set up the CP, three NISDs and a writing client."
+          include_role:
+            name: common
+            tasks_from: vdev_token_recovery_setup
+
+        # The NISD renames itself, so match the command line.
+        - name: "{{ recipe_name }}: Kill the victim replica's NISD."
+          shell: "pkill -KILL -f '[b]in/nisd -u {{ victim_uuid }}'"
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        # Stop the spare and the client the moment the rebuild starts, in one
+        # shell so nothing gets in between. Stopped, not killed: the client
+        # must not move the chunk again before the victim is back.
+        - name: "{{ recipe_name }}: Stop the spare and the client mid-rebuild."
+          shell: |
+            # Process substitution, not a pipe: a pipe would wait for tail -f.
+            exec 3< <(tail -c +$(( {{ log_marks.results[0].stdout }} + 1 )) -f '{{ work_dir }}/nisd_{{ tgt_uuid }}.log')
+            tail_pid=$!
+            grep -m1 -q 'recovery peer token: signed' <&3 || exit 1
+            pkill -STOP -f '[b]in/nisd -u {{ tgt_uuid }}'
+            kill -STOP $(cat '{{ work_dir }}/client.pid')
+            kill "$tail_pid" 2>/dev/null || true
+            exit 0
+          args:
+            executable: /bin/bash
+          register: stop_mid
+          async: "{{ recovery_timeout | int }}"
+          poll: 2
+          changed_when: true
+
+        - name: "{{ recipe_name }}: Check the client moved the victim's slot to the spare."
+          shell: "grep -q 'nisd reassigned failed={{ victim_uuid }} tgt={{ tgt_uuid }}' '{{ client_log }}'"
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        - name: "{{ recipe_name }}: The rebuild had not finished before the stop."
+          shell: |
+            tail -c +$(( {{ log_marks.results[0].stdout }} + 1 )) '{{ work_dir }}/nisd_{{ tgt_uuid }}.log' |
+                grep -q 'recovery complete' && exit 1
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          register: not_finished
+          failed_when: not_finished.rc != 0
+          # If it fails, write for longer (write_secs): the rebuild beat the stop.
+
+        # The victim comes back empty, like a replaced disk, so it is a valid
+        # target when the client moves the spare's slot.
+        - name: "{{ recipe_name }}: Recreate the victim's device file."
+          shell: "rm -f '{{ work_dir }}/nisd{{ nisd_ids.index(victim_uuid) }}.img' && truncate -s {{ nisd_size }} '{{ work_dir }}/nisd{{ nisd_ids.index(victim_uuid) }}.img'"
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        - name: "{{ recipe_name }}: Format the victim's device."
+          vars:
+            input_param:
+              nisd_device_path: "{{ work_dir }}/nisd{{ nisd_ids.index(victim_uuid) }}.img"
+              nisd_uuid: "{{ victim_uuid }}"
+          debug:
+            msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
+
+        - name: "{{ recipe_name }}: Wait for niova-block-ctl to format the victim's device."
+          shell: "! pgrep -f '[n]iova-block-ctl -d {{ work_dir }}/nisd'"
+          args:
+            executable: /bin/bash
+          register: ctl_done
+          retries: 60
+          delay: 2
+          until: ctl_done.rc == 0
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Start the formatted victim."
+          include_role:
+            name: common
+            tasks_from: vdev_token_restart_nisd
+          vars:
+            nisd_uuid: "{{ victim_uuid }}"
+            nisd_device_path: "{{ work_dir }}/nisd{{ nisd_ids.index(victim_uuid) }}.img"
+            nisd_peer_port: "{{ nisd_peer_ports[nisd_ids.index(victim_uuid)] }}"
+            nisd_client_port: "{{ nisd_peer_ports[nisd_ids.index(victim_uuid)] | int + 1 }}"
+            nisd_log: "{{ work_dir }}/nisd_{{ victim_uuid }}.log"
+            nisd_token_desc: "tenant key, formatted"
+            nisd_token_cfg:
+              token_validation: 1
+              nisd_secret: "{{ tenant_key }}"
+              tenant_uuid: "{{ tenant_uuid }}"
+              shared_sock_dir: 1
+
+        - name: "{{ recipe_name }}: Record the victim's log mark."
+          set_fact:
+            victim_log_mark: "{{ nisd_log_mark }}"
+
+        # SIGKILL also ends a stopped process. The client then sees the spare
+        # gone and moves its slot.
+        - name: "{{ recipe_name }}: Kill the spare and resume the client."
+          shell: |
+            pkill -KILL -f '[b]in/nisd -u {{ tgt_uuid }}'
+            kill -CONT $(cat '{{ work_dir }}/client.pid')
+          args:
+            executable: /bin/bash
+          changed_when: true
+
+        - name: "{{ recipe_name }}: Restart the spare."
+          include_role:
+            name: common
+            tasks_from: vdev_token_restart_nisd
+          vars:
+            nisd_uuid: "{{ tgt_uuid }}"
+            nisd_device_path: "{{ work_dir }}/nisd{{ nisd_ids.index(tgt_uuid) }}.img"
+            nisd_peer_port: "{{ nisd_peer_ports[nisd_ids.index(tgt_uuid)] }}"
+            nisd_client_port: "{{ nisd_peer_ports[nisd_ids.index(tgt_uuid)] | int + 1 }}"
+            nisd_log: "{{ work_dir }}/nisd_{{ tgt_uuid }}.log"
+            nisd_token_desc: "tenant key, after the kill"
+            nisd_token_cfg:
+              token_validation: 1
+              nisd_secret: "{{ tenant_key }}"
+              tenant_uuid: "{{ tenant_uuid }}"
+              shared_sock_dir: 1
+
+        - name: "{{ recipe_name }}: Record the restarted spare's log mark."
+          set_fact:
+            tgt_restart_log_mark: "{{ nisd_log_mark }}"
+
+        - name: "{{ recipe_name }}: Wait for the client to move the spare's slot to the victim."
+          shell: "grep -q 'nisd reassigned failed={{ tgt_uuid }} tgt={{ victim_uuid }}' '{{ client_log }}'"
+          args:
+            executable: /bin/bash
+          register: reassign_again
+          retries: "{{ (recovery_timeout | int / 5) | int }}"
+          delay: 5
+          until: reassign_again.rc == 0
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Wait for the victim to finish the rebuild."
+          shell: |
+            tail -c +$(( {{ victim_log_mark }} + 1 )) '{{ work_dir }}/nisd_{{ victim_uuid }}.log' |
+                grep -E -m1 'recovery (complete|aborted)'
+          args:
+            executable: /bin/bash
+          register: recovery_line
+          retries: "{{ (recovery_timeout | int / 5) | int }}"
+          delay: 5
+          until: recovery_line.rc == 0
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Check the rebuild completed."
+          assert:
+            that: "'recovery complete' in recovery_line.stdout"
+            fail_msg: "rebuild did not complete on the victim: {{ recovery_line.stdout }}"
+
+        - name: "{{ recipe_name }}: Check the victim signed its peer token."
+          shell: |
+            tail -c +$(( {{ victim_log_mark }} + 1 )) '{{ work_dir }}/nisd_{{ victim_uuid }}.log' |
+                grep -q 'recovery peer token: signed'
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Check the restarted spare didn't resume the rebuild."
+          shell: |
+            tail -c +$(( {{ tgt_restart_log_mark }} + 1 )) '{{ work_dir }}/nisd_{{ tgt_uuid }}.log' |
+                grep -E 'recovery complete|recovery peer token: signed' && exit 1
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+        - name: "{{ recipe_name }}: Check the source refused no token."
+          shell: |
+            tail -c +$(( {{ log_marks.results[1].stdout }} + 1 )) '{{ work_dir }}/nisd_{{ src_uuid }}.log' |
+                grep -E 'auth_failure=|outside token scope|token is for another tenant' && exit 1
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+
+      rescue:
+       - name: "Recipe: {{ recipe_name }} failed"
+         set_fact:
+           terminate_recipe: true
+
+      always:
+
+        # A failure while they were stopped would leave the client and spare
+        # stopped (SIGSTOP), where a TERM below would stay pending.
+        - name: "{{ recipe_name }}: Resume stopped processes."
+          shell: |
+            pkill -CONT -f '[n]iova-block-test' 2>/dev/null
+            pkill -CONT -f '[b]in/nisd -u ' 2>/dev/null
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+        - name: "{{ recipe_name }}: Stop niova-block-test and niova-block-ctl."
+          shell: |
+            set +e
+            pkill -TERM -f '[n]iova-block-test' 2>/dev/null
+            pkill -TERM -f '[n]iova-block-ctl' 2>/dev/null
+            sleep 2
+            pkill -KILL -f '[n]iova-block-test' 2>/dev/null
+            pkill -KILL -f '[n]iova-block-ctl' 2>/dev/null
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+        # post_run.yml kills the PID that run_nisd recorded (the spare) and
+        # fails if it's gone, so stop the other two here and leave the spare.
+        - name: "{{ recipe_name }}: Stop the source and victim NISDs."
+          shell: |
+            pkill -KILL -f '[b]in/nisd -u {{ src_uuid }}' 2>/dev/null
+            pkill -KILL -f '[b]in/nisd -u {{ victim_uuid }}' 2>/dev/null
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+          when: src_uuid is defined
+
+        - name: "{{ recipe_name }}: Tear down mdsvc-tidb."
+          set_fact:
+            teardown_status: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+          ignore_errors: true
+
+        - name: "{{ recipe_name }}: Stop stale Serf."
+          shell: |
+            set +e
+            pkill -TERM -x serf 2>/dev/null || true
+            sleep 1
+            pkill -KILL -x serf 2>/dev/null || true
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+        # Keep HOLON_LOG_PATH: CI uploads it on failure.
+        - name: "{{ recipe_name }}: Remove runtime leftovers."
+          shell: |
+            set +e
+            [ -d /tmp/tidb ] && rm -rf /tmp/tidb/*
+            [ -d /local ] && rm -rf /local/*
+            rm -f '{{ work_dir }}'/nisd*.img
+            exit 0
+          args:
+            executable: /bin/bash
+          changed_when: false
+          failed_when: false
+
+    - name: "{{ recipe_name }}: Fail recipe after cleanup."
+      fail:
+        msg: "Recipe {{ recipe_name }} failed. Cleanup completed."
+      when: terminate_recipe | default(false) | bool

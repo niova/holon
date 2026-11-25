@@ -1,0 +1,257 @@
+# Shared setup of the vdev token recovery recipes: CP, tenant key, API key,
+# three NISDs with token validation on, a 2-replica vdev and a client writing
+# to it. Sets src_uuid (surviving replica), victim_uuid (replica the recipe
+# kills), tgt_uuid (spare, which rebuilds), tenant_key, vdev_uuid, and
+# log_marks (NISD log sizes before the kill: results[0] spare, [1] source).
+#
+# Needs the play vars of the including recipe: recipe_name, api_base_url,
+# client_id, nisd_ids, nisd_peer_ports, nisd_size, work_dir, client_log.
+# Optional: write_secs (how long the client writes before this returns).
+
+# ----------------------------------------
+# 1. CP, tenant key, API keys
+# ----------------------------------------
+
+- name: "{{ recipe_name }}: Start mdsvc-tidb."
+  set_fact:
+    setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+
+- name: "{{ recipe_name }}: Wait for mdsvc-api to become ready."
+  uri:
+    url: "{{ api_base_url }}/swagger/"
+    method: GET
+    status_code: [200, 301, 302]
+  register: api_health
+  retries: 90
+  delay: 3
+  until: api_health.status in [200, 301, 302]
+
+- name: "{{ recipe_name }}: Login to mdsvc-api."
+  set_fact:
+    login_result: >-
+      {{ lookup('tidb_api', 'login', base_url=api_base_url,
+                username='admin', password='admin') }}
+
+- name: "{{ recipe_name }}: Read the admin's tenant."
+  set_fact:
+    tenant_uuid: >-
+      {{ lookup('tidb_api', 'decode_vdev_token',
+                vdev_token=login_result.access_token).claims.tenant }}
+
+- name: "{{ recipe_name }}: Tenant-admin login."
+  set_fact:
+    tenant_admin_login: >-
+      {{ lookup('tidb_api', 'tenant_admin_login', base_url=api_base_url) }}
+
+- name: "{{ recipe_name }}: Get the tenant's NISD key."
+  set_fact:
+    tenant_key: >-
+      {{ lookup('tidb_api', 'get_nisd_key', base_url=api_base_url,
+                token=tenant_admin_login.access_token,
+                tenant_uuid=tenant_uuid) }}
+  no_log: true
+  register: nisd_key_lookup
+  ignore_errors: true
+
+- name: "{{ recipe_name }}: Check the CP has per-tenant NISD keys."
+  fail:
+    msg: >-
+      GET /cp/tenants/{{ tenant_uuid }}/nisd-key failed. This needs a
+      CP with per-tenant NISD keys and real vdev tokens (mdsvc-tidb
+      #121); see {{ login_result.log_file }}.
+  when: nisd_key_lookup is failed
+
+- name: "{{ recipe_name }}: Create a [vdev:read,vdev:write] API key."
+  set_fact:
+    rw_api_key: >-
+      {{ lookup('tidb_api', 'create_api_key', base_url=api_base_url,
+                token=login_result.access_token,
+                user_id=(lookup('tidb_api', 'decode_vdev_token',
+                                vdev_token=login_result.access_token).claims.uid),
+                name='holon-recovery-rw', scopes=['vdev:read', 'vdev:write']) }}
+  no_log: true
+
+# ----------------------------------------
+# 2. Infra with three NISDs, one device each, so a vdev's two
+#    replicas land on two NISDs and the third is the spare.
+# ----------------------------------------
+
+- name: "{{ recipe_name }}: Build the infra payload."
+  vars:
+    devices: |-
+      [
+      {% for i in range(3) %}
+        {"name": "recovery-dev{{ i }}", "device_path": "{{ work_dir }}/nisd{{ i }}.img",
+         "serial_number": "recovery{{ i }}", "state": 2, "size": {{ nisd_size }},
+         "partitions": [{"partition_path": "{{ work_dir }}/nisd{{ i }}.img", "size": {{ nisd_size }},
+           "nisd": {"id": "{{ nisd_ids[i] }}", "peer_port": {{ nisd_peer_ports[i] }},
+                    "total_size": {{ nisd_size }}, "available_size": {{ nisd_size }},
+                    "socket_path": "/var/run/recovery-nisd{{ i }}.sock",
+                    "net_info": [{"ip_addr": "127.0.0.1", "port": {{ nisd_peer_ports[i] }}}]}}]}{{ "," if not loop.last else "" }}
+      {% endfor %}
+      ]
+  set_fact:
+    infra_body:
+      pdus:
+        - name: "recovery-pdu"
+          location: "recovery"
+          specification: "recovery"
+          power_cap: "n/a"
+          racks:
+            - name: "recovery-rack"
+              location: "recovery"
+              specification: "recovery"
+              hypervisors:
+                - name: "recovery-hv"
+                  port_range: "13000-13100"
+                  ssh_port: "22"
+                  rdma_enabled: false
+                  ip_addrs: ["127.0.0.1"]
+                  devices: "{{ devices }}"
+
+- name: "{{ recipe_name }}: Create infra."
+  set_fact:
+    infra_result: >-
+      {{ lookup('tidb_api', 'create_infra', base_url=api_base_url,
+                token=login_result.access_token, body=infra_body) }}
+
+# Sparse device files; the client writes only a few MiB.
+- name: "{{ recipe_name }}: Create the NISD device files."
+  shell: "rm -f '{{ work_dir }}/nisd{{ item }}.img' && truncate -s {{ nisd_size }} '{{ work_dir }}/nisd{{ item }}.img'"
+  args:
+    executable: /bin/bash
+  loop: [0, 1, 2]
+  changed_when: true
+
+- name: "{{ recipe_name }}: Format the devices."
+  vars:
+    input_param:
+      nisd_device_path: "{{ work_dir }}/nisd{{ item }}.img"
+      nisd_uuid: "{{ nisd_ids[item] }}"
+  debug:
+    msg: "{{ lookup('nisd_handler', 'run-niova-block-ctl', input_param) }}"
+  loop: [0, 1, 2]
+
+# run-niova-block-ctl doesn't wait. A NISD started before the
+# format is done finds no superblock and asserts.
+- name: "{{ recipe_name }}: Wait for niova-block-ctl to format the devices."
+  shell: "! pgrep -f '[n]iova-block-ctl -d {{ work_dir }}/nisd'"
+  args:
+    executable: /bin/bash
+  register: ctl_done
+  retries: 60
+  delay: 2
+  until: ctl_done.rc == 0
+  changed_when: false
+
+# ----------------------------------------
+# 3. Vdev with two replicas: which NISDs hold chunk 0?
+# ----------------------------------------
+
+- name: "{{ recipe_name }}: Create vdev with 2 replicas."
+  set_fact:
+    vdev_result: >-
+      {{ lookup('tidb_api', 'create_vdev', base_url=api_base_url,
+                token=login_result.access_token,
+                body={'name': 'holon-recovery', 'size_bytes': 8589934592,
+                      'data_blk_cnt': 2}) }}
+
+- name: "{{ recipe_name }}: Extract vdev UUID."
+  set_fact:
+    vdev_uuid: "{{ vdev_result.vdev_id | default(vdev_result.uuid) }}"
+
+- name: "{{ recipe_name }}: Get chunk 0."
+  set_fact:
+    chunk0: >-
+      {{ lookup('tidb_api', 'get_chunk', base_url=api_base_url,
+                token=login_result.access_token,
+                params={'vdev_id': vdev_uuid, 'chunk_idx': 0}) }}
+
+- name: "{{ recipe_name }}: Pick source, victim and spare NISDs."
+  vars:
+    replicas: "{{ chunk0.data.payload.NisdIDs }}"
+  set_fact:
+    src_uuid: "{{ replicas[0] }}"
+    victim_uuid: "{{ replicas[1] }}"
+    tgt_uuid: "{{ nisd_ids | difference(replicas) | first }}"
+
+- name: "{{ recipe_name }}: Check chunk 0 has two replicas."
+  assert:
+    that:
+      - chunk0.data.payload.NisdIDs | length == 2
+      - tgt_uuid is defined
+    fail_msg: "chunk 0 placement: {{ chunk0.data.payload }}"
+
+- name: "{{ recipe_name }}: Placement."
+  debug:
+    msg: "replicas {{ src_uuid }} (source) + {{ victim_uuid }} (to be killed), spare {{ tgt_uuid }}"
+
+# ----------------------------------------
+# 4. Start the three NISDs with token validation. The spare goes
+#    last: post_run.yml kills the PID that run_nisd recorded last,
+#    so that one has to outlive the recipe.
+# ----------------------------------------
+
+- name: "{{ recipe_name }}: Start the NISDs (token validation on)."
+  include_role:
+    name: common
+    tasks_from: vdev_token_restart_nisd
+  vars:
+    nisd_uuid: "{{ item }}"
+    nisd_device_path: "{{ work_dir }}/nisd{{ nisd_ids.index(item) }}.img"
+    nisd_peer_port: "{{ nisd_peer_ports[nisd_ids.index(item)] }}"
+    nisd_client_port: "{{ nisd_peer_ports[nisd_ids.index(item)] | int + 1 }}"
+    nisd_log: "{{ work_dir }}/nisd_{{ item }}.log"
+    nisd_token_desc: "tenant key"
+    nisd_token_cfg:
+      token_validation: 1
+      nisd_secret: "{{ tenant_key }}"
+      tenant_uuid: "{{ tenant_uuid }}"
+      # The NISDs reach each other through /tmp/.niova/<uuid>.
+      shared_sock_dir: 1
+  loop: "{{ [src_uuid, victim_uuid, tgt_uuid] }}"
+
+- name: "{{ recipe_name }}: Wait before the first mount."
+  pause:
+    seconds: 25
+
+# ----------------------------------------
+# 5. Write, then kill a replica
+# ----------------------------------------
+
+# In the background, writing until killed: the client has to be alive
+# to ask the CP to reassign the chunk.
+- name: "{{ recipe_name }}: Start the writing client."
+  shell: |
+    setsid nohup '{{ lookup('env', 'NIOVA_BIN_PATH') }}/bin/niova-block-test' \
+        -I -D -c cp -v '{{ vdev_uuid }}' -u '{{ client_id }}' -r 0 \
+        -N 2000000 -O 0-262144 > '{{ client_log }}' 2>&1 < /dev/null &
+    echo $! > '{{ work_dir }}/client.pid'
+  args:
+    executable: /bin/bash
+  environment:
+    NIOVA_CP_PROXY_ADDR: "{{ api_base_url | regex_replace('^https?://', '') | regex_replace('^localhost', '127.0.0.1') }}"
+    NIOVA_BLOCK_AUTH_ENABLED: "1"
+    NIOVA_BLOCK_CP_AUTH_USERNAME: "admin"
+    NIOVA_BLOCK_CP_AUTH_SECRET: "{{ rw_api_key.key }}"
+    NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID: "{{ tenant_uuid }}"
+  no_log: true
+  changed_when: true
+
+- name: "{{ recipe_name }}: Let the client write."
+  pause:
+    seconds: "{{ write_secs | default(8) }}"
+
+- name: "{{ recipe_name }}: Check the client is still running."
+  shell: "kill -0 $(cat '{{ work_dir }}/client.pid')"
+  args:
+    executable: /bin/bash
+  changed_when: false
+
+- name: "{{ recipe_name }}: Mark the target and source NISD logs."
+  shell: "stat -c %s '{{ work_dir }}/nisd_{{ item }}.log'"
+  args:
+    executable: /bin/bash
+  loop: ["{{ tgt_uuid }}", "{{ src_uuid }}"]
+  register: log_marks
+  changed_when: false
