@@ -202,25 +202,38 @@
         url: '{{ api_base_url }}/api/heartbeat'
         method: POST
         headers:
-          Authorization: Service {{ nisd_secret }}
+          Authorization: "Service {{ nisd_secret }}"
         body_format: json
-        body:
-          EntityID: '{{ nisd_uuid }}'
-          TenantUUID: '{{ non_default_cluster_uuid }}'
-          AckEventSerialNo: 0
-          EventLimit: '{{ heartbeat_event_limit | int }}'
-        status_code: 200
+        body: >-
+          {{
+            {
+              'EntityID': nisd_uuid,
+              'TenantUUID': non_default_cluster_uuid,
+              'AckEventSerialNo': 0,
+              'EventLimit': heartbeat_event_limit | int
+            }
+          }}
+        status_code: [200, 400, 401, 403, 404, 500]
         return_content: true
         timeout: 10
       register: initial_heartbeat
+      failed_when: false
       no_log: true
+
+    - name: '{{ recipe_name }}: Report initial heartbeat response.'
+      ansible.builtin.debug:
+        msg:
+          http_status: "{{ initial_heartbeat.status | default('unknown') }}"
+          application_status: "{{ (initial_heartbeat.json | default({})).status | default('unknown') }}"
+          error: "{{ (initial_heartbeat.json | default({})).error | default('unknown') }}"
 
     - name: '{{ recipe_name }}: Require a clean, authenticated tenant event queue.'
       ansible.builtin.assert:
         that:
-        - initial_heartbeat.json.status == 0
-        - initial_heartbeat.json.payload.events == []
-        fail_msg: Expected successful service authentication and an empty event queue.
+          - initial_heartbeat.status | int == 200
+          - initial_heartbeat.json.status | int == 0
+          - initial_heartbeat.json.payload.events == []
+        fail_msg: "Initial heartbeat was rejected or the event queue was not empty."
 
     - name: '{{ recipe_name }}: Record the fresh NISD baseline.'
       ansible.builtin.set_fact:
