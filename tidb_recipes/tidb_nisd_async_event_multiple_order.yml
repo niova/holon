@@ -1,0 +1,315 @@
+- name: "tidb_nisd_async_event_multiple_order.yml"
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    recipe_name: "tidb_nisd_async_event_multiple_order"
+    api_base_url: "http://localhost:8081"
+    cp_username: "admin"
+    cp_password: "admin"
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    nisd_uuid: "1a93c9af-5184-49b4-972b-1c94a2057e74"
+    nisd_device_path: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/nisd-async-event-multiple-order.device"
+    nisd_device_size: "10G"
+    nisd_peer_port: "13000"
+    nisd_client_port: "13001"
+    nisd_secret: >-
+      {{
+        lookup('env', 'NIOVA_NISD_SECRET')
+        | default('Nisd-secret', true)
+      }}
+    lookout_uuid: ""
+    ncp_event_ping_key: "/ncp_event/ping_enabled"
+    ncp_event_sno_key: "/ncp_event/event_sno"
+    async_event_action: 250
+    async_event_timeout_retries: 60
+    async_event_poll_delay: 1
+    event_markers:
+      - "event-1"
+      - "event-2"
+      - "event-3"
+      - "event-4"
+
+  tasks:
+    - block:
+        - name: "{{ recipe_name }}: Check application type."
+          ansible.builtin.assert:
+            that:
+              - app_type == "tidb"
+            fail_msg: "This recipe must run with app_type=tidb."
+
+        - name: "{{ recipe_name }}: Start mdsvc-tidb."
+          ansible.builtin.set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'docker_setup') }}"
+
+        - name: "{{ recipe_name }}: Wait for Control Plane."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code: [200, 301, 302]
+            timeout: 10
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        - name: "{{ recipe_name }}: Login to Control Plane."
+          ansible.builtin.set_fact:
+            login_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username=cp_username,
+                  password=cp_password
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          ansible.builtin.set_fact:
+            infra_result: >-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=infra_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Create fresh NISD backing file."
+          ansible.builtin.command:
+            argv:
+              - truncate
+              - -s
+              - "{{ nisd_device_size }}"
+              - "{{ nisd_device_path }}"
+          changed_when: true
+
+        - name: "{{ recipe_name }}: Initialize NISD backing storage."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+          ansible.builtin.debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run-niova-block-ctl',
+                  input_param
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Start NISD with async-event handler."
+          vars:
+            input_param:
+              nisd_device_path: "{{ nisd_device_path }}"
+              nisd_uuid: "{{ nisd_uuid }}"
+              peer_port: "{{ nisd_peer_port }}"
+              client_port: "{{ nisd_client_port }}"
+              enable_auth: 1
+              enable_cp_event_handler: 1
+              nisd_secret: "{{ nisd_secret }}"
+          ansible.builtin.debug:
+            msg: >-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run_nisd',
+                  input_param
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Wait for NISD registration."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/resource?type=nisd"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+          register: nisd_resources
+          retries: 30
+          delay: 2
+          until: >-
+            nisd_uuid in (nisd_resources.content | default(''))
+          no_log: true
+
+        - name: "{{ recipe_name }}: Wait for async-event ping to become enabled."
+          vars:
+            stage: "wait_for_async_event_ping"
+          ansible.builtin.debug:
+            msg: "Waiting for ncp_event ping_enabled=true"
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+          until: >-
+            (
+              lookup(
+                'niova_ctlrequest',
+                'lookup',
+                nisd_uuid,
+                ncp_event_ping_key,
+                'nisd',
+                lookout_uuid
+              )['/ncp_event/ping_enabled']
+              | string
+              | lower
+            ) in ['1', 'true']
+
+        - name: "{{ recipe_name }}: Read initial event_sno."
+          vars:
+            stage: "get_initial_event_sno"
+            event_state: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  nisd_uuid,
+                  ncp_event_sno_key,
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          ansible.builtin.set_fact:
+            initial_event_sno: "{{ event_state['/ncp_event/event_sno'] | int }}"
+
+        - name: "{{ recipe_name }}: Verify initial event_sno."
+          ansible.builtin.assert:
+            that:
+              - initial_event_sno | int == 0
+            fail_msg: >-
+              Expected fresh NISD event_sno=0, but got
+              event_sno={{ initial_event_sno }}.
+            success_msg: "Initial event_sno=0."
+
+        - name: "{{ recipe_name }}: Set expected final event serial."
+          ansible.builtin.set_fact:
+            expected_final_event_sno: "{{ (initial_event_sno | int) + 4 }}"
+
+        - name: "{{ recipe_name }}: Resolve NISD log path."
+          ansible.builtin.set_fact:
+            nisd_log_file: >-
+              {{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}/nisd_{{ nisd_uuid }}.log
+
+        - name: "{{ recipe_name }}: Record the log size before adding events."
+          ansible.builtin.stat:
+            path: "{{ nisd_log_file }}"
+            get_checksum: false
+          register: callback_log
+
+        - name: "{{ recipe_name }}: Initialize this run's event results."
+          ansible.builtin.set_fact:
+            add_event_results: []
+
+        - name: "{{ recipe_name }}: Add four TEST async events."
+          ansible.builtin.set_fact:
+            add_event_results: >-
+              {{
+                add_event_results +
+                [
+                  lookup(
+                    'tidb_api',
+                    'add_event',
+                    base_url=api_base_url,
+                    token=login_result.access_token,
+                    body={
+                      'nisd_id': nisd_uuid,
+                      'action': async_event_action,
+                      'params': {
+                        'marker': item
+                      }
+                    }
+                  )
+                ]
+              }}
+          loop: "{{ event_markers }}"
+          loop_control:
+            label: "{{ item }}"
+
+        - name: "{{ recipe_name }}: Verify each queued event and its assigned serial."
+          ansible.builtin.assert:
+            that:
+              - item.data.status == 0
+              - item.data.payload.nisd_id == nisd_uuid
+              - item.data.payload.action == async_event_action
+              - item.data.payload.event_ptr == (initial_event_sno | int) + event_index + 1
+          loop: "{{ add_event_results }}"
+          loop_control:
+            index_var: event_index
+            label: "{{ event_markers[event_index] }}"
+
+        - name: "{{ recipe_name }}: Wait until final event_sno is reached."
+          vars:
+            stage: "wait_for_final_event_sno"
+          ansible.builtin.debug:
+            msg: "Waiting for event_sno={{ expected_final_event_sno }}"
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+          until: >-
+            (
+              lookup(
+                'niova_ctlrequest',
+                'lookup',
+                nisd_uuid,
+                ncp_event_sno_key,
+                'nisd',
+                lookout_uuid
+              )['/ncp_event/event_sno']
+              | int
+            ) >= (expected_final_event_sno | int)
+
+        - name: "{{ recipe_name }}: Read final event_sno."
+          vars:
+            stage: "get_final_event_sno"
+            final_state: >-
+              {{
+                lookup(
+                  'niova_ctlrequest',
+                  'lookup',
+                  nisd_uuid,
+                  ncp_event_sno_key,
+                  'nisd',
+                  lookout_uuid
+                )
+              }}
+          ansible.builtin.set_fact:
+            final_event_sno: "{{ final_state['/ncp_event/event_sno'] | int }}"
+
+        - name: "{{ recipe_name }}: Verify final durable event_sno."
+          ansible.builtin.assert:
+            that:
+              - final_event_sno | int == expected_final_event_sno | int
+            fail_msg: >-
+              Expected final event_sno={{ expected_final_event_sno }},
+              but got event_sno={{ final_event_sno }}.
+            success_msg: >-
+              Final event_sno reached {{ final_event_sno }}.
+
+        - name: "{{ recipe_name }}: Verify the TEST callbacks ran once each in injection order."
+          ansible.builtin.shell: |
+            set -o pipefail
+            tail -c +{{ (callback_log.stat.size | int) + 1 }} -- {{ nisd_log_file | quote }} |
+              sed -nE '/ncp_event_test_cb: dispatched TEST event/s/.*"marker"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p'
+          args:
+            executable: /bin/bash
+          register: callbacks
+          changed_when: false
+          until: callbacks.rc == 0 and callbacks.stdout_lines == event_markers
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+
+      rescue:
+        - name: "Recipe: {{ recipe_name }} failed"
+          ansible.builtin.set_fact:
+            terminate_recipe: true
+
+      always:
+        # Holon post_run handles the recorded NISD and its backing file.
+        - name: "{{ recipe_name }}: Tear down mdsvc-tidb."
+          ansible.builtin.debug:
+            msg: "{{ lookup('tidb_setup', 'docker_teardown') }}"
+          ignore_errors: true

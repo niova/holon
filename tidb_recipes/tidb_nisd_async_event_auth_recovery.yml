@@ -1,0 +1,494 @@
+- name: tidb_nisd_async_event_auth_recovery.yml
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    recipe_name: tidb_nisd_async_event_auth_recovery
+    api_base_url: http://localhost:8081
+    cp_username: admin
+    cp_password: admin
+    infra_payload: '{{ playbook_dir }}/../examples/create_sample_infra.json'
+    nisd_uuid: 1a93c9af-5184-49b4-972b-1c94a2057e74
+    nisd_device_path: '{{ run_dir }}/auth-recovery.device'
+    nisd_device_size: 10G
+    nisd_peer_port: '{{ ClusterParams.srv_port }}'
+    nisd_client_port: '{{ ClusterParams.client_port }}'
+    correct_nisd_secret: '{{ lookup(''env'', ''NISD_JWT_SECRET'') | default(lookup(''env'', ''NIOVA_NISD_SECRET''),
+      true) | default(''Nisd-secret'', true) }}'
+    wrong_nisd_secret: definitely-wrong-nisd-secret
+    lookout_uuid: ''
+    ncp_event_ping_key: /ncp_event/ping_enabled
+    ncp_event_sno_key: /ncp_event/event_sno
+    async_event_action: 250
+    async_event_timeout_retries: 90
+    async_event_poll_delay: 1
+    event_marker: auth-recovery-test-event
+    post_restart_error_watch_seconds: 35
+    post_restart_error_regex: 'unauthori[sz]ed|invalid service secret|auth(entication)?.*fail|heartbeat.*fail|cmi_ping_cp.*rc=-?[1-9][0-9]*\b'
+    run_dir: '{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}'
+    nisd_log_file: '{{ run_dir }}/nisd_{{ nisd_uuid }}.log'
+    
+  tasks:
+    - block:
+        - name: '{{ recipe_name }}: Validate configuration.'
+          ansible.builtin.assert:
+            that:
+              - app_type == "tidb"
+              - correct_nisd_secret | length > 0
+              - wrong_nisd_secret | length > 0
+              - wrong_nisd_secret != correct_nisd_secret
+          no_log: true
+          
+        - name: '{{ recipe_name }}: Start the configured control plane.'
+          ansible.builtin.set_fact:
+            setup_status: '{{ lookup(''tidb_setup'',''docker_setup'') }}'
+
+        - name: '{{ recipe_name }}: Wait for Control Plane.'
+          ansible.builtin.uri:
+            url: '{{ api_base_url }}/swagger/'
+            method: GET
+            status_code:
+              - 200
+              - 301
+              - 302
+            timeout: 10
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        - name: '{{ recipe_name }}: Login.'
+          ansible.builtin.set_fact:
+            login_result: |-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username=cp_username,
+                  password=cp_password
+                )
+              }}
+          no_log: true
+
+        - name: '{{ recipe_name }}: Create infrastructure.'
+          ansible.builtin.set_fact:
+            infra_result: |-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=infra_payload
+                )
+              }}
+
+        - name: '{{ recipe_name }}: Create NISD backing file.'
+          ansible.builtin.command:
+            argv:
+              - truncate
+              - -s
+              - '{{ nisd_device_size }}'
+              - '{{ nisd_device_path }}'
+          changed_when: true
+
+        - name: '{{ recipe_name }}: Initialize NISD.'
+          vars:
+            input_param:
+              nisd_device_path: '{{ nisd_device_path }}'
+              nisd_uuid: '{{ nisd_uuid }}'
+          ansible.builtin.debug:
+            msg: |-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run-niova-block-ctl',
+                  input_param
+                )
+              }}
+
+        - name: '{{ recipe_name }}: Register the fresh NISD using the accepted secret.'
+          vars:
+            input_param:
+              nisd_device_path: '{{ nisd_device_path }}'
+              nisd_uuid: '{{ nisd_uuid }}'
+              peer_port: '{{ nisd_peer_port }}'
+              client_port: '{{ nisd_client_port }}'
+              enable_auth: 1
+              enable_cp_event_handler: 1
+              nisd_secret: '{{ correct_nisd_secret }}'
+          ansible.builtin.debug:
+            msg: |-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run_nisd',
+                  input_param
+                )
+              }}
+          no_log: true
+
+        - name: '{{ recipe_name }}: Identify this launch from the run JSON.'
+          ansible.builtin.set_fact:
+            active_pid: '{{ (lookup(''file'',run_dir ~ ''/'' ~ ClusterParams.raft_uuid ~ ''.json'') | from_json).nisd_process.process_pid
+              }}'
+
+        - name: '{{ recipe_name }}: Wait for bootstrap ping.'
+          vars:
+            stage: correct_secret_ping_enabled
+          ansible.builtin.debug:
+            msg: Waiting for ping_enabled=true
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+          until: |-
+            (
+              lookup(
+                'niova_ctlrequest',
+                'lookup',
+                nisd_uuid,
+                ncp_event_ping_key,
+                'nisd',
+                lookout_uuid
+              )['/ncp_event/ping_enabled']
+              | string
+              | lower
+            ) in ['1', 'true']
+
+        - name: '{{ recipe_name }}: Wait for the control plane to register this UUID.'
+          ansible.builtin.uri:
+            url: '{{ api_base_url }}/api/resource?type=nisd'
+            headers:
+              Authorization: Bearer {{ login_result.access_token }}
+            return_content: true
+          register: resources
+          until: resources.status == 200 and nisd_uuid in resources.content
+          no_log: true
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+
+        - name: '{{ recipe_name }}: Validate the recorded NISD PID.'
+          ansible.builtin.assert:
+            that: active_pid | int > 1
+
+        - name: '{{ recipe_name }}: Stop the recorded NISD.'
+          ansible.builtin.command:
+            argv: [kill, "-TERM", "{{ active_pid }}"]
+
+        - name: '{{ recipe_name }}: Wait for NISD to exit.'
+          ansible.builtin.wait_for:
+            path: '/proc/{{ active_pid }}'
+            state: absent
+            timeout: 30
+
+        - name: '{{ recipe_name }}: Archive the completed phase log.'
+          ansible.builtin.command:
+            argv:
+              - mv
+              - --
+              - '{{ nisd_log_file }}'
+              - '{{ nisd_log_file }}.bootstrap'
+
+        - name: '{{ recipe_name }}: Queue a TEST event before wrong-secret startup.'
+          ansible.builtin.set_fact:
+            add_result: '{{ lookup(''tidb_api'',''add_event'',base_url=api_base_url,token=login_result.access_token,body={''nisd_id'':nisd_uuid,''action'':async_event_action,''params'':{''marker'':event_marker
+              ~ ''-queued''}}) }}'
+
+        - name: '{{ recipe_name }}: Validate queued event identity and status.'
+          ansible.builtin.assert:
+            that:
+              - add_result.data.status == 0
+              - add_result.data.payload.nisd_id == nisd_uuid
+              - add_result.data.payload.action == async_event_action
+              - add_result.data.payload.event_ptr is integer
+              - add_result.data.payload.event_ptr > 0
+
+        - name: '{{ recipe_name }}: Store queued event serial.'
+          ansible.builtin.set_fact:
+            queued_ptr: '{{ add_result.data.payload.event_ptr }}'
+
+        - name: '{{ recipe_name }}: Verify queued event is pending on the control plane.'
+          ansible.builtin.uri:
+            url: '{{ api_base_url }}/api/events?nisd_id={{ nisd_uuid }}&action={{ async_event_action }}'
+            headers:
+              Authorization: Bearer {{ login_result.access_token }}
+          vars:
+            payload: '{{ listed.json.payload | default([]) }}'
+            rows: '{{ payload.events | default(payload.rows | default([])) if payload is mapping else payload }}'
+            matches: '{{ rows | selectattr(''nisd_id'',''equalto'',nisd_uuid) | selectattr(''event_ptr'',''equalto'',queued_ptr
+              | int) | list }}'
+          register: listed
+          until: listed.status == 200 and listed.json.status | default(-1) == 0 and matches | length == 1 and (matches | first).expire_at | default(none) is none
+          no_log: true
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+
+        - name: '{{ recipe_name }}: Launch NISD with the wrong secret.'
+          vars:
+            input_param:
+              nisd_device_path: '{{ nisd_device_path }}'
+              nisd_uuid: '{{ nisd_uuid }}'
+              peer_port: '{{ nisd_peer_port }}'
+              client_port: '{{ nisd_client_port }}'
+              enable_auth: 1
+              enable_cp_event_handler: 1
+              nisd_secret: '{{ wrong_nisd_secret }}'
+          ansible.builtin.debug:
+            msg: |-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run_nisd',
+                  input_param
+                )
+              }}
+          no_log: true
+
+        - name: '{{ recipe_name }}: Identify this launch from the run JSON.'
+          ansible.builtin.set_fact:
+            active_pid: '{{ (lookup(''file'',run_dir ~ ''/'' ~ ClusterParams.raft_uuid ~ ''.json'') | from_json).nisd_process.process_pid
+              }}'
+
+        - name: "{{ recipe_name }}: Check heartbeat rejection with wrong secret."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ wrong_nisd_secret }}"
+            body_format: json
+            body:
+              EntityID: "{{ nisd_uuid }}"
+              AckEventSerialNo: "{{ queued_ptr | int }}"
+              EventLimit: 2
+            status_code: [200, 400, 401, 403, 404, 500]
+            return_content: true
+          register: wrong_secret_response
+          failed_when: false
+          no_log: true
+
+        - name: "{{ recipe_name }}: Show wrong-secret HTTP status."
+          ansible.builtin.debug:
+            msg: >-
+              Wrong-secret heartbeat returned HTTP
+              {{ wrong_secret_response.status | default('unknown') }}
+
+        - name: "{{ recipe_name }}: Verify wrong-secret heartbeat is rejected."
+          ansible.builtin.assert:
+            that:
+              - wrong_secret_response.status | int == 200
+              - wrong_secret_response.json.status | int == 200
+              - wrong_secret_response.json.error == "invalid service secret"
+            fail_msg: >-
+              Expected application-level unauthorized response for
+              the incorrect NISD secret.
+              HTTP status={{ wrong_secret_response.status | default('unknown') }},
+              application status={{ wrong_secret_response.json.status | default('unknown') }},
+              error={{ wrong_secret_response.json.error | default('unknown') }}.
+            success_msg: "Control Plane correctly rejected the incorrect NISD secret."
+
+        - name: '{{ recipe_name }}: Allow the wrong-secret NISD to attempt heartbeats.'
+          ansible.builtin.pause:
+            seconds: 15
+
+        - name: '{{ recipe_name }}: Verify the NISD serial wrong_secret.'
+          ansible.builtin.debug:
+            msg: Waiting for the durable event serial.
+          vars:
+            stage: wrong_secret
+          until: lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_sno_key,'nisd',lookout_uuid)[ncp_event_sno_key] | int(-1) == 0
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+
+        - name: '{{ recipe_name }}: Verify queued event is pending on the control plane.'
+          ansible.builtin.uri:
+            url: '{{ api_base_url }}/api/events?nisd_id={{ nisd_uuid }}&action={{ async_event_action }}'
+            headers:
+              Authorization: Bearer {{ login_result.access_token }}
+          vars:
+            payload: '{{ listed.json.payload | default([]) }}'
+            rows: '{{ payload.events | default(payload.rows | default([])) if payload is mapping else payload }}'
+            matches: '{{ rows | selectattr(''nisd_id'',''equalto'',nisd_uuid) | selectattr(''event_ptr'',''equalto'',queued_ptr
+              | int) | list }}'
+          register: listed
+          until: listed.status == 200 and listed.json.status | default(-1) == 0 and matches | length == 1 and (matches | first).expire_at | default(none) is none
+          no_log: true
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+
+        - name: '{{ recipe_name }}: Validate the recorded NISD PID.'
+          ansible.builtin.assert:
+            that: active_pid | int > 1
+
+        - name: '{{ recipe_name }}: Stop the recorded NISD.'
+          ansible.builtin.command:
+            argv: [kill, "-TERM", "{{ active_pid }}"]
+
+        - name: '{{ recipe_name }}: Wait for NISD to exit.'
+          ansible.builtin.wait_for:
+            path: '/proc/{{ active_pid }}'
+            state: absent
+            timeout: 30
+
+        - name: '{{ recipe_name }}: Archive the completed phase log.'
+          ansible.builtin.command:
+            argv:
+              - mv
+              - --
+              - '{{ nisd_log_file }}'
+              - '{{ nisd_log_file }}.wrong-secret'
+
+        - name: '{{ recipe_name }}: Restart the same device with the correct secret.'
+          vars:
+            input_param:
+              nisd_device_path: '{{ nisd_device_path }}'
+              nisd_uuid: '{{ nisd_uuid }}'
+              peer_port: '{{ nisd_peer_port }}'
+              client_port: '{{ nisd_client_port }}'
+              enable_auth: 1
+              enable_cp_event_handler: 1
+              nisd_secret: '{{ correct_nisd_secret }}'
+          ansible.builtin.debug:
+            msg: |-
+              {{
+                lookup(
+                  'nisd_handler',
+                  'run_nisd',
+                  input_param
+                )
+              }}
+          no_log: true
+
+        - name: '{{ recipe_name }}: Identify the restarted NISD.'
+          ansible.builtin.set_fact:
+            active_pid: >-
+              {{
+                (lookup('file', run_dir ~ '/' ~ ClusterParams.raft_uuid ~ '.json')
+                | from_json).nisd_process.process_pid
+              }}
+
+        - name: '{{ recipe_name }}: Verify the NISD serial recovered.'
+          ansible.builtin.debug:
+            msg: Waiting for the durable event serial.
+          vars:
+            stage: recovered
+          until: lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_sno_key,'nisd',lookout_uuid)[ncp_event_sno_key] | int(-1) == (queued_ptr | int)
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+
+        - name: '{{ recipe_name }}: Verify queued event is acknowledged on the control plane.'
+          ansible.builtin.uri:
+            url: '{{ api_base_url }}/api/events?nisd_id={{ nisd_uuid }}&action={{ async_event_action }}'
+            headers:
+              Authorization: Bearer {{ login_result.access_token }}
+          vars:
+            payload: '{{ listed.json.payload | default([]) }}'
+            rows: '{{ payload.events | default(payload.rows | default([])) if payload is mapping else payload }}'
+            matches: '{{ rows | selectattr(''nisd_id'',''equalto'',nisd_uuid) | selectattr(''event_ptr'',''equalto'',queued_ptr
+              | int) | list }}'
+          register: listed
+          until: listed.status == 200 and listed.json.status | default(-1) == 0 and matches | length == 1 and (matches | first).expire_at | default(none) is not none and ((matches | first).expire_at | string | length > 0)
+          no_log: true
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+
+        - name: '{{ recipe_name }}: Verify the queued TEST callback ran in the recovery log.'
+          ansible.builtin.command:
+            argv:
+              - grep
+              - -Eq
+              - 'dispatched TEST event .*"marker"[[:space:]]*:[[:space:]]*"{{ event_marker }}-queued"'
+              - '{{ nisd_log_file }}'
+          changed_when: false
+          register: callback
+          until: callback.rc == 0
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+
+        - name: '{{ recipe_name }}: Queue fresh TEST event.'
+          ansible.builtin.set_fact:
+            add_result: '{{ lookup(''tidb_api'',''add_event'',base_url=api_base_url,token=login_result.access_token,body={''nisd_id'':nisd_uuid,''action'':async_event_action,''params'':{''marker'':event_marker
+              ~ ''-fresh''}}) }}'
+
+        - name: '{{ recipe_name }}: Validate fresh event identity and status.'
+          ansible.builtin.assert:
+            that:
+              - add_result.data.status == 0
+              - add_result.data.payload.nisd_id == nisd_uuid
+              - add_result.data.payload.action == async_event_action
+              - add_result.data.payload.event_ptr is integer
+              - add_result.data.payload.event_ptr > 0
+
+        - name: '{{ recipe_name }}: Store fresh event serial.'
+          ansible.builtin.set_fact:
+            fresh_ptr: '{{ add_result.data.payload.event_ptr }}'
+
+        - name: '{{ recipe_name }}: Verify the new event follows the recovered event.'
+          ansible.builtin.assert:
+            that:
+              - fresh_ptr | int > queued_ptr | int
+
+        - name: '{{ recipe_name }}: Verify the NISD serial fresh_event.'
+          ansible.builtin.debug:
+            msg: Waiting for the durable event serial.
+          vars:
+            stage: fresh_event
+          until: lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_sno_key,'nisd',lookout_uuid)[ncp_event_sno_key] | int(-1) == (fresh_ptr | int)
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+
+        - name: '{{ recipe_name }}: Verify fresh event is acknowledged on the control plane.'
+          ansible.builtin.uri:
+            url: '{{ api_base_url }}/api/events?nisd_id={{ nisd_uuid }}&action={{ async_event_action }}'
+            headers:
+              Authorization: Bearer {{ login_result.access_token }}
+          vars:
+            payload: '{{ listed.json.payload | default([]) }}'
+            rows: '{{ payload.events | default(payload.rows | default([])) if payload is mapping else payload }}'
+            matches: '{{ rows | selectattr(''nisd_id'',''equalto'',nisd_uuid) | selectattr(''event_ptr'',''equalto'',fresh_ptr
+              | int) | list }}'
+          register: listed
+          until: listed.status == 200 and listed.json.status | default(-1) == 0 and matches | length == 1 and (matches | first).expire_at | default(none) is not none and ((matches | first).expire_at | string | length > 0)
+          no_log: true
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+
+        - name: '{{ recipe_name }}: Verify the fresh TEST callback ran in the recovery log.'
+          ansible.builtin.command:
+            argv:
+              - grep
+              - -Eq
+              - 'dispatched TEST event .*"marker"[[:space:]]*:[[:space:]]*"{{ event_marker }}-fresh"'
+              - '{{ nisd_log_file }}'
+          changed_when: false
+          register: callback
+          until: callback.rc == 0
+          retries: '{{ async_event_timeout_retries }}'
+          delay: '{{ async_event_poll_delay }}'
+
+        - name: '{{ recipe_name }}: Wait through several healthy heartbeats.'
+          ansible.builtin.pause:
+            seconds: '{{ post_restart_error_watch_seconds }}'
+
+        - name: '{{ recipe_name }}: Check the recovery log for authentication or heartbeat errors.'
+          ansible.builtin.command:
+            argv:
+              - grep
+              - -Ei
+              - --
+              - '{{ post_restart_error_regex }}'
+              - '{{ nisd_log_file }}'
+          register: errors
+          changed_when: false
+          failed_when: errors.rc != 1
+
+      rescue:
+        - name: '{{ recipe_name }}: Report recipe failure to post_run.'
+          ansible.builtin.set_fact:
+            terminate_recipe: true
+
+      always:
+
+        - name: '{{ recipe_name }}: Tear down mdsvc-tidb.'
+          ansible.builtin.debug:
+            msg: '{{ lookup(''tidb_setup'', ''docker_teardown'') }}'
+          ignore_errors: true

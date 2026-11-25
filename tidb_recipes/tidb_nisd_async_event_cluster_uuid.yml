@@ -1,0 +1,416 @@
+- name: tidb_nisd_async_event_cluster_uuid.yml
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    recipe_name: tidb_nisd_async_event_cluster_uuid
+    api_base_url: http://localhost:8081
+    cp_username: admin
+    cp_password: admin
+    infra_payload: '{{ playbook_dir }}/../examples/create_sample_infra.json'
+    nisd_uuid: 1a93c9af-5184-49b4-972b-1c94a2057e74
+    run_dir: '{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}'
+    nisd_peer_port: '{{ ClusterParams.srv_port }}'
+    nisd_client_port: '{{ ClusterParams.client_port }}'
+    nisd_secret: "{{\n  lookup('env', 'NIOVA_NISD_SECRET')\n  | default('Nisd-secret', true)\n}}"
+    lookout_uuid: ''
+    ncp_event_ping_key: /ncp_event/ping_enabled
+    ncp_event_sno_key: /ncp_event/event_sno
+    async_event_action: 1
+    vdev_size_bytes: 8589934592
+    non_default_cluster_uuid: 22222222-2222-4222-8222-222222222222
+    default_cluster_uuid: 85d85e86-212d-47f5-b97b-4222d378b7b3
+    nisd_device_path: '{{ run_dir }}/nisd-async-event-cluster-uuid.device'
+    async_event_timeout_retries: 90
+    async_event_poll_delay: 1
+    heartbeat_event_limit: 100
+
+  tasks:
+  - block:
+
+    - name: '{{ recipe_name }}: Check application type.'
+      ansible.builtin.assert:
+        that:
+        - app_type == "tidb"
+        fail_msg: This recipe must run with app_type=tidb.
+
+    - name: '{{ recipe_name }}: Validate the non-default tenant UUID.'
+      ansible.builtin.assert:
+        that:
+        - non_default_cluster_uuid is match('^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
+        - non_default_cluster_uuid != default_cluster_uuid
+        - non_default_cluster_uuid != '00000000-0000-0000-0000-000000000000'
+
+    - name: '{{ recipe_name }}: Save the original harness configuration.'
+      ansible.builtin.set_fact:
+        cluster_uuid_original_params: '{{ ClusterParams }}'
+        cluster_uuid_setup_attempted: false
+
+    - name: '{{ recipe_name }}: Configure the CP tenant before startup.'
+      ansible.builtin.set_fact:
+        ClusterParams: "{{ ClusterParams | combine({\n     'tidb_backend': 'playground',\n     'api_base_url':\
+          \ api_base_url,\n     'server_env': (ClusterParams.server_env | default({})) | combine({\n \
+          \      'MDSVC_TENANT_MANAGER_ID': non_default_cluster_uuid\n     })\n   }) }}"
+
+    - name: '{{ recipe_name }}: Mark setup attempted for cleanup.'
+      ansible.builtin.set_fact:
+        cluster_uuid_setup_attempted: true
+
+    - name: '{{ recipe_name }}: Start CP with the non-default tenant.'
+      ansible.builtin.set_fact:
+        setup_status: '{{ lookup(''tidb_setup'', ''playground_setup'') }}'
+
+    - name: '{{ recipe_name }}: Require the tracked CP process.'
+      ansible.builtin.assert:
+        that:
+        - setup_status.server_pid is defined
+        - setup_status.server_pid | int > 1
+        fail_msg: playground_setup must return the mdsvc server_pid.
+
+    - name: '{{ recipe_name }}: Verify the running CP tenant setting.'
+      ansible.builtin.command:
+        argv:
+        - python3
+        - -c
+        - "import pathlib, sys\nentries = pathlib.Path('/proc/' + str(int(sys.argv[1])) + '/environ').read_bytes().split(b'\\\
+          0')\nvalues = [entry.split(b'=', 1)[1].decode() for entry in entries\n          if entry.startswith(b'MDSVC_TENANT_MANAGER_ID=')]\n\
+          if values != [sys.argv[2]]:\n    sys.exit('CP tenant environment mismatch; check tidb_setup\
+          \ server_env forwarding')\nprint(values[0])\n"
+        - '{{ setup_status.server_pid | string }}'
+        - '{{ non_default_cluster_uuid }}'
+      changed_when: false
+
+    - name: '{{ recipe_name }}: Wait for Control Plane.'
+      ansible.builtin.uri:
+        url: '{{ api_base_url }}/swagger/'
+        method: GET
+        status_code:
+        - 200
+        - 301
+        - 302
+        timeout: 10
+      register: api_health
+      retries: 90
+      delay: 2
+      until: api_health.status in [200, 301, 302]
+
+    - name: '{{ recipe_name }}: Login to Control Plane.'
+      ansible.builtin.set_fact:
+        login_result: "{{\n  lookup(\n    'tidb_api',\n    'login',\n    base_url=api_base_url,\n    username=cp_username,\n\
+          \    password=cp_password\n  )\n}}"
+
+    - name: '{{ recipe_name }}: Create infrastructure.'
+      ansible.builtin.set_fact:
+        infra_result: "{{\n  lookup(\n    'tidb_api',\n    'create_infra',\n    base_url=api_base_url,\n\
+          \    token=login_result.access_token,\n    file=infra_payload\n  )\n}}"
+
+    - name: '{{ recipe_name }}: Create NISD device file.'
+      vars:
+        img_dir: nisd-async-event-cluster-uuid.device
+        bs: 64M
+        count: 160
+      ansible.builtin.debug:
+        msg:
+          - "{{ lookup('helper', 'create_dd_file', img_dir, bs, count) }}"
+      register: nisd_dev_path
+
+    - name: '{{ recipe_name }}: Print NISD device path.'
+      debug:
+        msg: '{{ nisd_dev_path.msg[0] }}'
+
+    - name: '{{ recipe_name }}: Initialize NISD using niova-block-ctl.'
+      vars:
+        input_param:
+          nisd_device_path: '{{ nisd_dev_path.msg[0] }}'
+          nisd_uuid: '{{ nisd_uuid }}'
+      debug:
+        msg: '{{ lookup(''nisd_handler'', ''run-niova-block-ctl'', input_param) }}'
+
+    - name: '{{ recipe_name }}: Create the VDEV to delete.'
+      ansible.builtin.uri:
+        url: '{{ api_base_url }}/api/vdev'
+        method: POST
+        headers:
+          Authorization: "Bearer {{ login_result.access_token }}"
+        body_format: json
+        body: >-
+          {{
+            {
+              'size_bytes': vdev_size_bytes | int,
+              'data_blk_cnt': 1,
+              'parity_blk_cnt': 0,
+              'redundancy': 0
+            }
+          }}
+        status_code: [200, 400]
+        return_content: true
+        timeout: 30
+      register: vdev_result
+      no_log: true
+
+    - name: '{{ recipe_name }}: Report VDEV creation result.'
+      ansible.builtin.debug:
+        msg:
+          http_status: "{{ vdev_result.status | default('unknown') }}"
+          application_status: "{{ (vdev_result.json | default({})).status | default('unknown') }}"
+          error: "{{ (vdev_result.json | default({})).error | default('unknown') }}"
+
+    - name: '{{ recipe_name }}: Require successful VDEV creation.'
+      ansible.builtin.assert:
+        that:
+          - vdev_result.status | int == 200
+          - vdev_result.json.status | int == 0
+
+    - name: '{{ recipe_name }}: Require successful VDEV creation.'
+      ansible.builtin.assert:
+        that:
+        - vdev_result.json.status == 0
+        - vdev_result.json.payload.chunk_cnt == 1
+        fail_msg: 'VDEV creation failed: {{ vdev_result }}'
+
+    - name: '{{ recipe_name }}: Save the created VDEV identity.'
+      ansible.builtin.set_fact:
+        vdev_uuid: '{{ vdev_result.json.payload.vdev_id }}'
+
+    - name: '{{ recipe_name }}: Wait for VDEV chunk allocation.'
+      ansible.builtin.uri:
+        url: '{{ api_base_url }}/api/chunks?vdev_id={{ vdev_uuid }}&limit=2'
+        headers:
+          Authorization: Bearer {{ login_result.access_token }}
+        status_code: 200
+        return_content: true
+        timeout: 10
+      register: chunks_result
+      retries: 60
+      delay: 2
+      until: chunks_result.json.status == 0 and (chunks_result.json.payload.chunks | length) == 1
+      no_log: true
+
+    - name: '{{ recipe_name }}: Save placement before deleting metadata.'
+      ansible.builtin.set_fact:
+        vdev_chunks: '{{ chunks_result.json.payload.chunks }}'
+
+    - name: '{{ recipe_name }}: Require placement only on the test NISD.'
+      ansible.builtin.assert:
+        that:
+        - vdev_chunks[0].nisd_ids == [nisd_uuid]
+        - vdev_chunks[0].chunk_idx is defined
+        fail_msg: 'Expected one chunk on the running test NISD: {{ vdev_chunks }}'
+
+    - name: '{{ recipe_name }}: Check the initial CP event queue before starting NISD.'
+      ansible.builtin.uri:
+        url: '{{ api_base_url }}/api/heartbeat'
+        method: POST
+        headers:
+          Authorization: "Service {{ nisd_secret }}"
+        body_format: json
+        body: >-
+          {{
+            {
+              'EntityID': nisd_uuid,
+              'TenantUUID': non_default_cluster_uuid,
+              'AckEventSerialNo': 0,
+              'EventLimit': heartbeat_event_limit | int
+            }
+          }}
+        status_code: [200, 400, 401, 403, 404, 500]
+        return_content: true
+        timeout: 10
+      register: initial_heartbeat
+      failed_when: false
+      no_log: true
+
+    - name: '{{ recipe_name }}: Report initial heartbeat response.'
+      ansible.builtin.debug:
+        msg:
+          http_status: "{{ initial_heartbeat.status | default('unknown') }}"
+          application_status: "{{ (initial_heartbeat.json | default({})).status | default('unknown') }}"
+          error: "{{ (initial_heartbeat.json | default({})).error | default('unknown') }}"
+
+    - name: '{{ recipe_name }}: Require a clean, authenticated tenant event queue.'
+      ansible.builtin.assert:
+        that:
+          - initial_heartbeat.status | int == 200
+          - initial_heartbeat.json.status | int == 0
+          - initial_heartbeat.json.payload.events == []
+        fail_msg: "Initial heartbeat was rejected or the event queue was not empty."
+
+    - name: '{{ recipe_name }}: Record the fresh NISD baseline.'
+      ansible.builtin.set_fact:
+        initial_event_sno: 0
+
+    - name: '{{ recipe_name }}: Delete the VDEV through the production API.'
+      ansible.builtin.set_fact:
+        delete_vdev_result: "{{ lookup('tidb_api', 'custom_request', '/api/vdev/' ~ vdev_uuid,\n     \
+          \     method='DELETE', base_url=api_base_url,\n          token=login_result.access_token) }}"
+
+    - name: '{{ recipe_name }}: Require successful deletion acceptance.'
+      ansible.builtin.assert:
+        that:
+        - delete_vdev_result.data.status == 0
+        fail_msg: 'VDEV deletion was rejected: {{ delete_vdev_result }}'
+
+    - name: '{{ recipe_name }}: Poll CP heartbeat for the generated VDEV deletion event.'
+      ansible.builtin.uri:
+        url: '{{ api_base_url }}/api/heartbeat'
+        method: POST
+        headers:
+          Authorization: Service {{ nisd_secret }}
+        body_format: json
+        body:
+          EntityID: '{{ nisd_uuid }}'
+          TenantUUID: '{{ non_default_cluster_uuid }}'
+          AckEventSerialNo: 0
+          EventLimit: '{{ heartbeat_event_limit | int }}'
+        status_code: 200
+        return_content: true
+        timeout: 10
+      register: deletion_heartbeat
+      no_log: true
+      retries: 180
+      delay: 2
+      until: deletion_heartbeat.json.status == 0 and (deletion_heartbeat.json.payload.events | selectattr('Action',
+        'equalto', async_event_action | int) | selectattr('Params.vdev_id', 'equalto', vdev_uuid) | list | length) > 0
+
+    - name: '{{ recipe_name }}: Require exactly the expected single-NISD deletion event.'
+      ansible.builtin.assert:
+        that:
+        - deletion_heartbeat.json.payload.events | length == 1
+        - deletion_heartbeat.json.payload.events[0].Action | int == async_event_action | int
+        - deletion_heartbeat.json.payload.events[0].Params.vdev_id == vdev_uuid
+        - (deletion_heartbeat.json.payload.events[0].Params.chunks | sort) == (vdev_chunks | map(attribute='chunk_idx')| list | sort)
+        - deletion_heartbeat.json.payload.events[0].EventSerialNo is string
+        - deletion_heartbeat.json.payload.events[0].EventSerialNo is match('^[0-9]+$')
+        - deletion_heartbeat.json.payload.events[0].EventSerialNo | int > 0
+
+    - name: '{{ recipe_name }}: Save the CP-assigned event serial.'
+      ansible.builtin.set_fact:
+        expected_event_sno: '{{ deletion_heartbeat.json.payload.events[0].EventSerialNo | int }}'
+
+    - name: '{{ recipe_name }}: Start NISD with async-event handler.'
+      vars:
+        input_param:
+          nisd_device_path: '{{ nisd_dev_path.msg[0] }}'
+          nisd_uuid: '{{ nisd_uuid }}'
+          peer_port: '{{ nisd_peer_port }}'
+          client_port: '{{ nisd_client_port }}'
+          cp_cluster_uuid: '{{ non_default_cluster_uuid }}'
+          enable_auth: 1
+          enable_cp_event_handler: 1
+          nisd_secret: '{{ nisd_secret }}'
+      ansible.builtin.debug:
+        msg: "{{\n  lookup('nisd_handler','run_nisd',input_param)\n}}"
+
+    - name: '{{ recipe_name }}: Wait for NISD registration.'
+      ansible.builtin.uri:
+        url: '{{ api_base_url }}/api/resource?type=nisd'
+        method: GET
+        headers:
+          Authorization: Bearer {{ login_result.access_token }}
+        status_code: 200
+        return_content: true
+      register: nisd_resources
+      retries: 30
+      delay: 2
+      until: nisd_uuid in (nisd_resources.content | default(''))
+      no_log: true
+
+    - name: '{{ recipe_name }}: Wait for async-event ping to become enabled.'
+      vars:
+        stage: wait_for_async_event_ping
+        ping_state: "{{\n  lookup('niova_ctlrequest','lookup', nisd_uuid, ncp_event_ping_key, 'nisd',\
+          \ lookout_uuid)\n}}"
+      ansible.builtin.debug:
+        msg: 'ncp_event ping state: {{ ping_state }}'
+      register: ping_enabled_result
+      retries: '{{ async_event_timeout_retries }}'
+      delay: '{{ async_event_poll_delay }}'
+      until: "(\n  lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_ping_key,'nisd',lookout_uuid)['/ncp_event/ping_enabled']\n\
+        \  | string | lower\n) in ['1', 'true']"
+
+    - name: '{{ recipe_name }}: Wait until NISD processes the event.'
+      vars:
+        stage: wait_for_event_sno
+      ansible.builtin.debug:
+        msg: Waiting for event_sno={{ expected_event_sno }}
+      register: event_wait_result
+      retries: '{{ async_event_timeout_retries }}'
+      delay: '{{ async_event_poll_delay }}'
+      until: "(\n  lookup('niova_ctlrequest','lookup',nisd_uuid,ncp_event_sno_key,'nisd',lookout_uuid)['/ncp_event/event_sno']\n\
+        \  | int\n) >= (expected_event_sno | int)"
+
+    - name: '{{ recipe_name }}: Read final event_sno.'
+      vars:
+        stage: get_final_event_sno
+        final_event_state: "{{\n  lookup(\n    'niova_ctlrequest',\n    'lookup',\n    nisd_uuid,\n  \
+          \  ncp_event_sno_key,\n    'nisd',\n    lookout_uuid\n  )\n}}"
+      ansible.builtin.set_fact:
+        final_event_sno: '{{ final_event_state[''/ncp_event/event_sno''] | int }}'
+
+    - name: '{{ recipe_name }}: Verify event_sno reached the deletion event.'
+      ansible.builtin.assert:
+        that:
+        - final_event_sno | int == expected_event_sno | int
+        fail_msg: Expected event_sno={{ expected_event_sno }}, but NISD reported event_sno={{ final_event_sno }}.
+        success_msg: NISD processed the event and advanced event_sno from {{ initial_event_sno }} to {{
+          final_event_sno }}.
+
+    - name: '{{ recipe_name }}: Verify CP filters the event using the observed durable NISD serial.'
+      ansible.builtin.uri:
+        url: '{{ api_base_url }}/api/heartbeat'
+        method: POST
+        headers:
+          Authorization: Service {{ nisd_secret }}
+        body_format: json
+        body:
+          EntityID: '{{ nisd_uuid }}'
+          TenantUUID: '{{ non_default_cluster_uuid }}'
+          AckEventSerialNo: '{{ final_event_sno | int }}'
+          EventLimit: '{{ heartbeat_event_limit | int }}'
+        status_code: 200
+        return_content: true
+        timeout: 10
+      register: ack_heartbeat
+      no_log: true
+
+    - name: '{{ recipe_name }}: Require a successful heartbeat with no pending events.'
+      ansible.builtin.assert:
+        that:
+        - ack_heartbeat.json.status == 0
+        - ack_heartbeat.json.payload.events == []
+        fail_msg: CP did not accept the observed serial or returned unexpected pending work.
+
+    - name: '{{ recipe_name }}: Report the verified scope.'
+      ansible.builtin.debug:
+        msg:
+        - VDEV deletion produced the expected chunk event for tenant {{ non_default_cluster_uuid }}.
+        - NISD advanced to event serial {{ final_event_sno }}.
+        - CP returned no pending events for a recipe-issued heartbeat carrying that serial.
+        - This does not independently prove CP received the NISD-generated ACK or completed soft-reaping.
+
+    rescue:
+
+    - name: 'Recipe: {{ recipe_name }} failed'
+      ansible.builtin.set_fact:
+        terminate_recipe: true
+    always:
+
+    - name: '{{ recipe_name }}: Tear down this playground.'
+      when: cluster_uuid_setup_attempted | default(false) | bool
+
+      block:
+
+      - name: '{{ recipe_name }}: Stop CP and TiUP playground.'
+        ansible.builtin.debug:
+          msg: '{{ lookup(''tidb_setup'', ''playground_teardown'') }}'
+
+      rescue:
+
+      - name: '{{ recipe_name }}: Record teardown failure.'
+        ansible.builtin.set_fact:
+          terminate_recipe: true
+
+    - name: '{{ recipe_name }}: Restore the original harness configuration.'
+      ansible.builtin.set_fact:
+        ClusterParams: '{{ cluster_uuid_original_params }}'
+      when: cluster_uuid_original_params is defined

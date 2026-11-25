@@ -377,6 +377,7 @@ def _manual_setup_external(cluster_params):
         "tenant_admin_password": cluster_params.get("tenant_admin_password"),
         "admin_default_username": cluster_params.get("admin_default_username"),
         "admin_default_password": cluster_params.get("admin_default_password"),
+        "server_env": cluster_params.get("server_env",{},),
     })
 
     wait_for_server({
@@ -1012,6 +1013,7 @@ def playground_setup(cluster_params):
             "tenant_admin_password": cluster_params.get("tenant_admin_password"),
             "admin_default_username": cluster_params.get("admin_default_username"),
             "admin_default_password": cluster_params.get("admin_default_password"),
+            "server_env": cluster_params.get("server_env",{},),
         })
 
         wait_for_server({
@@ -1734,6 +1736,130 @@ def _tail_file(path, max_lines=80):
     except Exception as exc:
         return "<unable to read %s: %s>" % (path, exc)
 
+
+# CP-only crash/restart actions. These never stop TiUP or modify TiDB data.
+def _cp_state_path(cluster_params):
+    return os.path.join(cluster_params["base_dir"], cluster_params["raft_uuid"],
+                        "mdsvc_server.pid.restart.json")
+
+
+def _cp_process_identity(pid):
+    pid = int(pid)
+    if pid <= 1:
+        raise AnsibleError("Refusing unsafe CP PID")
+    with open("/proc/%d/stat" % pid) as fp:
+        fields = fp.read().rsplit(")", 1)[1].split()
+    return {"pid": pid, "start": fields[19], "pgid": os.getpgid(pid)}
+
+
+def _cp_write_state(path, state):
+    # Contains the launch environment, potentially including credentials.
+    # Keep this private and do not include it in lookup results or logs.
+    temporary = path + ".tmp"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w") as fp:
+            json.dump(state, fp)
+            fp.flush()
+            os.fsync(fp.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+
+
+def _cp_load_state(cluster_params):
+    path = _cp_state_path(cluster_params)
+    try:
+        with open(path) as fp:
+            return path, json.load(fp)
+    except (OSError, ValueError) as exc:
+        raise AnsibleError("No valid CP launch state; run setup with this plugin first") from exc
+
+
+def _cp_group_alive(pgid):
+    # Include go-run's server child, and treat zombies as exited.
+    return any(p["pgid"] == pgid and not p["stat"].startswith(("Z", "X"))
+               for p in _ps_processes())
+
+
+def cp_kill(cluster_params):
+    """SIGKILL only the recorded CP process group and wait for it to exit."""
+    path, state = _cp_load_state(cluster_params)
+    expected = state["identity"]
+    if state.get("restart_allowed") and not _cp_group_alive(expected["pgid"]):
+        return {"status": "cp_already_killed", "pid": expected["pid"]}
+    try:
+        current = _cp_process_identity(expected["pid"])
+    except OSError as exc:
+        raise AnsibleError("Recorded CP launcher is gone; refusing an unverified group kill") from exc
+    if current != expected or current["pgid"] != current["pid"]:
+        raise AnsibleError("CP process identity changed; refusing to kill a reused PID")
+    if _read_pid_file(state["pid_file"]) != current["pid"]:
+        raise AnsibleError("CP PID file does not match recorded launch state")
+    # Mark intent before signalling so cleanup can restart after partial failure.
+    state["restart_allowed"] = True
+    _cp_write_state(path, state)
+    os.killpg(current["pgid"], signal.SIGKILL)
+    deadline = time.monotonic() + float(cluster_params.get("cp_exit_timeout", 15))
+    while _cp_group_alive(current["pgid"]):
+        if time.monotonic() >= deadline:
+            raise AnsibleError("CP process group did not exit after SIGKILL")
+        time.sleep(0.1)
+    if os.path.exists(state["pid_file"]):
+        os.remove(state["pid_file"])
+    return {"status": "cp_killed", "pid": current["pid"], "signal": "SIGKILL"}
+
+
+def cp_start(cluster_params):
+    """Restart the killed CP with its exact saved argv, cwd and environment."""
+    path, state = _cp_load_state(cluster_params)
+    if not state.get("restart_allowed"):
+        raise AnsibleError("cp_start requires a preceding cp_kill")
+    if _cp_group_alive(state["identity"]["pgid"]):
+        raise AnsibleError("Old CP process group is still alive; refusing duplicate startup")
+    pid = _read_pid_file(state["pid_file"])
+    if pid and _pid_exists(pid):
+        raise AnsibleError("CP PID file refers to a live process; refusing duplicate startup")
+    with open(state["log_file"], "a") as logf:
+        logf.write("\n==== RESTARTING CP AFTER CRASH ====\n")
+        logf.flush()
+        proc = subprocess.Popen(state["command"], cwd=state["cwd"],
+                                env=state["env"], stdout=logf, stderr=logf,
+                                start_new_session=True)
+    try:
+        state["identity"] = _cp_process_identity(proc.pid)
+        state["restart_allowed"] = False
+        _cp_write_state(path, state)
+        with open(state["pid_file"], "w") as fp:
+            fp.write(str(proc.pid))
+        deadline = time.monotonic() + float(cluster_params.get("server_timeout", 120))
+        while time.monotonic() < deadline:
+            if proc.poll() is not None:
+                raise AnsibleError("Restarted CP exited early; inspect %s" % state["log_file"])
+            try:
+                response = requests.get(state["base_url"].rstrip("/") + "/swagger/", timeout=2)
+                if response.status_code == 200:
+                    return {"status": "cp_started", "server_pid": proc.pid,
+                            "log_file": state["log_file"], "base_url": state["base_url"]}
+            except requests.RequestException:
+                pass
+            time.sleep(0.2)
+        raise AnsibleError("Restarted CP did not become ready; inspect %s" % state["log_file"])
+    except Exception:
+        # Avoid leaving an untracked server on readiness/persistence failure.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.wait(timeout=15)
+        state["restart_allowed"] = True
+        _cp_write_state(path, state)
+        if os.path.exists(state["pid_file"]):
+            os.remove(state["pid_file"])
+        raise
+
 def start_server(params):
     """Launch mdsvc-api as a detached background process and detect early exit."""
     server_path = params["server_path"]
@@ -1767,6 +1893,19 @@ def start_server(params):
         ),
         "MDSVC_LISTEN": ":8081",
     })
+
+    extra_env = params.get("server_env") or {}
+
+    if not isinstance(extra_env, dict):
+        raise AnsibleError(
+            "server_env must be a dictionary"
+        )
+
+    for key, value in extra_env.items():
+        if value is None:
+            continue
+
+        env[str(key)] = str(value)
 
     if params.get("disable_auth"):
         env["DISABLE_AUTH"] = "true"
@@ -1822,6 +1961,21 @@ def start_server(params):
     with open(pid_file, "w") as pidf:
         pidf.write(str(proc.pid))
 
+    try:
+        _cp_write_state(pid_file + ".restart.json", {
+            "identity": _cp_process_identity(proc.pid),
+            "command": list(command), "cwd": server_path, "env": env,
+            "pid_file": pid_file, "log_file": log_file,
+            "base_url": str(params["base_url"]), "restart_allowed": False,
+        })
+    except Exception:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.wait(timeout=15)
+        fp.close()
+        if os.path.exists(pid_file):
+            os.remove(pid_file)
+        raise
+
     fp.write("mdsvc-api launcher pid=%d\n" % proc.pid)
     fp.flush()
 
@@ -1848,6 +2002,9 @@ def stop_server(params):
     """Send SIGTERM to the mdsvc-api process group recorded in pid_file."""
     pid_file = params["pid_file"]
 
+    if os.path.exists(pid_file + ".restart.json"):
+        os.remove(pid_file + ".restart.json")
+
     if not os.path.exists(pid_file):
         return {"status": "server_not_running"}
 
@@ -1869,6 +2026,70 @@ def stop_server(params):
             os.remove(pid_file)
 
     return {"status": "server_stopped", "pid": pid}
+
+def wait_server_log(cluster_params):
+    """
+    Wait until a string appears in the mdsvc server log.
+
+    Useful for async-event recipes when the CP logs incoming
+    heartbeat requests or acknowledgements.
+    """
+
+    pattern = cluster_params.get("log_pattern")
+
+    if not pattern:
+        raise AnsibleError(
+            "cluster_params['log_pattern'] is required"
+        )
+
+    timeout = int(
+        cluster_params.get(
+            "log_wait_timeout",
+            30,
+        )
+    )
+
+    workspace_dir = os.getenv("NIOVA_WORKSPACE")
+
+    if not workspace_dir:
+        raise AnsibleError(
+            "NIOVA_WORKSPACE is not set"
+        )
+
+    log_file = os.path.join(
+        workspace_dir,
+        "mdsvc-tidb",
+        "mdsvc.log",
+    )
+
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        if os.path.exists(log_file):
+            try:
+                with open(
+                    log_file,
+                    "r",
+                    errors="replace",
+                ) as fp:
+                    contents = fp.read()
+
+                if pattern in contents:
+                    return {
+                        "status": "pattern_found",
+                        "pattern": pattern,
+                        "log_file": log_file,
+                    }
+
+            except OSError:
+                pass
+
+        time.sleep(0.5)
+
+    raise AnsibleError(
+        "Timed out waiting for %r in %s"
+        % (pattern, log_file)
+    )
 
 # =========================================================
 # Health check helper
@@ -1951,6 +2172,12 @@ class LookupModule(LookupBase):
             result = playground_setup(cluster_params)
         elif action == "playground_teardown":
             result = playground_teardown(cluster_params)
+        elif action == "cp_kill":
+            result = cp_kill(cluster_params)
+        elif action == "cp_start":
+            result = cp_start(cluster_params)
+        elif action == "wait_server_log":
+            result = wait_server_log(cluster_params)
         elif action == "list_playground_nodes":
             result = list_playground_nodes(cluster_params)
         elif action == "node_stop":

@@ -1,0 +1,555 @@
+- name: tidb_nisd_async_event_vdev_cleanup.yml
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    recipe_name: tidb_nisd_async_event_vdev_cleanup
+    api_base_url: http://localhost:8081
+    cp_username: admin
+    cp_password: admin
+    vdev_size_bytes: 1099511627776
+    chunk_size_bytes: 8589934592
+    expected_chunk_count: 128
+    nisd_size_bytes: 2199023255552
+    nisd_secret: |-
+      {{
+        lookup('env', 'NIOVA_NISD_SECRET')
+        | default('Nisd-secret', true)
+      }}
+    async_event_timeout_retries: 480
+    async_event_poll_delay: 2
+    runtime_nisd_nodes:
+      - name: NISD-1
+        rack_name: Rack-1
+        hv_name: HV-1
+        device_name: NVMe-0
+        device_path: "{{ run_dir }}/nisd-vdev-cleanup-1.device"
+        serial_number: ASYNC001
+        nisd_uuid: 1a93c9af-5184-49b4-972b-1c94a2057e71
+        peer_port: "{{ (ClusterParams.srv_port | int) + 0 }}"
+        client_port: "{{ (ClusterParams.client_port | int) + 0 }}"
+        port_range: "{{ (ClusterParams.srv_port | int) + 0 }}-{{ (ClusterParams.srv_port | int) + 1 }}"
+      - name: NISD-2
+        rack_name: Rack-2
+        hv_name: HV-2
+        device_name: NVMe-1
+        device_path: "{{ run_dir }}/nisd-vdev-cleanup-2.device"
+        serial_number: ASYNC002
+        nisd_uuid: 1a93c9af-5184-49b4-972b-1c94a2057e72
+        peer_port: "{{ (ClusterParams.srv_port | int) + 2 }}"
+        client_port: "{{ (ClusterParams.client_port | int) + 2 }}"
+        port_range: "{{ (ClusterParams.srv_port | int) + 2 }}-{{ (ClusterParams.srv_port | int) + 3 }}"
+      - name: NISD-3
+        rack_name: Rack-3
+        hv_name: HV-3
+        device_name: NVMe-2
+        device_path: "{{ run_dir }}/nisd-vdev-cleanup-3.device"
+        serial_number: ASYNC003
+        nisd_uuid: 1a93c9af-5184-49b4-972b-1c94a2057e73
+        peer_port: "{{ (ClusterParams.srv_port | int) + 4 }}"
+        client_port: "{{ (ClusterParams.client_port | int) + 4 }}"
+        port_range: "{{ (ClusterParams.srv_port | int) + 4 }}-{{ (ClusterParams.srv_port | int) + 5 }}"
+    run_dir: "{{ ClusterParams.base_dir }}/{{ ClusterParams.raft_uuid }}"
+
+  tasks:
+    - block:
+
+        - name: "{{ recipe_name }}: Validate the 1 TiB, 128-chunk test configuration."
+          ansible.builtin.assert:
+            that:
+              - app_type == "tidb"
+              - runtime_nisd_nodes | length == 3
+              - vdev_size_bytes | int == 1099511627776
+              - expected_chunk_count | int == 128
+              - vdev_size_bytes | int == (expected_chunk_count | int) * (chunk_size_bytes | int)
+              - nisd_size_bytes | int >= vdev_size_bytes | int
+
+        - name: "{{ recipe_name }}: Initialize test state."
+          ansible.builtin.set_fact:
+            cleanup_original_params: "{{ ClusterParams }}"
+            cleanup_setup_attempted: false
+            expected_chunks_by_nisd: {}
+            initial_capacity_map: {}
+            allocated_capacity_map: {}
+            expected_serial_map: {}
+
+        - name: "{{ recipe_name }}: Configure CP service authentication."
+          no_log: true
+          ansible.builtin.set_fact:
+            ClusterParams: |-
+              {{ ClusterParams | combine({
+                'tidb_backend': 'playground',
+                'api_base_url': api_base_url,
+                'server_env': (ClusterParams.server_env | default({})) | combine({
+                  'NISD_JWT_SECRET': nisd_secret
+                })
+              }) }}
+
+        - name: "{{ recipe_name }}: Mark setup attempted."
+          ansible.builtin.set_fact:
+            cleanup_setup_attempted: true
+
+        - name: "{{ recipe_name }}: Start CP and TiDB."
+          ansible.builtin.set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
+
+        - name: "{{ recipe_name }}: Wait for Control Plane."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code:
+              - 200
+              - 301
+              - 302
+            timeout: 10
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        - name: "{{ recipe_name }}: Login to Control Plane."
+          no_log: true
+          ansible.builtin.set_fact:
+            login_result: |-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username=cp_username,
+                  password=cp_password
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Register the three-NISD infrastructure."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/infra"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              pdus:
+                - name: PDU-A
+                  location: row-1
+                  specification: spec
+                  power_cap: 10kW
+                  racks:
+                    - name: "{{ runtime_nisd_nodes[0].rack_name }}"
+                      location: row-1
+                      specification: 42U
+                      hypervisors:
+                        - name: "{{ runtime_nisd_nodes[0].hv_name }}"
+                          port_range: "{{ runtime_nisd_nodes[0].port_range }}"
+                          ssh_port: '22'
+                          rdma_enabled: true
+                          ip_addrs:
+                            - 127.0.0.1
+                          devices:
+                            - name: "{{ runtime_nisd_nodes[0].device_name }}"
+                              device_path: "{{ runtime_nisd_nodes[0].device_path }}"
+                              serial_number: "{{ runtime_nisd_nodes[0].serial_number }}"
+                              state: 2
+                              size: "{{ nisd_size_bytes | int }}"
+                              partitions:
+                                - partition_path: "{{ runtime_nisd_nodes[0].device_path }}"
+                                  size: "{{ nisd_size_bytes | int }}"
+                                  nisd:
+                                    id: "{{ runtime_nisd_nodes[0].nisd_uuid }}"
+                                    peer_port: "{{ runtime_nisd_nodes[0].peer_port | int }}"
+                                    total_size: "{{ nisd_size_bytes | int }}"
+                                    available_size: "{{ nisd_size_bytes | int }}"
+                                    socket_path: /var/run/nisd.sock
+                                    net_info:
+                                      - ip_addr: 127.0.0.1
+                                        port: "{{ runtime_nisd_nodes[0].peer_port | int }}"
+                    - name: "{{ runtime_nisd_nodes[1].rack_name }}"
+                      location: row-1
+                      specification: 42U
+                      hypervisors:
+                        - name: "{{ runtime_nisd_nodes[1].hv_name }}"
+                          port_range: "{{ runtime_nisd_nodes[1].port_range }}"
+                          ssh_port: '22'
+                          rdma_enabled: true
+                          ip_addrs:
+                            - 127.0.0.1
+                          devices:
+                            - name: "{{ runtime_nisd_nodes[1].device_name }}"
+                              device_path: "{{ runtime_nisd_nodes[1].device_path }}"
+                              serial_number: "{{ runtime_nisd_nodes[1].serial_number }}"
+                              state: 2
+                              size: "{{ nisd_size_bytes | int }}"
+                              partitions:
+                                - partition_path: "{{ runtime_nisd_nodes[1].device_path }}"
+                                  size: "{{ nisd_size_bytes | int }}"
+                                  nisd:
+                                    id: "{{ runtime_nisd_nodes[1].nisd_uuid }}"
+                                    peer_port: "{{ runtime_nisd_nodes[1].peer_port | int }}"
+                                    total_size: "{{ nisd_size_bytes | int }}"
+                                    available_size: "{{ nisd_size_bytes | int }}"
+                                    socket_path: /var/run/nisd.sock
+                                    net_info:
+                                      - ip_addr: 127.0.0.1
+                                        port: "{{ runtime_nisd_nodes[1].peer_port | int }}"
+                    - name: "{{ runtime_nisd_nodes[2].rack_name }}"
+                      location: row-1
+                      specification: 42U
+                      hypervisors:
+                        - name: "{{ runtime_nisd_nodes[2].hv_name }}"
+                          port_range: "{{ runtime_nisd_nodes[2].port_range }}"
+                          ssh_port: '22'
+                          rdma_enabled: true
+                          ip_addrs:
+                            - 127.0.0.1
+                          devices:
+                            - name: "{{ runtime_nisd_nodes[2].device_name }}"
+                              device_path: "{{ runtime_nisd_nodes[2].device_path }}"
+                              serial_number: "{{ runtime_nisd_nodes[2].serial_number }}"
+                              state: 2
+                              size: "{{ nisd_size_bytes | int }}"
+                              partitions:
+                                - partition_path: "{{ runtime_nisd_nodes[2].device_path }}"
+                                  size: "{{ nisd_size_bytes | int }}"
+                                  nisd:
+                                    id: "{{ runtime_nisd_nodes[2].nisd_uuid }}"
+                                    peer_port: "{{ runtime_nisd_nodes[2].peer_port | int }}"
+                                    total_size: "{{ nisd_size_bytes | int }}"
+                                    available_size: "{{ nisd_size_bytes | int }}"
+                                    socket_path: /var/run/nisd.sock
+                                    net_info:
+                                      - ip_addr: 127.0.0.1
+                                        port: "{{ runtime_nisd_nodes[2].peer_port | int }}"
+          register: infra_result
+          no_log: true
+
+        - name: "{{ recipe_name }}: Require successful infrastructure creation."
+          ansible.builtin.assert:
+            that:
+              - infra_result.json.status == 0
+
+        - name: "{{ recipe_name }}: Save registered NISD IDs."
+          ansible.builtin.set_fact:
+            all_nisd_ids: "{{ runtime_nisd_nodes | map(attribute='nisd_uuid') | list }}"
+
+        - name: "{{ recipe_name }}: Read initial CP capacities."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/resource?type=nisd"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+          register: initial_resources
+          no_log: true
+
+        - name: "{{ recipe_name }}: Require all three registered NISDs."
+          ansible.builtin.assert:
+            that:
+              - initial_resources.json.status == 0
+              - (initial_resources.json.payload.resources | map(attribute='id') | list | sort) == (all_nisd_ids | sort)
+
+        - name: "{{ recipe_name }}: Save initial capacity for each NISD."
+          ansible.builtin.set_fact:
+            initial_capacity_map: "{{ initial_capacity_map | combine({item.id: item.available_size | int}) }}"
+          loop: "{{ initial_resources.json.payload.resources }}"
+
+        - name: "{{ recipe_name }}: Check every initial event queue."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              EntityID: "{{ item }}"
+              AckEventSerialNo: 0
+              EventLimit: 10
+          register: initial_queues
+          no_log: true
+          loop: "{{ all_nisd_ids }}"
+
+        - name: "{{ recipe_name }}: Require successful empty initial queues."
+          ansible.builtin.assert:
+            that:
+              - item.json.status == 0
+              - item.json.payload.events == []
+          loop: "{{ initial_queues.results }}"
+          no_log: true
+
+        - name: "{{ recipe_name }}: Create the 1 TiB VDEV."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/vdev"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              size_bytes: "{{ vdev_size_bytes | int }}"
+              data_blk_cnt: 1
+              parity_blk_cnt: 0
+              redundancy: 0
+          register: vdev_result
+          no_log: true
+
+        - name: "{{ recipe_name }}: Validate VDEV creation."
+          ansible.builtin.assert:
+            that:
+              - vdev_result.json.status == 0
+              - vdev_result.json.payload.chunk_cnt | int == expected_chunk_count | int
+              - vdev_result.json.payload.vdev_id is match('^[0-9a-fA-F-]{36}$')
+
+        - name: "{{ recipe_name }}: Save VDEV identity."
+          ansible.builtin.set_fact:
+            vdev_uuid: "{{ vdev_result.json.payload.vdev_id }}"
+
+        - name: "{{ recipe_name }}: Read both pages of VDEV placement."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/chunks?vdev_id={{ vdev_uuid }}&start_chunk_idx={{ item }}&limit=64"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+          register: chunk_pages
+          no_log: true
+          loop:
+            - 0
+            - 64
+          retries: 90
+          delay: 2
+          until: chunk_pages.json.status == 0 and (chunk_pages.json.payload.chunks | length) == 64
+
+        - name: "{{ recipe_name }}: Validate complete placement pagination."
+          ansible.builtin.assert:
+            that:
+              - chunk_pages.results[0].json.payload.chunk_cnt | int == expected_chunk_count | int
+              - chunk_pages.results[0].json.payload.has_more == true
+              - chunk_pages.results[0].json.payload.next_start_chunk_idx | int == 64
+              - chunk_pages.results[1].json.payload.chunk_cnt | int == expected_chunk_count | int
+              - chunk_pages.results[1].json.payload.has_more == false
+
+        - name: "{{ recipe_name }}: Combine saved placement pages."
+          ansible.builtin.set_fact:
+            vdev_chunks: "{{ chunk_pages.results | map(attribute='json.payload.chunks') | flatten }}"
+
+        - name: "{{ recipe_name }}: Require every chunk exactly once."
+          ansible.builtin.assert:
+            that:
+              - (vdev_chunks | map(attribute='chunk_idx') | map('int') | list | sort) == (range(0, expected_chunk_count | int) | list)
+
+        - name: "{{ recipe_name }}: Validate single-replica placement on registered NISDs."
+          ansible.builtin.assert:
+            that:
+              - item.nisd_ids | length == 1
+              - item.nisd_ids[0] in all_nisd_ids
+          loop: "{{ vdev_chunks }}"
+          loop_control:
+            label: "{{ item.chunk_idx }}"
+
+        - name: "{{ recipe_name }}: Group expected chunk indices by NISD."
+          ansible.builtin.set_fact:
+            expected_chunks_by_nisd: |-
+              {{ expected_chunks_by_nisd | combine({
+                item.1: (expected_chunks_by_nisd[item.1] | default([])) + [item.0.chunk_idx | int]
+              }) }}
+          loop: "{{ vdev_chunks | subelements('nisd_ids') }}"
+          loop_control:
+            label: "{{ item.0.chunk_idx }} -> {{ item.1 }}"
+
+        - name: "{{ recipe_name }}: Save affected NISDs from actual placement."
+          ansible.builtin.set_fact:
+            participating_nisd_uuids: "{{ expected_chunks_by_nisd.keys() | list }}"
+
+        - name: "{{ recipe_name }}: Read capacity after allocation."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/resource?type=nisd"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+          register: allocated_resources
+          no_log: true
+
+        - name: "{{ recipe_name }}: Validate the allocated-capacity response."
+          ansible.builtin.assert:
+            that:
+              - allocated_resources.json.status == 0
+              - (allocated_resources.json.payload.resources | map(attribute='id') | list | sort) == (all_nisd_ids | sort)
+
+        - name: "{{ recipe_name }}: Require capacity deductions to match placement."
+          ansible.builtin.assert:
+            that:
+              - item.available_size | int == (initial_capacity_map[item.id] | int) - ((expected_chunks_by_nisd[item.id] | default([]) | length) * (chunk_size_bytes | int))
+          loop: "{{ allocated_resources.json.payload.resources }}"
+
+        - name: "{{ recipe_name }}: Delete the VDEV through CP."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/vdev/{{ vdev_uuid }}"
+            method: DELETE
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+          register: deleted_vdev
+          no_log: true
+
+        - name: "{{ recipe_name }}: Require deletion acceptance."
+          ansible.builtin.assert:
+            that:
+              - deleted_vdev.json.status == 0
+
+        - name: "{{ recipe_name }}: Wait for a deletion event on each affected NISD."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              EntityID: "{{ item }}"
+              AckEventSerialNo: 0
+              EventLimit: 10
+          register: generated_events
+          no_log: true
+          loop: "{{ participating_nisd_uuids }}"
+          retries: "{{ async_event_timeout_retries }}"
+          delay: "{{ async_event_poll_delay }}"
+          until: generated_events.json.status == 0 and (generated_events.json.payload.events | length) > 0
+
+        - name: "{{ recipe_name }}: Require one event per affected NISD with the full chunk list."
+          ansible.builtin.assert:
+            that:
+              - item.json.status == 0
+              - item.json.payload.events | length == 1
+              - item.json.payload.events[0].Action == 1
+              - item.json.payload.events[0].Params.vdev_id == vdev_uuid
+              - (item.json.payload.events[0].Params.chunks | sort) == (expected_chunks_by_nisd[item.item] | sort)
+              - item.json.payload.events[0].EventSerialNo is string
+              - item.json.payload.events[0].EventSerialNo is match('^[0-9]+$')
+              - item.json.payload.events[0].EventSerialNo | int > 0
+          loop: "{{ generated_events.results }}"
+          loop_control:
+            label: "{{ item.item }}"
+
+        - name: "{{ recipe_name }}: Save CP-assigned serials by NISD."
+          ansible.builtin.set_fact:
+            expected_serial_map: "{{ expected_serial_map | combine({item.item: item.json.payload.events[0].EventSerialNo | int}) }}"
+          loop: "{{ generated_events.results }}"
+          no_log: true
+
+        - name: "{{ recipe_name }}: Check that unallocated NISDs received no events."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              EntityID: "{{ item }}"
+              AckEventSerialNo: 0
+              EventLimit: 10
+          register: unaffected_queues
+          no_log: true
+          loop: "{{ all_nisd_ids | difference(participating_nisd_uuids) }}"
+
+        - name: "{{ recipe_name }}: Require empty queues for unaffected NISDs."
+          ansible.builtin.assert:
+            that:
+              - item.json.status == 0
+              - item.json.payload.events == []
+          loop: "{{ unaffected_queues.results }}"
+          no_log: true
+
+        - name: "{{ recipe_name }}: Wait for exact capacity restoration on each NISD."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/resource?type=nisd&id={{ item }}"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+          register: restored_capacity
+          no_log: true
+          loop: "{{ all_nisd_ids }}"
+          retries: 90
+          delay: 2
+          until: restored_capacity.json.status == 0 and (restored_capacity.json.payload.resources | length) == 1 and restored_capacity.json.payload.resources[0].id == item and (restored_capacity.json.payload.resources[0].available_size | int) == (initial_capacity_map[item] | int)
+
+        - name: "{{ recipe_name }}: Submit simulated ACKs for the captured events."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              EntityID: "{{ item }}"
+              AckEventSerialNo: "{{ expected_serial_map[item] | int }}"
+              EventLimit: 10
+          register: ack_results
+          no_log: true
+          loop: "{{ participating_nisd_uuids }}"
+
+        - name: "{{ recipe_name }}: Verify CP filters events at the supplied ACK."
+          ansible.builtin.assert:
+            that:
+              - item.json.status == 0
+              - item.json.payload.events == []
+          loop: "{{ ack_results.results }}"
+          no_log: true
+
+        - name: "{{ recipe_name }}: Report the verified CP-side scope."
+          ansible.builtin.debug:
+            msg:
+              - Deleted a 1 TiB VDEV with 128 chunks.
+              - Verified one DeleteVdev event per affected NISD with exact saved chunk placement.
+              - Verified capacity was deducted at allocation and restored after cleanup on every NISD.
+              - Verified heartbeat filtering with recipe-issued ACKs.
+              - NISD DeleteVdev execution, physical disk cleanup, receipt of a live NISD ACK, and TTL reaping are not tested.
+      rescue:
+
+        - name: "{{ recipe_name }}: Record recipe failure."
+          ansible.builtin.set_fact:
+            terminate_recipe: true
+      always:
+
+        - name: "{{ recipe_name }}: Tear down this playground."
+          when: cleanup_setup_attempted | default(false) | bool
+          block:
+            - name: "{{ recipe_name }}: Stop CP and TiDB."
+              ansible.builtin.debug:
+                msg: "{{ lookup('tidb_setup', 'playground_teardown') }}"
+          rescue:
+            - name: "{{ recipe_name }}: Record teardown failure."
+              ansible.builtin.set_fact:
+                terminate_recipe: true
+
+        - name: "{{ recipe_name }}: Restore harness configuration."
+          ansible.builtin.set_fact:
+            ClusterParams: "{{ cleanup_original_params }}"
+          when: cleanup_original_params is defined

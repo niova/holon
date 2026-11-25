@@ -1,4 +1,5 @@
 from ansible.plugins.lookup import LookupBase
+from ansible.errors import AnsibleError
 import fcntl, psutil
 import sys
 import json
@@ -67,6 +68,15 @@ def run_nisd_command(cluster_params, input_values):
     client_port = input_values["client_port"]
     enable_authentication = input_values["enable_auth"]
 
+    # Async event configuration.
+    enable_cp_event_handler = int(
+        input_values.get("enable_cp_event_handler", 0)
+    )
+
+    nisd_secret = input_values.get("nisd_secret")
+
+    cp_cluster_uuid = input_values.get("cp_cluster_uuid")
+
     s3config = '/%s/s3.config.example' % binary_dir
     bin_path = os.path.normpath(bin_path)
     set_nisd_environ_variables(s3config)
@@ -74,18 +84,53 @@ def run_nisd_command(cluster_params, input_values):
     sock_dir = f"/tmp/.niova/{nisd_uuid}"
     os.makedirs(sock_dir, exist_ok=True)
 
-    # if enable_authentication == 1:
-    #     os.environ["NIOVA_NISD_SECRET"] = "Nisd-secret"
-    #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '1'
-    # else:
-    #     os.environ["NIOVA_NISD_DO_TOKEN_VALIDATION"] = '0'
-
     os.environ["NIOVA_INOTIFY_BASE_PATH"] = "%s/%s/nisd-interface" % (base_dir, raft_uuid)
     os.environ["NIOVA_BLOCK_SOCK_PATH"] = f"/tmp/.niova/{nisd_uuid}" 
+    os.environ["NIOVA_LOG_LEVEL"] = "5"
+
+    if enable_cp_event_handler:
+        os.environ["NIOVA_BLOCK_CP_EVENT_HANDLER_ENABLE"] = "1"
+
+        if not nisd_secret:
+            raise AnsibleError(
+                "nisd_secret is required when "
+                "enable_cp_event_handler=1"
+            )
+
+        os.environ["NIOVA_NISD_SECRET"] = str(nisd_secret)
+
+        if cp_cluster_uuid:
+            os.environ["NIOVA_BLOCK_CP_AUTH_CLUSTER_UUID"] = str(cp_cluster_uuid)
+    else:
+        os.environ.pop("NIOVA_BLOCK_CP_EVENT_HANDLER_ENABLE", None,)
     
-    env = os.environ.copy()
     os.environ["NIOVA_BLOCK_TCP_PEER_PORT"] = str(peer_port)
     os.environ["NIOVA_BLOCK_TCP_CLIENT_PORT"] = str(client_port)
+
+    # Configure TiDB Control Plane discovery
+    if app_name == "tidb":
+        workspace_dir = os.getenv("NIOVA_WORKSPACE")
+
+        if not workspace_dir:
+            raise RuntimeError("NIOVA_WORKSPACE is not set")
+
+        gossip_path = os.path.join(
+            workspace_dir,
+            "mdsvc-tidb",
+            "configs",
+            "gossipNodes"
+        )
+
+        if not os.path.isfile(gossip_path):
+            raise RuntimeError(
+                f"TiDB gossipNodes file not found: {gossip_path}"
+            )
+
+        os.environ["NIOVA_GOSSIP_PATH"] = gossip_path
+        os.environ["NIOVA_GOSSIP_KEY"] = "dummy"
+        os.environ["NIOVA_BLOCK_PROXY_TAG"] = "mdsvc-tidb"
+
+    env = os.environ.copy()
 
     command = [bin_path, "-u", nisd_uuid, "-d", device_path]
 
@@ -97,10 +142,22 @@ def run_nisd_command(cluster_params, input_values):
     # Open log file in append mode
     with open(log_file_path, 'a') as log_file:
         # Launch the command as a non-blocking subprocess
-        process = subprocess.Popen(command, stdout=log_file, stderr=log_file, text=True, cwd=base_path)
+        process = subprocess.Popen(command, stdout=log_file, stderr=log_file, text=True, cwd=base_path, env=env)
         
         # Log the process ID for reference
-        logger.info("NISD command started with PID %d. Logs will be written to %s", process.pid, log_file_path)    
+        logger.info("NISD command started with PID %d. Logs will be written to %s", process.pid, log_file_path)
+
+    time.sleep(1)
+
+    return_code = process.poll()
+
+    if return_code is not None:
+        raise RuntimeError(
+            f"NISD exited during startup. "
+            f"Exit code: {return_code}. "
+            f"Check log: {log_file_path}"
+        )    
+        
     recipe_conf = load_recipe_op_config(cluster_params)
 
     pid = process.pid
@@ -110,6 +167,7 @@ def run_nisd_command(cluster_params, input_values):
         recipe_conf['nisd_process'] = {}
 
     recipe_conf['nisd_process']['process_pid'] = pid
+    recipe_conf['nisd_process']['process_create_time'] = ps.create_time()
     recipe_conf['nisd_process']['process_type'] = "nisd_process"
     recipe_conf['nisd_process']['process_app_type'] = app_name
     recipe_conf['nisd_process']['process_status'] = ps.status()
@@ -1005,6 +1063,59 @@ def load_recipe_op_config(cluster_params):
 
     return recipe_conf
 
+def nisd_process_control(cluster_params, input_values, action):
+    """Operate only on this run's recorded NISD; never search host processes."""
+    nisd_uuid = str(input_values["nisd_uuid"])
+    record = load_recipe_op_config(cluster_params).get("nisd_process", {})
+    try:
+        pid = int(record["process_pid"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise AnsibleError("No valid NISD PID in this run's Holon record") from exc
+    if pid <= 1:
+        raise AnsibleError("Refusing unsafe NISD PID")
+    expected = input_values.get("expected_identity")
+    try:
+        process = psutil.Process(pid)
+        created = process.create_time()
+        command = process.cmdline()
+        executable = os.path.basename(process.exe())
+        if executable != "nisd" or not any(
+            command[i] == "-u" and command[i + 1] == nisd_uuid
+            for i in range(len(command) - 1)
+        ):
+            raise AnsibleError("Recorded PID does not belong to the requested NISD")
+        recorded_start = record.get("process_create_time")
+        if recorded_start is not None and created != recorded_start:
+            raise AnsibleError("Recorded NISD PID has been reused")
+        identity = {"pid": pid, "create_time": created, "nisd_uuid": nisd_uuid}
+        if expected is not None and identity != expected:
+            raise AnsibleError("NISD identity changed; refusing process operation")
+        if action in ("pause_nisd", "resume_nisd"):
+            if expected is None:
+                raise AnsibleError("Pause/resume requires expected_identity from get_nisd_process")
+            if action == "pause_nisd":
+                process.suspend()
+            else:
+                process.resume()
+            deadline = time.monotonic() + 5
+            while True:
+                state = process.status()
+                stopped = state in (psutil.STATUS_STOPPED, psutil.STATUS_TRACING_STOP)
+                running = state not in (psutil.STATUS_STOPPED, psutil.STATUS_TRACING_STOP,
+                                        psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)
+                if (action == "pause_nisd" and stopped) or (action == "resume_nisd" and running):
+                    break
+                if time.monotonic() >= deadline:
+                    raise AnsibleError("NISD did not reach the requested process state")
+                time.sleep(0.1)
+        state = process.status()
+        return {"identity": identity, "status": state,
+                "stopped": state in (psutil.STATUS_STOPPED, psutil.STATUS_TRACING_STOP),
+                "running": state not in (psutil.STATUS_STOPPED, psutil.STATUS_TRACING_STOP,
+                                          psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD)}
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess) as exc:
+        raise AnsibleError("Unable to control the recorded NISD: %s" % type(exc).__name__) from exc
+
 class LookupModule(LookupBase):
     def run(self,terms,**kwargs):
         #Get lookup parameter values
@@ -1013,6 +1124,9 @@ class LookupModule(LookupBase):
         nisd_uuid = ""
 
         cluster_params = kwargs['variables']['ClusterParams']
+
+        if process_type in ("get_nisd_process", "pause_nisd", "resume_nisd", "nisd_process_status"):
+            return [nisd_process_control(cluster_params, input_values, process_type)]
 
         if process_type == "run-niova-block-ctl":
                nisd_uuid = run_niova_block_ctl(cluster_params, input_values)

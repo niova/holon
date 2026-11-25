@@ -1,0 +1,374 @@
+- name: tidb_nisd_async_event_eventlimit.yml
+  hosts: localhost
+  connection: local
+  gather_facts: false
+
+  vars:
+    recipe_name: tidb_nisd_async_event_eventlimit
+    api_base_url: http://localhost:8081
+    cp_username: admin
+    cp_password: admin
+    infra_payload: "{{ playbook_dir }}/../examples/create_sample_infra.json"
+    nisd_uuid: 1a93c9af-5184-49b4-972b-1c94a2057e74
+    nisd_secret: |-
+      {{
+        lookup('env', 'NIOVA_NISD_SECRET')
+        | default('Nisd-secret', true)
+      }}
+    heartbeat_event_limit: 2
+    vdev_size_bytes: 8589934592
+
+  tasks:
+    - block:
+
+        - name: "{{ recipe_name }}: Check application type."
+          ansible.builtin.assert:
+            that:
+              - app_type == "tidb"
+              - heartbeat_event_limit | int == 2
+
+        - name: "{{ recipe_name }}: Save harness configuration."
+          ansible.builtin.set_fact:
+            eventlimit_original_params: "{{ ClusterParams }}"
+            eventlimit_setup_attempted: false
+
+        - name: "{{ recipe_name }}: Configure playground service authentication."
+          ansible.builtin.set_fact:
+            ClusterParams: "{{ ClusterParams | combine({'tidb_backend': 'playground', 'api_base_url': api_base_url, 'server_env': (ClusterParams.server_env | default({})) | combine({'NISD_JWT_SECRET': nisd_secret})}) }}"
+
+        - name: "{{ recipe_name }}: Mark setup attempted."
+          ansible.builtin.set_fact:
+            eventlimit_setup_attempted: true
+
+        - name: "{{ recipe_name }}: Start CP and TiDB."
+          ansible.builtin.set_fact:
+            setup_status: "{{ lookup('tidb_setup', 'playground_setup') }}"
+
+        - name: "{{ recipe_name }}: Wait for Control Plane."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/swagger/"
+            method: GET
+            status_code:
+              - 200
+              - 301
+              - 302
+            timeout: 10
+          register: api_health
+          retries: 90
+          delay: 2
+          until: api_health.status in [200, 301, 302]
+
+        - name: "{{ recipe_name }}: Login to Control Plane."
+          ansible.builtin.set_fact:
+            login_result: |-
+              {{
+                lookup(
+                  'tidb_api',
+                  'login',
+                  base_url=api_base_url,
+                  username=cp_username,
+                  password=cp_password
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Create infrastructure."
+          ansible.builtin.set_fact:
+            infra_result: |-
+              {{
+                lookup(
+                  'tidb_api',
+                  'create_infra',
+                  base_url=api_base_url,
+                  token=login_result.access_token,
+                  file=infra_payload
+                )
+              }}
+
+        - name: "{{ recipe_name }}: Require an initially empty event queue."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              EntityID: "{{ nisd_uuid }}"
+              AckEventSerialNo: 0
+              EventLimit: 100
+          register: initial_heartbeat
+          no_log: true
+
+        - name: "{{ recipe_name }}: Validate initial heartbeat application status and queue."
+          ansible.builtin.assert:
+            that:
+              - initial_heartbeat.json.status == 0
+              - initial_heartbeat.json.payload.events == []
+
+        - name: "{{ recipe_name }}: Create five single-chunk VDEVs."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/vdev"
+            method: POST
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              size_bytes: "{{ vdev_size_bytes | int }}"
+              data_blk_cnt: 1
+              parity_blk_cnt: 0
+              redundancy: 0
+          register: created_vdevs
+          no_log: true
+          loop: "{{ range(0, 5) | list }}"
+
+        - name: "{{ recipe_name }}: Validate every VDEV creation."
+          ansible.builtin.assert:
+            that:
+              - item.json.status == 0
+              - item.json.payload.chunk_cnt == 1
+              - item.json.payload.vdev_id is match('^[0-9a-fA-F-]{36}$')
+          loop: "{{ created_vdevs.results }}"
+          no_log: true
+
+        - name: "{{ recipe_name }}: Save the five VDEV IDs."
+          ansible.builtin.set_fact:
+            vdev_ids: "{{ created_vdevs.results | map(attribute='json.payload.vdev_id') | list }}"
+            expected_chunks: {}
+
+        - name: "{{ recipe_name }}: Require five distinct VDEVs."
+          ansible.builtin.assert:
+            that:
+              - vdev_ids | unique | length == 5
+
+        - name: "{{ recipe_name }}: Read each VDEV placement before deletion."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/chunks?vdev_id={{ item }}&limit=2"
+            method: GET
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+          register: placements
+          no_log: true
+          loop: "{{ vdev_ids }}"
+          retries: 60
+          delay: 2
+          until: placements.json.status == 0 and (placements.json.payload.chunks | length) == 1
+
+        - name: "{{ recipe_name }}: Require one chunk on the selected NISD."
+          ansible.builtin.assert:
+            that:
+              - item.json.status == 0
+              - item.json.payload.chunk_cnt == 1
+              - item.json.payload.chunks | length == 1
+              - item.json.payload.chunks[0].nisd_ids == [nisd_uuid]
+              - item.json.payload.chunks[0].chunk_idx is defined
+          loop: "{{ placements.results }}"
+          no_log: true
+
+        - name: "{{ recipe_name }}: Save expected chunks by VDEV."
+          ansible.builtin.set_fact:
+            expected_chunks: "{{ expected_chunks | combine({item.item: item.json.payload.chunks | map(attribute='chunk_idx') | list}) }}"
+          loop: "{{ placements.results }}"
+          no_log: true
+
+        - name: "{{ recipe_name }}: Delete all five VDEVs through CP."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/vdev/{{ item }}"
+            method: DELETE
+            headers:
+              Authorization: "Bearer {{ login_result.access_token }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+          register: deleted_vdevs
+          no_log: true
+          loop: "{{ vdev_ids }}"
+
+        - name: "{{ recipe_name }}: Require every deletion to be accepted."
+          ansible.builtin.assert:
+            that:
+              - item.json.status == 0
+          loop: "{{ deleted_vdevs.results }}"
+          no_log: true
+
+        - name: "{{ recipe_name }}: Wait for all cleanup-worker events without acknowledging them."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              EntityID: "{{ nisd_uuid }}"
+              AckEventSerialNo: 0
+              EventLimit: 100
+          register: queued_heartbeat
+          no_log: true
+          retries: 180
+          delay: 2
+          until: queued_heartbeat.json.status == 0 and (queued_heartbeat.json.payload.events | length) >= 5
+
+        - name: "{{ recipe_name }}: Capture CP-generated events."
+          ansible.builtin.set_fact:
+            expected_events: "{{ queued_heartbeat.json.payload.events }}"
+
+        - name: "{{ recipe_name }}: Require exactly one event for each deleted VDEV."
+          ansible.builtin.assert:
+            that:
+              - expected_events | length == 5
+              - (expected_events | map(attribute='Params.vdev_id') | list | sort) == (vdev_ids | sort)
+
+        - name: "{{ recipe_name }}: Validate action, payload, and string-encoded serial."
+          ansible.builtin.assert:
+            that:
+              - item.Action == 1
+              - item.Params.chunks | sort == expected_chunks[item.Params.vdev_id] | sort
+              - item.EventSerialNo is string
+              - item.EventSerialNo is match('^[0-9]+$')
+              - item.EventSerialNo | int > 0
+          loop: "{{ expected_events }}"
+
+        - name: "{{ recipe_name }}: Record numeric serials assigned by CP."
+          ansible.builtin.set_fact:
+            event_serials: "{{ expected_events | map(attribute='EventSerialNo') | map('int') | list }}"
+
+        - name: "{{ recipe_name }}: Require distinct serials in increasing order."
+          ansible.builtin.assert:
+            that:
+              - event_serials | unique | length == 5
+              - event_serials == (event_serials | sort)
+
+        - name: "{{ recipe_name }}: Request batch 1 with EventLimit=2."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              EntityID: "{{ nisd_uuid }}"
+              AckEventSerialNo: 0
+              EventLimit: "{{ heartbeat_event_limit | int }}"
+          register: heartbeat_1
+          no_log: true
+
+        - name: "{{ recipe_name }}: Validate batch 1: exactly 2 matching events."
+          ansible.builtin.assert:
+            that:
+              - heartbeat_1.json.status == 0
+              - heartbeat_1.json.payload.events == expected_events[0:2]
+              - heartbeat_1.json.payload.events | length <= heartbeat_event_limit | int
+
+        - name: "{{ recipe_name }}: Request batch 2 with EventLimit=2."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              EntityID: "{{ nisd_uuid }}"
+              AckEventSerialNo: "{{ event_serials[1] | int }}"
+              EventLimit: "{{ heartbeat_event_limit | int }}"
+          register: heartbeat_2
+          no_log: true
+
+        - name: "{{ recipe_name }}: Validate batch 2: exactly 2 matching events."
+          ansible.builtin.assert:
+            that:
+              - heartbeat_2.json.status == 0
+              - heartbeat_2.json.payload.events == expected_events[2:4]
+              - heartbeat_2.json.payload.events | length <= heartbeat_event_limit | int
+
+        - name: "{{ recipe_name }}: Request batch 3 with EventLimit=2."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              EntityID: "{{ nisd_uuid }}"
+              AckEventSerialNo: "{{ event_serials[3] | int }}"
+              EventLimit: "{{ heartbeat_event_limit | int }}"
+          register: heartbeat_3
+          no_log: true
+
+        - name: "{{ recipe_name }}: Validate batch 3: exactly 1 matching events."
+          ansible.builtin.assert:
+            that:
+              - heartbeat_3.json.status == 0
+              - heartbeat_3.json.payload.events == expected_events[4:5]
+              - heartbeat_3.json.payload.events | length <= heartbeat_event_limit | int
+
+        - name: "{{ recipe_name }}: Request batch 4 with EventLimit=2."
+          ansible.builtin.uri:
+            url: "{{ api_base_url }}/api/heartbeat"
+            method: POST
+            headers:
+              Authorization: "Service {{ nisd_secret }}"
+            status_code: 200
+            return_content: true
+            timeout: 30
+            body_format: json
+            body:
+              EntityID: "{{ nisd_uuid }}"
+              AckEventSerialNo: "{{ event_serials[4] | int }}"
+              EventLimit: "{{ heartbeat_event_limit | int }}"
+          register: heartbeat_4
+          no_log: true
+
+        - name: "{{ recipe_name }}: Validate batch 4: exactly 0 matching events."
+          ansible.builtin.assert:
+            that:
+              - heartbeat_4.json.status == 0
+              - heartbeat_4.json.payload.events == expected_events[5:5]
+              - heartbeat_4.json.payload.events | length <= heartbeat_event_limit | int
+
+        - name: "{{ recipe_name }}: Report verified delivery behavior."
+          ansible.builtin.debug:
+            msg:
+              - Five VDEV deletions produced five ordered DeleteVdev events with matching placement.
+              - EventLimit=2 returned exactly 2, 2, 1, then 0 events as the request ACK advanced.
+              - This is a CP relay test with a simulated NISD; it does not verify physical cleanup, a live NISD ACK, or TTL reaping.
+      rescue:
+
+        - name: "{{ recipe_name }}: Record recipe failure."
+          ansible.builtin.set_fact:
+            terminate_recipe: true
+      always:
+
+        - name: "{{ recipe_name }}: Tear down this playground."
+          when: eventlimit_setup_attempted | default(false) | bool
+          block:
+            - name: "{{ recipe_name }}: Stop CP and TiDB."
+              ansible.builtin.debug:
+                msg: "{{ lookup('tidb_setup', 'playground_teardown') }}"
+          rescue:
+            - name: "{{ recipe_name }}: Record teardown failure."
+              ansible.builtin.set_fact:
+                terminate_recipe: true
+
+        - name: "{{ recipe_name }}: Restore harness configuration."
+          ansible.builtin.set_fact:
+            ClusterParams: "{{ eventlimit_original_params }}"
+          when: eventlimit_original_params is defined
